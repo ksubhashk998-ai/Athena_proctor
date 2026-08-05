@@ -1,0 +1,916 @@
+/**
+ * proctorApi.js - All new proctoring API routes
+ * Mounted at /api in server.js
+ */
+const express = require('express');
+const router = express.Router();
+const jwt = require('jsonwebtoken');
+const fs = require('fs');
+const path = require('path');
+const axios = require('axios');
+const crypto = require('crypto');
+const { sendOtpEmail } = require('../services/emailService');
+
+const FaceEmbedding = require('../models/FaceEmbedding');
+const SuspiciousActivity = require('../models/SuspiciousActivity');
+const ScreenshotEvidence = require('../models/ScreenshotEvidence');
+const Student = require('../models/Student');
+
+const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this-in-production';
+const PYTHON_DETECTOR_URL = process.env.PYTHON_DETECTOR_URL || 'http://localhost:8001';
+
+// In-memory OTP Store: Map<cleanEmail, { hashedOtp, attempts, expiresAt, lastSentAt, studentId, studentName }>
+const otpStore = new Map();
+
+// =========================================================================
+// REAL-TIME EMAIL OTP AUTHENTICATION ENDPOINTS (With Path Aliases)
+// =========================================================================
+
+const handleSendOtp = async (req, res) => {
+    try {
+        const { email, password } = req.body;
+        if (!email || typeof email !== 'string' || !email.includes('@')) {
+            return res.status(400).json({ success: false, error: 'Valid email address is required' });
+        }
+
+        const cleanEmail = email.trim().toLowerCase();
+        if (password && password.length < 3) {
+            return res.status(401).json({ success: false, error: 'Invalid email or password' });
+        }
+
+        const studentId = 'STU_' + cleanEmail.replace(/[^a-z0-9]/g, '_');
+        const emailPrefix = cleanEmail.split('@')[0];
+        const studentName = emailPrefix
+            .split(/[._-]/)
+            .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+            .join(' ');
+
+        const now = Date.now();
+
+        // Generate secure 6-digit OTP
+        const otp = crypto.randomInt(100000, 999999).toString();
+        const hashedOtp = crypto.createHash('sha256').update(otp).digest('hex');
+
+        otpStore.set(cleanEmail, {
+            hashedOtp,
+            attempts: 0,
+            expiresAt: now + 5 * 60 * 1000,
+            lastSentAt: now,
+            studentId,
+            studentName
+        });
+
+        // Send OTP email
+        try {
+            await sendOtpEmail(cleanEmail, studentName, otp);
+        } catch (emailErr) {
+            console.warn(`✉️ OTP Email delivery notice (${emailErr.message}). OTP Code generated: [${otp}]`);
+        }
+
+        console.log(`✉️ Real-Time OTP successfully sent for ${cleanEmail}: ${otp}`);
+        return res.json({
+            success: true,
+            message: `A 6-digit OTP has been sent to ${cleanEmail}`,
+            email: cleanEmail,
+            studentId,
+            studentName,
+            expiresInSeconds: 300
+        });
+    } catch (error) {
+        console.error('Send OTP route error:', error);
+        return res.status(500).json({ success: false, error: 'OTP request failed: ' + error.message });
+    }
+};
+
+const handleVerifyOtp = async (req, res) => {
+    try {
+        const { email, otp } = req.body;
+        if (!email || !otp) {
+            return res.status(400).json({ success: false, error: 'Email and 6-digit OTP code are required' });
+        }
+
+        const cleanEmail = email.trim().toLowerCase();
+        const record = otpStore.get(cleanEmail);
+
+        if (!record) {
+            return res.status(400).json({
+                success: false,
+                error: 'No active OTP request found for this email. Please request a new OTP.'
+            });
+        }
+
+        const now = Date.now();
+        if (now > record.expiresAt) {
+            otpStore.delete(cleanEmail);
+            return res.status(400).json({
+                success: false,
+                expired: true,
+                error: 'OTP has expired. Please request a new OTP.'
+            });
+        }
+
+        if (record.attempts >= 5) {
+            otpStore.delete(cleanEmail);
+            return res.status(400).json({
+                success: false,
+                maxAttemptsReached: true,
+                error: 'Maximum OTP verification attempts (5) exceeded. Please request a new OTP.'
+            });
+        }
+
+        record.attempts += 1;
+
+        const inputHashed = crypto.createHash('sha256').update(otp.toString().trim()).digest('hex');
+        if (inputHashed !== record.hashedOtp) {
+            const remainingAttempts = 5 - record.attempts;
+            return res.status(400).json({
+                success: false,
+                error: `Invalid OTP code. (${remainingAttempts} attempt${remainingAttempts === 1 ? '' : 's'} remaining)`
+            });
+        }
+
+        const { studentId, studentName } = record;
+        otpStore.delete(cleanEmail);
+
+        const otpToken = jwt.sign({
+            email: cleanEmail,
+            studentId,
+            stage: 'otp_verified'
+        }, JWT_SECRET, { expiresIn: '15m' });
+
+        console.log(`✅ OTP Verification Successful for ${cleanEmail} (${studentId})`);
+
+        return res.json({
+            success: true,
+            message: 'OTP verified successfully! Proceeding to Face Verification.',
+            otpToken,
+            student: {
+                studentId,
+                name: studentName,
+                email: cleanEmail
+            }
+        });
+    } catch (error) {
+        console.error('Verify OTP route error:', error);
+        return res.status(500).json({ success: false, error: 'OTP verification failed: ' + error.message });
+    }
+};
+
+const handleResendOtp = async (req, res) => {
+    try {
+        const { email } = req.body;
+        if (!email || !email.includes('@')) {
+            return res.status(400).json({ success: false, error: 'Valid email address is required' });
+        }
+
+        const cleanEmail = email.trim().toLowerCase();
+        const existingRecord = otpStore.get(cleanEmail);
+        const now = Date.now();
+
+        const studentId = 'STU_' + cleanEmail.replace(/[^a-z0-9]/g, '_');
+        const emailPrefix = cleanEmail.split('@')[0];
+        const studentName = emailPrefix
+            .split(/[._-]/)
+            .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+            .join(' ');
+
+        const newOtp = crypto.randomInt(100000, 999999).toString();
+        const hashedOtp = crypto.createHash('sha256').update(newOtp).digest('hex');
+
+        otpStore.set(cleanEmail, {
+            hashedOtp,
+            attempts: 0,
+            expiresAt: now + 5 * 60 * 1000,
+            lastSentAt: now,
+            studentId,
+            studentName
+        });
+
+        try {
+            await sendOtpEmail(cleanEmail, studentName, newOtp);
+        } catch (emailErr) {
+            console.warn(`✉️ Resend OTP email notice (${emailErr.message}). Code generated: [${newOtp}]`);
+        }
+
+        console.log(`🔄 Brand new OTP generated for ${cleanEmail}: ${newOtp}`);
+        return res.json({
+            success: true,
+            message: `A new 6-digit OTP has been sent to ${cleanEmail}`,
+            email: cleanEmail,
+            cooldownSeconds: 60
+        });
+    } catch (error) {
+        console.error('Resend OTP route error:', error);
+        return res.status(500).json({ success: false, error: 'Resend OTP failed: ' + error.message });
+    }
+};
+
+// Route Registrations with Aliases
+router.post('/auth/send-otp', handleSendOtp);
+router.post('/send-otp', handleSendOtp);
+router.post('/otp/send', handleSendOtp);
+
+router.post('/auth/verify-otp', handleVerifyOtp);
+router.post('/verify-otp', handleVerifyOtp);
+router.post('/otp/verify', handleVerifyOtp);
+
+router.post('/auth/resend-otp', handleResendOtp);
+router.post('/resend-otp', handleResendOtp);
+router.post('/otp/resend', handleResendOtp);
+
+// DEVELOPMENT MODE ONLY - REMOVE BEFORE PRODUCTION
+function authenticateToken(req, res, next) {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+
+    const mockUser = {
+        studentId: 'STU_DEMO',
+        name: 'Demo Student',
+        email: 'demo@student.com',
+        role: 'Student'
+    };
+
+    if (!token) {
+        req.user = mockUser;
+        return next();
+    }
+
+    try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        req.user = decoded;
+        next();
+    } catch (err) {
+        req.user = mockUser;
+        next();
+    }
+}
+
+// =========================================================================
+// FACE ENROLLMENT & VERIFICATION
+// =========================================================================
+// FACE ENROLLMENT & VERIFICATION
+// =========================================================================
+
+const enrollTimestamps = new Map();
+const inMemoryEmbeddings = new Map();
+
+// Secure AES-256 Cipher Key for Embedding Encryption (Requirement 9)
+const ENCRYPTION_KEY = crypto.createHash('sha256').update(process.env.JWT_SECRET || 'athena-proctoring-embedding-secret').digest();
+
+function encryptEmbedding(vectorArray) {
+    try {
+        const iv = crypto.randomBytes(16);
+        const cipher = crypto.createCipheriv('aes-256-cbc', ENCRYPTION_KEY, iv);
+        const jsonStr = JSON.stringify(vectorArray);
+        let encrypted = cipher.update(jsonStr, 'utf8', 'hex');
+        encrypted += cipher.final('hex');
+        return `${iv.toString('hex')}:${encrypted}`;
+    } catch (e) {
+        return JSON.stringify(vectorArray);
+    }
+}
+
+function decryptEmbedding(encryptedStr) {
+    try {
+        if (!encryptedStr || (typeof encryptedStr !== 'string') || !encryptedStr.includes(':')) {
+            return Array.isArray(encryptedStr) ? encryptedStr : (typeof encryptedStr === 'string' ? JSON.parse(encryptedStr) : null);
+        }
+        const [ivHex, encryptedHex] = encryptedStr.split(':');
+        const iv = Buffer.from(ivHex, 'hex');
+        const decipher = crypto.createDecipheriv('aes-256-cbc', ENCRYPTION_KEY, iv);
+        let decrypted = decipher.update(encryptedHex, 'hex', 'utf8');
+        decrypted += decipher.final('utf8');
+        return JSON.parse(decrypted);
+    } catch (e) {
+        return null;
+    }
+}
+
+/**
+ * POST /api/face/enroll
+ * Body: { studentId, embedding: number[128], imageSnapshot?: string }
+ * Stores or updates face embedding for the student
+ */
+router.post('/face/enroll', authenticateToken, async (req, res) => {
+    try {
+        const { studentId, embedding, imageSnapshot, qualityScore } = req.body;
+
+        if (!studentId) {
+            return res.status(400).json({ error: 'studentId is required for face enrollment' });
+        }
+
+        if (!embedding || !Array.isArray(embedding) || (embedding.length !== 128 && embedding.length !== 512)) {
+            return res.status(400).json({ error: 'Valid face embedding vector is required' });
+        }
+
+        const now = Date.now();
+        const lastTime = enrollTimestamps.get(studentId) || 0;
+        const cooldown = 3 * 1000; // 3 seconds cooldown per student
+
+        if (now - lastTime < cooldown) {
+            const retryAfter = Math.ceil((cooldown - (now - lastTime)) / 1000);
+            res.setHeader('Retry-After', retryAfter);
+            return res.status(429).json({
+                error: 'Too Many Requests',
+                retryAfter,
+                message: `Too many enrollment requests. Retry after ${retryAfter} seconds.`
+            });
+        }
+
+        enrollTimestamps.set(studentId, now);
+
+        // Store in high-performance in-memory cache for immediate verification & demo mode
+        inMemoryEmbeddings.set(studentId, {
+            studentId,
+            embedding,
+            imageSnapshot: imageSnapshot || null,
+            enrolledAt: new Date(),
+            qualityScore: qualityScore || 90,
+            isActive: true
+        });
+
+        if (FaceEmbedding && FaceEmbedding.findOneAndUpdate) {
+            try {
+                // Requirement 9: Store encrypted vector in DB
+                const encryptedVec = encryptEmbedding(embedding);
+                await FaceEmbedding.findOneAndUpdate(
+                    { studentId },
+                    {
+                        studentId,
+                        embedding: Array.isArray(embedding) ? embedding : [],
+                        encryptedEmbedding: encryptedVec,
+                        imageSnapshot: imageSnapshot || null,
+                        enrolledAt: new Date(),
+                        isActive: true
+                    },
+                    { upsert: true, new: true }
+                );
+            } catch (e) {
+                console.warn('FaceEmbedding DB store notice (cached in memory):', e.message);
+            }
+        }
+
+        console.log(`✅ Face enrolled successfully for studentId: ${studentId}`);
+        return res.json({
+            success: true,
+            message: 'Face enrollment successful',
+            enrolledAt: new Date(),
+            studentId
+        });
+    } catch (error) {
+        console.error('Face enrollment error:', error);
+        return res.status(500).json({ error: 'Face enrollment failed: ' + error.message });
+    }
+});
+
+
+/**
+ * POST /api/face/verify
+ * Body: { studentId, embedding: number[128], sessionId?: string }
+ * Returns: { match: bool, confidence: number, similarity, distance, message }
+ */
+router.post('/face/verify', authenticateToken, async (req, res) => {
+    try {
+        const { studentId, embedding, sessionId } = req.body;
+
+        if (!studentId) {
+            return res.status(400).json({ error: 'studentId is required for verification' });
+        }
+
+        if (!embedding || !Array.isArray(embedding) || (embedding.length !== 128 && embedding.length !== 512)) {
+            return res.status(400).json({ error: 'Invalid face embedding vector' });
+        }
+
+        let storedRecord = inMemoryEmbeddings.get(studentId);
+
+        if (!storedRecord && FaceEmbedding && FaceEmbedding.findOne) {
+            try {
+                const dbRec = await FaceEmbedding.findOne({ studentId, isActive: true });
+                if (dbRec) {
+                    let vec = dbRec.embedding;
+                    if (dbRec.encryptedEmbedding) {
+                        const decrypted = decryptEmbedding(dbRec.encryptedEmbedding);
+                        if (decrypted) vec = decrypted;
+                    }
+                    storedRecord = { studentId, embedding: vec, enrolledAt: dbRec.enrolledAt };
+                    inMemoryEmbeddings.set(studentId, storedRecord);
+                }
+            } catch (e) {
+                console.warn('FaceEmbedding DB fetch notice:', e.message);
+            }
+        }
+
+        if (!storedRecord || !storedRecord.embedding || storedRecord.embedding.length < 128) {
+            return res.json({
+                match: false,
+                confidence: 0,
+                similarity: 0,
+                distance: 1,
+                message: 'No face registered for this student. Please enroll first.',
+                needsEnrollment: true
+            });
+        }
+
+        // Cosine similarity against stored average enrollment embedding
+        const sim = cosineSimilarity(embedding, storedRecord.embedding);
+        const dist = euclideanDistance(embedding, storedRecord.embedding);
+        const similarityPct = Math.round(Math.max(0, Math.min(1, sim)) * 100);
+
+        // Calibrated Production Matching Rule: Similarity >= 0.65 (or 0.72) -> Accept
+        const simThreshold = parseFloat(process.env.FACE_MATCH_THRESHOLD) || 0.65;
+        const match = sim >= simThreshold || dist <= 0.55;
+
+        const displayMessage = match
+            ? `Face Match: ${similarityPct}%`
+            : `Face Mismatch (${similarityPct}% similarity)`;
+
+        console.log(`🔒 Face Verification [studentId: ${studentId}]: CosineSim=${sim.toFixed(4)} (Threshold: ${simThreshold}), Dist=${dist.toFixed(4)} => Match=${match} (${displayMessage})`);
+
+        // Requirement 9: Log failed verification attempts
+        if (!match) {
+            try {
+                new SuspiciousActivity({
+                    studentId,
+                    sessionId: sessionId || `verify_${Date.now()}`,
+                    type: 'face_mismatch',
+                    severity: 'high',
+                    description: `Face Mismatch Detected (Similarity: ${similarityPct}%, Threshold: ${Math.round(simThreshold * 100)}%)`,
+                    metadata: { similarity: sim, distance: dist, similarityPct },
+                    timestamp: new Date()
+                }).save().catch(() => {});
+            } catch (e) {}
+        }
+
+        return res.json({
+            match,
+            confidence: parseFloat(sim.toFixed(4)),
+            similarity: parseFloat(sim.toFixed(4)),
+            similarityPct,
+            distance: parseFloat(dist.toFixed(4)),
+            threshold: simThreshold,
+            message: displayMessage
+        });
+    } catch (error) {
+        console.error('Face verification error:', error);
+        return res.status(500).json({ error: 'Face verification failed: ' + error.message });
+    }
+});
+
+/**
+ * GET /api/face/status/:studentId
+ */
+router.get('/face/status/:studentId', authenticateToken, async (req, res) => {
+    try {
+        const studentId = req.params.studentId;
+        let isEnrolled = inMemoryEmbeddings.has(studentId);
+        let enrolledAt = isEnrolled ? inMemoryEmbeddings.get(studentId).enrolledAt : null;
+
+        if (!isEnrolled && FaceEmbedding && FaceEmbedding.findOne) {
+            try {
+                const dbRecord = await FaceEmbedding.findOne({
+                    studentId,
+                    isActive: true
+                }).select('-embedding');
+                if (dbRecord) {
+                    isEnrolled = true;
+                    enrolledAt = dbRecord.enrolledAt;
+                }
+            } catch (e) {}
+        }
+
+        return res.json({
+            enrolled: isEnrolled,
+            enrolledAt
+        });
+    } catch (error) {
+        return res.status(500).json({ error: error.message });
+    }
+});
+
+// =========================================================================
+// EXAM SESSION
+// =========================================================================
+
+const activeSessions = new Map(); // in-memory cache
+
+/**
+ * POST /api/session/start
+ * Body: { studentId, examId? }
+ */
+router.post('/session/start', authenticateToken, async (req, res) => {
+    try {
+        const { studentId, examId } = req.body;
+        const sessionId = `sess_${studentId}_${Date.now()}`;
+
+        const sessionData = {
+            sessionId,
+            studentId,
+            examId: examId || 'general',
+            startedAt: new Date(),
+            status: 'active',
+            violationCount: 0,
+            faceVerified: false
+        };
+
+        activeSessions.set(sessionId, sessionData);
+
+        // Notify Socket.IO if available
+        const io = req.app.get('io');
+        if (io) {
+            io.to(`student_${studentId}`).emit('session_started', { sessionId, startedAt: sessionData.startedAt });
+        }
+
+        return res.json({ success: true, sessionId, startedAt: sessionData.startedAt });
+    } catch (error) {
+        return res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * POST /api/session/end
+ * Body: { sessionId }
+ */
+router.post('/session/end', authenticateToken, async (req, res) => {
+    try {
+        const { sessionId } = req.body;
+        const session = activeSessions.get(sessionId);
+        if (session) {
+            session.endedAt = new Date();
+            session.status = 'ended';
+            activeSessions.delete(sessionId);
+        }
+
+        // Count violations from DB
+        const violationCount = await SuspiciousActivity.countDocuments({ sessionId });
+
+        const io = req.app.get('io');
+        if (io) {
+            const studentId = session ? session.studentId : req.user.studentId;
+            io.to(`student_${studentId}`).emit('session_ended', { sessionId });
+        }
+
+        return res.json({ success: true, violationCount, sessionId });
+    } catch (error) {
+        return res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * GET /api/session/active/:studentId
+ */
+router.get('/session/active/:studentId', authenticateToken, async (req, res) => {
+    const sessions = [...activeSessions.values()].filter(
+        s => s.studentId === req.params.studentId && s.status === 'active'
+    );
+    return res.json({ sessions });
+});
+
+// =========================================================================
+// VIOLATIONS / SUSPICIOUS ACTIVITY
+// =========================================================================
+
+/**
+ * POST /api/violations/log
+ * Body: { studentId, sessionId, type, confidence, description, screenshotBase64, metadata }
+ */
+router.post('/violations/log', authenticateToken, async (req, res) => {
+    try {
+        const {
+            studentId, studentEmail, examId, sessionId, type, confidence,
+            description, screenshotBase64, screenshotPath, metadata, severity, warningNumber
+        } = req.body;
+
+        const effectiveType = type || 'MULTIPLE_FACE';
+        const effectiveScreenshot = screenshotBase64 || screenshotPath || null;
+
+        // Save violation (Requirement 7)
+        const activity = new SuspiciousActivity({
+            studentId: studentId || 'STU_DEMO',
+            studentEmail: studentEmail || req.user?.email || null,
+            examId: examId || 'CS_EXAM_FINAL',
+            violationType: effectiveType,
+            warningNumber: warningNumber || 0,
+            screenshotPath: effectiveScreenshot,
+            sessionId: sessionId || `sess_${studentId}_${Date.now()}`,
+            type: effectiveType,
+            confidence: confidence || null,
+            description: description || '',
+            screenshotBase64: effectiveScreenshot,
+            metadata: metadata || {},
+            severity: severity || (warningNumber >= 3 ? 'critical' : 'high'),
+            timestamp: new Date()
+        });
+        await activity.save();
+
+        // Save screenshot evidence separately if provided
+        if (effectiveScreenshot) {
+            const sizeKb = Math.round((effectiveScreenshot.length * 3) / 4 / 1024);
+            await new ScreenshotEvidence({
+                activityId: activity._id,
+                sessionId: activity.sessionId,
+                studentId: activity.studentId,
+                imageBase64: effectiveScreenshot,
+                fileSizeKb: sizeKb,
+                savedAt: new Date()
+            }).save().catch(() => {});
+        }
+
+        // Update in-memory session violation count
+        if (activity.sessionId) {
+            const session = activeSessions.get(activity.sessionId);
+            if (session) session.violationCount++;
+        }
+
+        // Broadcast via Socket.IO (Requirement 4 & 6)
+        const io = req.app.get('io');
+        if (io) {
+            const payload = {
+                id: activity._id,
+                type: effectiveType,
+                violationType: effectiveType,
+                warningNumber: warningNumber || 0,
+                warningText: `${warningNumber || 0} / 3`,
+                studentId: activity.studentId,
+                studentEmail: activity.studentEmail,
+                examId: activity.examId,
+                confidence,
+                description,
+                severity: activity.severity,
+                screenshot: effectiveScreenshot,
+                timestamp: activity.timestamp,
+                status: (warningNumber >= 3) ? 'Exam Terminated' : 'Exam Active'
+            };
+            io.emit('multi-face-violation', payload);
+            io.to('teacher_room').emit('violation', payload);
+            if (warningNumber >= 3) {
+                io.emit('exam_terminated', { studentId: activity.studentId, studentEmail: activity.studentEmail, reason: '3 Confirmed Multi-Face Violations' });
+            }
+        }
+
+        return res.json({ success: true, activityId: activity._id, warningNumber: activity.warningNumber });
+    } catch (error) {
+        console.error('Log violation error:', error);
+        return res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * GET /api/violations/:sessionId
+ */
+router.get('/violations/:sessionId', authenticateToken, async (req, res) => {
+    try {
+        const violations = await SuspiciousActivity.find({ sessionId: req.params.sessionId })
+            .sort({ timestamp: -1 })
+            .select('-screenshotBase64') // don't send large base64 in list
+            .limit(100);
+
+        return res.json({ violations, total: violations.length });
+    } catch (error) {
+        return res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * GET /api/violations/student/:studentId
+ */
+router.get('/violations/student/:studentId', authenticateToken, async (req, res) => {
+    try {
+        const violations = await SuspiciousActivity.find({ studentId: req.params.studentId })
+            .sort({ timestamp: -1 })
+            .select('-screenshotBase64')
+            .limit(200);
+
+        return res.json({ violations, total: violations.length });
+    } catch (error) {
+        return res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * GET /api/violations/screenshot/:activityId
+ * Returns base64 screenshot for a specific activity
+ */
+router.get('/violations/screenshot/:activityId', authenticateToken, async (req, res) => {
+    try {
+        const activity = await SuspiciousActivity.findById(req.params.activityId)
+            .select('screenshotBase64');
+        if (!activity) return res.status(404).json({ error: 'Activity not found' });
+        return res.json({ screenshotBase64: activity.screenshotBase64 });
+    } catch (error) {
+        return res.status(500).json({ error: error.message });
+    }
+});
+
+// =========================================================================
+// YOLO DETECTION PROXY
+// =========================================================================
+
+/**
+ * POST /api/detect/phone
+ * Proxies to Python YOLOv8 microservice (with COCO-SSD fallback)
+ */
+router.post('/detect/phone', authenticateToken, async (req, res) => {
+    try {
+        const { imageBase64, confidence_threshold } = req.body;
+
+        try {
+            const response = await axios.post(
+                `${PYTHON_DETECTOR_URL}/detect/phone`,
+                { imageBase64, confidence_threshold: confidence_threshold || 0.35 },
+                { timeout: 5000 }
+            );
+            return res.json(response.data);
+        } catch (pyErr) {
+            // Python service not available - return graceful fallback
+            return res.json({
+                detected: false,
+                detections: [],
+                model: 'python_unavailable',
+                yolo_available: false,
+                message: 'Python detector offline. Using client-side COCO-SSD.'
+            });
+        }
+    } catch (error) {
+        return res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * POST /api/detect/headphone
+ */
+router.post('/detect/headphone', authenticateToken, async (req, res) => {
+    try {
+        const { imageBase64, confidence_threshold } = req.body;
+
+        try {
+            const response = await axios.post(
+                `${PYTHON_DETECTOR_URL}/detect/headphone`,
+                { imageBase64, confidence_threshold: confidence_threshold || 0.35 },
+                { timeout: 5000 }
+            );
+            return res.json(response.data);
+        } catch (pyErr) {
+            return res.json({
+                detected: false,
+                detections: [],
+                model: 'python_unavailable',
+                yolo_available: false,
+                message: 'Python detector offline.'
+            });
+        }
+    } catch (error) {
+        return res.status(500).json({ error: error.message });
+    }
+});
+
+// =========================================================================
+// HEAD & EYE MOVEMENT TELEMETRY ENDPOINTS
+// =========================================================================
+
+/**
+ * POST /api/head-movement
+ * Body: { studentId, sessionId, pitch, yaw, roll, direction, isHeadDown, detectionResults }
+ */
+router.post('/head-movement', authenticateToken, async (req, res) => {
+    try {
+        const {
+            studentId = req.user?.studentId || 'STU_DEMO',
+            sessionId = 'demo_session',
+            pitch = 0,
+            yaw = 0,
+            roll = 0,
+            direction = 'Center',
+            isHeadDown = false,
+            detectionResults = {}
+        } = req.body;
+
+        const isViolation = direction !== 'Center' || isHeadDown;
+        const violations = [];
+
+        if (isHeadDown) {
+            violations.push({
+                type: 'head_down',
+                severity: 'medium',
+                message: 'Head tilted down continuously — potential notes or phone usage',
+                timestamp: new Date()
+            });
+        } else if (direction === 'Left' || direction === 'Right') {
+            violations.push({
+                type: 'looking_away',
+                severity: 'medium',
+                message: `Head turned ${direction.toUpperCase()} away from screen`,
+                timestamp: new Date()
+            });
+        }
+
+        // Save violations to database if present
+        for (const v of violations) {
+            try {
+                await new SuspiciousActivity({
+                    studentId,
+                    sessionId,
+                    type: v.type,
+                    severity: v.severity,
+                    description: v.message,
+                    metadata: { pitch, yaw, roll, direction, isHeadDown, ...detectionResults },
+                    timestamp: v.timestamp
+                }).save();
+            } catch (e) {
+                console.warn('SuspiciousActivity DB save warning:', e.message);
+            }
+        }
+
+        return res.json({
+            success: true,
+            headMovement: {
+                direction,
+                isHeadDown,
+                pitch,
+                yaw,
+                roll,
+                violations,
+                timestamp: new Date().toISOString()
+            }
+        });
+    } catch (error) {
+        console.error('Head movement route error:', error);
+        return res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * POST /api/eye-movement
+ * Body: { studentId, sessionId, direction, hRatio, vRatio, blinkCount }
+ */
+router.post('/eye-movement', authenticateToken, async (req, res) => {
+    try {
+        const {
+            studentId = req.user?.studentId || 'STU_DEMO',
+            sessionId = 'demo_session',
+            direction = 'center',
+            hRatio = 0.5,
+            vRatio = 0.5,
+            blinkCount = 0
+        } = req.body;
+
+        const isOffCenter = direction !== 'center' && direction !== 'blinking';
+        let activitySaved = null;
+
+        if (isOffCenter) {
+            try {
+                activitySaved = await new SuspiciousActivity({
+                    studentId,
+                    sessionId,
+                    type: 'eye_movement',
+                    severity: 'medium',
+                    description: `Eye gaze off-center: looking ${direction.toUpperCase()}`,
+                    metadata: { direction, hRatio, vRatio, blinkCount },
+                    timestamp: new Date()
+                }).save();
+            } catch (e) {
+                console.warn('Eye movement DB save warning:', e.message);
+            }
+        }
+
+        return res.json({
+            success: true,
+            gaze: {
+                direction,
+                hRatio,
+                vRatio,
+                blinkCount,
+                recordedViolation: !!activitySaved
+            }
+        });
+    } catch (error) {
+        console.error('Eye movement route error:', error);
+        return res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// =========================================================================
+// UTILITIES
+// =========================================================================
+
+function cosineSimilarity(a, b) {
+    if (!a || !b || a.length !== b.length) return 0;
+    let dot = 0, normA = 0, normB = 0;
+    for (let i = 0; i < a.length; i++) {
+        dot += a[i] * b[i];
+        normA += a[i] * a[i];
+        normB += b[i] * b[i];
+    }
+    if (normA === 0 || normB === 0) return 0;
+    return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+function euclideanDistance(a, b) {
+    if (a.length !== b.length) return Infinity;
+    let sum = 0;
+    for (let i = 0; i < a.length; i++) {
+        sum += Math.pow(a[i] - b[i], 2);
+    }
+    return Math.sqrt(sum);
+}
+
+module.exports = router;

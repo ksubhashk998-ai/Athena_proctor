@@ -520,6 +520,18 @@ export function evaluateFrameMetrics(videoElement, detection) {
     };
 }
 
+export function compareDescriptors(a, b, threshold = 0.68) {
+    if (!a || !b || a.length !== b.length) return { match: false, distance: 1.0, similarity: 0 };
+    const sim = cosineSimilarity(a, b);
+    const distance = parseFloat((1 - sim).toFixed(4));
+    return {
+        match: sim >= threshold,
+        distance,
+        similarity: parseFloat(sim.toFixed(4)),
+        confidence: Math.round(sim * 100)
+    };
+}
+
 export function computeAverageEmbedding(descriptors) {
     if (!descriptors || !Array.isArray(descriptors) || descriptors.length === 0) return null;
     const len = descriptors[0].length;

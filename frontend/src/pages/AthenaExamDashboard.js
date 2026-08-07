@@ -68,6 +68,11 @@ function AthenaExamDashboard() {
   const [violationsCount, setViolationsCount] = useState(0);
   const [voiceDetected, setVoiceDetected] = useState(false);
 
+  // Tab Switch & Exam Termination States
+  const [isTerminated, setIsTerminated] = useState(false);
+  const [terminationReason, setTerminationReason] = useState('');
+  const [tabSwitchWarning, setTabSwitchWarning] = useState({ open: false, count: 0, max: 3, message: '' });
+
   const [eyeTrackingState, setEyeTrackingState] = useState({
     status: 'green',
     value: 'Center',
@@ -720,17 +725,69 @@ function AthenaExamDashboard() {
 
     // Tab switch & visibility detection
     const handleVisibilityChange = () => {
-      if (document.hidden) {
+      if (document.hidden && !isTerminated) {
         setTabSwitchesCount(prev => {
           const nextCount = prev + 1;
-          recordViolation(`⚠️ Tab / Window Switch Detected (${nextCount}/3)`);
+          const maxSwitches = 3;
 
-          // Rule: Max 3 tab switches -> Auto Submit Exam
-          if (nextCount >= 3) {
-            recordViolation('🚨 Maximum 3 tab switches reached! Auto-submitting exam attempt...');
-            setTimeout(() => {
-              setIsSubmitModalOpen(true);
-            }, 800);
+          recordViolation(`⚠️ Tab / Window Switch Violation (${nextCount}/${maxSwitches})`);
+
+          if (nextCount >= maxSwitches) {
+            // Rule: Maximum tab switches reached -> TERMINATE EXAM IMMEDIATELY
+            setIsTerminated(true);
+            setTerminationReason(`Maximum ${maxSwitches} Tab Switches Exceeded`);
+            recordViolation(`🚨 EXAM TERMINATED: Maximum ${maxSwitches} tab switches reached! Session locked.`);
+
+            // Log permanent cheating & session termination record to backend
+            const userStr = localStorage.getItem('user');
+            let studentName = 'Student';
+            let studentId = 'STU_' + Date.now();
+            let email = 'student@proctor.com';
+            if (userStr) {
+              try {
+                const u = JSON.parse(userStr);
+                studentName = u.name || studentName;
+                studentId = u.studentId || studentId;
+                email = u.email || email;
+              } catch (e) {}
+            }
+
+            const termPayload = {
+              studentId,
+              studentName,
+              email,
+              examId: 'CS-401',
+              violationType: 'MAX_TAB_SWITCHES_EXCEEDED',
+              tabSwitchCount: nextCount,
+              actionTaken: 'EXAM_TERMINATED',
+              terminated: true,
+              timestamp: new Date().toISOString()
+            };
+
+            const apiBase = getApiBaseUrl();
+            fetch(`${apiBase}/api/face/cheating-log`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(termPayload)
+            }).catch(() => {});
+
+            fetch(`${apiBase}/api/admin/live-session`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                ...termPayload,
+                status: 'Terminated',
+                riskLevel: 'High'
+              })
+            }).catch(() => {});
+          } else {
+            // Popup warning modal for each non-fatal tab switch violation
+            setTabSwitchWarning({
+              open: true,
+              count: nextCount,
+              max: maxSwitches,
+              message: `Navigating away from the exam tab is strictly prohibited! Warning ${nextCount} of ${maxSwitches}. Remaining allowed attempts: ${maxSwitches - nextCount}.`
+            });
           }
 
           return nextCount;
@@ -970,6 +1027,89 @@ function AthenaExamDashboard() {
               }}
             >
               Return to Student Dashboard ➔
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ⚠️ Tab Switch Warning Popup Modal */}
+      {tabSwitchWarning.open && !isTerminated && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(15, 23, 42, 0.85)',
+          backdropFilter: 'blur(10px)',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          zIndex: 99999
+        }}>
+          <div style={{
+            background: 'linear-gradient(145deg, #1e293b, #0f172a)',
+            border: '2px solid #f59e0b',
+            borderRadius: '20px',
+            padding: '36px',
+            maxWidth: '520px',
+            width: '90%',
+            textAlign: 'center',
+            boxShadow: '0 25px 50px -12px rgba(245, 158, 11, 0.35)',
+            color: '#ffffff'
+          }}>
+            <div style={{
+              width: '70px',
+              height: '70px',
+              borderRadius: '50%',
+              backgroundColor: 'rgba(245, 158, 11, 0.2)',
+              border: '2px solid #f59e0b',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              margin: '0 auto 20px',
+              fontSize: '32px',
+              color: '#f59e0b'
+            }}>
+              ⚠️
+            </div>
+
+            <h2 style={{ fontSize: '1.6rem', fontWeight: 800, color: '#f59e0b', marginBottom: '12px' }}>
+              TAB SWITCH WARNING ({tabSwitchWarning.count}/{tabSwitchWarning.max})
+            </h2>
+
+            <p style={{ color: '#cbd5e1', fontSize: '1rem', lineHeight: '1.6', marginBottom: '24px' }}>
+              {tabSwitchWarning.message}
+            </p>
+
+            <div style={{
+              background: 'rgba(245, 158, 11, 0.1)',
+              border: '1px solid rgba(245, 158, 11, 0.3)',
+              borderRadius: '12px',
+              padding: '12px 16px',
+              marginBottom: '28px',
+              fontSize: '0.9rem',
+              color: '#fbbf24'
+            }}>
+              🚨 <strong>Strict Rule:</strong> Reaching 3 tab switches will immediately terminate your exam session permanently!
+            </div>
+
+            <button
+              onClick={() => setTabSwitchWarning(prev => ({ ...prev, open: false }))}
+              style={{
+                width: '100%',
+                background: 'linear-gradient(135deg, #f59e0b, #d97706)',
+                color: '#ffffff',
+                border: 'none',
+                padding: '14px 24px',
+                borderRadius: '12px',
+                fontSize: '1rem',
+                fontWeight: 700,
+                cursor: 'pointer',
+                boxShadow: '0 4px 14px rgba(245, 158, 11, 0.4)'
+              }}
+            >
+              I Understand — Resume Exam ➔
             </button>
           </div>
         </div>

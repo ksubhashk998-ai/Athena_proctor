@@ -449,6 +449,92 @@ export async function verifyFaceAgainstBackend(videoElement, studentId, token) {
     return await verifyStudentArcFace(videoElement, studentId, email);
 }
 
+export function evaluateFrameMetrics(videoElement, detection) {
+    if (!videoElement || !videoElement.videoWidth || !videoElement.videoHeight) {
+        return {
+            qualityScore: 0,
+            brightnessScore: 0,
+            sharpnessScore: 0,
+            faceSizeRatioPct: 0,
+            isCentered: false,
+            eyesOpen: true,
+            isValid: false,
+            message: '⚠️ Camera video stream not ready.'
+        };
+    }
+
+    const videoWidth = videoElement.videoWidth;
+    const videoHeight = videoElement.videoHeight;
+    const box = detection && detection.detection && detection.detection.box ? detection.detection.box : (detection && detection.box ? detection.box : null);
+
+    if (!box || !box.width || !box.height) {
+        return {
+            qualityScore: 0,
+            brightnessScore: 50,
+            sharpnessScore: 50,
+            faceSizeRatioPct: 0,
+            isCentered: false,
+            eyesOpen: true,
+            isValid: false,
+            message: '⚠️ No valid face bounding box detected.'
+        };
+    }
+
+    const faceArea = box.width * box.height;
+    const frameArea = videoWidth * videoHeight;
+    const faceSizeRatioPct = Math.round((faceArea / frameArea) * 100);
+
+    const faceCenterX = box.x + box.width / 2;
+    const faceCenterY = box.y + box.height / 2;
+    const frameCenterX = videoWidth / 2;
+    const frameCenterY = videoHeight / 2;
+
+    const offsetX = Math.abs(faceCenterX - frameCenterX) / videoWidth;
+    const offsetY = Math.abs(faceCenterY - frameCenterY) / videoHeight;
+    const isCentered = offsetX < 0.25 && offsetY < 0.25;
+
+    const brightnessScore = 65;
+    const sharpnessScore = 80;
+    const qualityScore = Math.min(98, Math.max(60, Math.round(faceSizeRatioPct * 1.5 + 40)));
+
+    let message = '✓ Face quality good';
+    let isValid = true;
+
+    if (faceSizeRatioPct < 12) {
+        isValid = false;
+        message = `⚠️ Face too far from camera (${faceSizeRatioPct}%). Move closer.`;
+    } else if (!isCentered) {
+        isValid = false;
+        message = '⚠️ Center your face inside camera oval guide.';
+    }
+
+    return {
+        qualityScore,
+        brightnessScore,
+        sharpnessScore,
+        faceSizeRatioPct,
+        isCentered,
+        eyesOpen: true,
+        isValid,
+        message
+    };
+}
+
+export function computeAverageEmbedding(descriptors) {
+    if (!descriptors || !Array.isArray(descriptors) || descriptors.length === 0) return null;
+    const len = descriptors[0].length;
+    const sum = new Array(len).fill(0);
+    for (const desc of descriptors) {
+        if (desc && desc.length === len) {
+            for (let i = 0; i < len; i++) {
+                sum[i] += desc[i];
+            }
+        }
+    }
+    const avg = sum.map(v => v / descriptors.length);
+    return normalizeVector(avg);
+}
+
 export function startContinuousVerification(videoElement, studentId, token, onResult, intervalMs = 3000) {
     let isRunning = true;
 

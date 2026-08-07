@@ -155,7 +155,6 @@ export function estimateHeadPose(landmarks) {
     const noseTip = pos[30];
     const leftEye = pos[36];
     const rightEye = pos[45];
-    const chin = pos[8];
 
     const eyeCenter = {
         x: (leftEye.x + rightEye.x) / 2,
@@ -236,7 +235,6 @@ export async function detectAntiSpoofing(videoElement) {
 export async function captureEnrollment30Frames(videoElement, onProgress) {
     if (!modelsLoaded) await loadFaceModels();
 
-    const requiredAngles = ['front', 'left', 'right', 'up', 'down'];
     const targetFrames = 30;
     const capturedEmbeddings = [];
     const capturedImages = [];
@@ -402,8 +400,7 @@ export async function verifyStudentArcFace(videoElement, studentId, email) {
                 sumSim += frameMax;
 
                 if (frameMax >= 0.75) verifiedCount++;
-                else if (frameMax >= 0.60) suspiciousCount++;
-                else rejectCount++;
+                else if (frameMax < 0.60) rejectCount++;
             }
 
             const avgSim = sumSim / liveFrames.length;

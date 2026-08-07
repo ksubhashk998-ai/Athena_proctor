@@ -387,7 +387,6 @@ export async function verifyStudentArcFace(videoElement, studentId, email) {
             let bestSim = 0.0;
             let sumSim = 0.0;
             let verifiedCount = 0;
-            let suspiciousCount = 0;
             let rejectCount = 0;
 
             for (const liveVec of liveFrames) {

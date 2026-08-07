@@ -302,44 +302,34 @@ export default function Register() {
         localStorage.setItem('registered_name', `${formData.firstName} ${formData.lastName}`);
         setTimeout(() => {
           navigate('/');
-        }, 1500);
+        }, 1200);
+        return;
       } else if (res.status === 400 && data.error && data.error.includes('already exists')) {
         setApiError(data.error);
-      } else {
-        // Fallback for preview / cross-laptop deployments: register student in browser storage
-        const studentUser = {
-          email: formData.email,
-          name: `${formData.firstName} ${formData.lastName}`,
-          faceEnrolled: true,
-          faceEmbeddings: enrolledEmbedding
-        };
-        localStorage.setItem(`student_${formData.email}`, JSON.stringify(studentUser));
-        localStorage.setItem('user', JSON.stringify(studentUser));
-        localStorage.setItem('registered_email', formData.email);
-        localStorage.setItem('registered_name', `${formData.firstName} ${formData.lastName}`);
-        setApiSuccess('🎉 Account registered successfully! Redirecting to login...');
-        setTimeout(() => {
-          navigate('/');
-        }, 1500);
+        setIsSubmitting(false);
+        return;
       }
     } catch (err) {
-      console.warn('Registration API network error, falling back to local registration:', err);
-      const studentUser = {
-        email: formData.email,
-        name: `${formData.firstName} ${formData.lastName}`,
-        faceEnrolled: true,
-        faceEmbeddings: enrolledEmbedding
-      };
-      localStorage.setItem(`student_${formData.email}`, JSON.stringify(studentUser));
-      localStorage.setItem('user', JSON.stringify(studentUser));
-      localStorage.setItem('registered_email', formData.email);
-      setApiSuccess('🎉 Account registered successfully! Redirecting to login...');
-      setTimeout(() => {
-        navigate('/');
-      }, 1500);
-    } finally {
-      setIsSubmitting(false);
+      console.warn('Registration API network notice, using local storage fallback:', err);
     }
+
+    // Unbreakable Fallback for Vercel / Cross-Laptop Preview: Register student in browser storage
+    const studentUser = {
+      email: formData.email,
+      name: `${formData.firstName} ${formData.lastName}`,
+      faceEnrolled: true,
+      faceEmbeddings: enrolledEmbedding
+    };
+    localStorage.setItem(`student_${formData.email}`, JSON.stringify(studentUser));
+    localStorage.setItem('user', JSON.stringify(studentUser));
+    localStorage.setItem('registered_email', formData.email);
+    localStorage.setItem('registered_name', `${formData.firstName} ${formData.lastName}`);
+
+    setApiSuccess('🎉 Account registered successfully! Redirecting to login...');
+    setTimeout(() => {
+      navigate('/');
+    }, 1200);
+    setIsSubmitting(false);
   };
 
   return (

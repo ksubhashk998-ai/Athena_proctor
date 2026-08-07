@@ -10,8 +10,13 @@ import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
 import LiveMonitoringPage from './pages/LiveMonitoringPage';
 import StudentDetailPage from './pages/StudentDetailPage';
+import ViolationsPage from './pages/ViolationsPage';
+import TerminatedStudentsPage from './pages/TerminatedStudentsPage';
+import FinishedStudentsPage from './pages/FinishedStudentsPage';
+import ActivityHistoryPage from './pages/ActivityHistoryPage';
 import ReportsPage from './pages/ReportsPage';
 import AnalyticsPage from './pages/AnalyticsPage';
+import SettingsPage from './pages/SettingsPage';
 
 // Protected Route Guard
 const ProtectedRoute = ({ children }) => {
@@ -49,8 +54,13 @@ export const App = () => {
                 <Route path="/" element={<DashboardPage />} />
                 <Route path="/live" element={<LiveMonitoringPage />} />
                 <Route path="/student/:id" element={<StudentDetailPage />} />
+                <Route path="/violations" element={<ViolationsPage />} />
+                <Route path="/terminated" element={<TerminatedStudentsPage />} />
+                <Route path="/finished" element={<FinishedStudentsPage />} />
+                <Route path="/history" element={<ActivityHistoryPage />} />
                 <Route path="/reports" element={<ReportsPage />} />
                 <Route path="/analytics" element={<AnalyticsPage />} />
+                <Route path="/settings" element={<SettingsPage />} />
               </Route>
 
               {/* Fallback */}

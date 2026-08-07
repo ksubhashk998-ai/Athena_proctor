@@ -58,12 +58,13 @@ export default function FaceEnrollment({ studentId, token, onEnrolled, onSkip })
 
     const interval = setInterval(async () => {
       const video = webcamRef.current?.video;
-      if (!video || video.readyState < 2 || !areModelsReady()) return;
+      if (!video || video.readyState < 4 || !video.videoWidth || !video.videoHeight || video.paused || !areModelsReady()) return;
 
       try {
-        const detections = await faceapi
+        const rawDets = await faceapi
           .detectAllFaces(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.35 }))
           .withFaceLandmarks();
+        const detections = (rawDets || []).filter(d => d && d.detection && d.detection.box && d.detection.box.width > 0);
 
         if (detections.length === 0) {
           setTelemetry(prev => ({ ...prev, qualityScore: 0, message: '⚠️ No face detected. Position yourself in camera center.' }));

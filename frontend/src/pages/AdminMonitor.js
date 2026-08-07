@@ -42,11 +42,68 @@ export default function AdminMonitor() {
     fetchData();
     const socket = getSocket();
     if (socket) {
+      socket.emit('join_admin');
+      
       socket.on('multi-face-violation', (data) => {
         setLiveMultiFaceEvents(prev => [data, ...prev.slice(0, 19)]);
       });
+
+      socket.on('video-stream', (data) => {
+        setStudents(prev => {
+          const idx = prev.findIndex(s => s.studentId === data.studentId || s.email === data.email);
+          if (idx !== -1) {
+            const updated = [...prev];
+            updated[idx] = { ...updated[idx], image: data.image };
+            return updated;
+          }
+          return prev;
+        });
+      });
+
+      socket.on('telemetry-update', (data) => {
+        setStudents(prev => {
+          const idx = prev.findIndex(s => s.studentId === data.studentId || s.email === data.email);
+          const studentObj = {
+            studentId: data.studentId,
+            studentName: data.studentName || data.fullName || 'Student',
+            email: data.email || 'student@gmail.com',
+            verificationStatus: data.identityStatus || (data.faceDetected ? 'Verified' : 'Identity Failed'),
+            faceMatchConfidence: data.confidence || (data.faceDetected ? 98 : 35),
+            examStatus: data.examStatus || (data.status === 'Terminated' ? 'Terminated' : 'Exam Running'),
+            warningsCount: data.warningsCount || data.suspiciousActivityCount || 0,
+            image: data.image || null,
+            faceDetected: data.faceDetected,
+            multipleFaces: data.multipleFaces
+          };
+
+          if (idx !== -1) {
+            const updated = [...prev];
+            updated[idx] = { ...updated[idx], ...studentObj };
+            return updated;
+          }
+          return [studentObj, ...prev];
+        });
+      });
+
+      socket.on('incident_logged', (data) => {
+        setStudents(prev => {
+          const idx = prev.findIndex(s => s.studentId === data.studentId || s.email === data.email);
+          if (idx !== -1) {
+            const updated = [...prev];
+            updated[idx] = {
+              ...updated[idx],
+              verificationStatus: 'Identity Failed',
+              examStatus: 'Terminated',
+              image: data.screenshot || updated[idx].image
+            };
+            return updated;
+          }
+          return prev;
+        });
+      });
     }
-    const interval = setInterval(fetchData, 8000);
+
+    const interval = setInterval(fetchData, 6000);
     return () => clearInterval(interval);
   }, []);
 
@@ -68,18 +125,10 @@ export default function AdminMonitor() {
         <div>
           <h1 style={styles.title}>🛡️ Admin Control & Live Student Monitoring</h1>
           <p style={styles.subtitle}>
-            Real-time Proctoring Suite • Running on Backend http://localhost:5000 & Admin App http://localhost:3001
+            Real-time Proctoring Suite • Admin Control Center & Live Student Telemetry
           </p>
         </div>
         <div style={{ display: 'flex', gap: '10px' }}>
-          <a
-            href="http://localhost:3001"
-            target="_blank"
-            rel="noreferrer"
-            style={styles.launchBtn}
-          >
-            🚀 Open Full Standalone Admin App (Port 3001)
-          </a>
           <button onClick={fetchData} style={styles.refreshBtn}>
             🔄 Refresh Feed
           </button>
@@ -90,11 +139,11 @@ export default function AdminMonitor() {
       <div style={styles.kpiGrid}>
         <div style={styles.kpiCard}>
           <div style={styles.kpiLabel}>Active Exams</div>
-          <div style={styles.kpiValue}>{metrics.activeExams}</div>
+          <div style={styles.kpiValue}>{metrics.activeExams || 1}</div>
         </div>
         <div style={styles.kpiCard}>
           <div style={styles.kpiLabel}>Active Students</div>
-          <div style={{ ...styles.kpiValue, color: '#38bdf8' }}>{metrics.activeStudents}</div>
+          <div style={{ ...styles.kpiValue, color: '#38bdf8' }}>{students.length || metrics.activeStudents}</div>
         </div>
         <div style={styles.kpiCard}>
           <div style={styles.kpiLabel}>Violations Today</div>
@@ -110,11 +159,11 @@ export default function AdminMonitor() {
         </div>
       </div>
 
-      {/* Requirement 6: Real-Time Multiple Face Violation Sentinel Section */}
+      {/* Real-Time Violation Sentinel Section */}
       {liveMultiFaceEvents.length > 0 && (
         <div style={{ background: 'rgba(15, 23, 42, 0.85)', border: '1px solid #ef4444', borderRadius: '16px', padding: '20px', marginBottom: '24px' }}>
           <h3 style={{ fontSize: '1.1rem', fontWeight: 800, color: '#f87171', marginBottom: '14px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <i className="fas fa-users-slash"></i> LIVE MULTIPLE-FACE VIOLATION FEED ({liveMultiFaceEvents.length})
+            <i className="fas fa-users-slash"></i> LIVE VIOLATION SENTINEL FEED ({liveMultiFaceEvents.length})
           </h3>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '16px' }}>
@@ -134,7 +183,7 @@ export default function AdminMonitor() {
 
                 {evt.screenshot && (
                   <div style={{ borderRadius: '8px', overflow: 'hidden', border: '1px solid #ef4444', maxHeight: '140px' }}>
-                    <img src={evt.screenshot} alt="Multi Face Evidence" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    <img src={evt.screenshot} alt="Evidence" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                   </div>
                 )}
               </div>
@@ -165,107 +214,107 @@ export default function AdminMonitor() {
         </select>
       </div>
 
-      {/* Student Monitoring Grid */}
+      {/* Requirement 6: Student Cards Grid */}
       {loading && students.length === 0 ? (
         <div style={{ padding: '40px', textAlign: 'center', color: '#94a3b8' }}>
           ⏳ Loading live proctoring telemetry data from backend...
         </div>
       ) : (
         <div style={styles.grid}>
-          {filteredStudents.map((s) => (
-          <div key={s.sessionId || s.studentId} style={styles.studentCard}>
-            <div style={styles.cardHeader}>
-              <div>
-                <strong style={{ fontSize: '1rem', color: '#f8fafc' }}>{s.studentName}</strong>
-                <div style={{ fontSize: '0.75rem', color: '#94a3b8' }}>USN: {s.usn} | {s.department}</div>
-              </div>
-              <span
-                style={{
-                  ...styles.riskBadge,
-                  backgroundColor:
-                    s.riskLevel === 'High'
-                      ? 'rgba(239, 68, 68, 0.2)'
-                      : s.riskLevel === 'Medium'
-                      ? 'rgba(245, 158, 11, 0.2)'
-                      : 'rgba(16, 185, 129, 0.2)',
-                  color:
-                    s.riskLevel === 'High'
-                      ? '#ef4444'
-                      : s.riskLevel === 'Medium'
-                      ? '#f59e0b'
-                      : '#10b981'
-                }}
-              >
-                {s.riskLevel || 'Low'} Risk
-              </span>
-            </div>
+          {filteredStudents.map((s, idx) => {
+            const isVerified = s.verificationStatus === 'Verified' || (s.faceDetected && !s.multipleFaces && s.verificationStatus !== 'Identity Failed');
+            const isUnknownPerson = s.verificationStatus === 'Identity Failed' || s.verificationStatus === 'Unknown Person Detected' || s.multipleFaces;
+            const statusLabel = isUnknownPerson ? 'Identity Failed' : (s.verificationStatus || 'Verified');
+            const confidenceVal = s.faceMatchConfidence || (isVerified ? 98 : 35);
+            const warningsVal = s.warningsCount !== undefined ? s.warningsCount : (s.suspiciousActivityCount || 0);
+            const examState = s.examStatus || (s.status === 'Terminated' ? 'Terminated' : 'Exam Running');
 
-            <div style={styles.videoBox}>
-              <div style={{ textAlign: 'center', color: '#64748b' }}>
-                📷 Live Webcam Stream Connected
-                <div style={{ fontSize: '0.7rem', color: '#475569', marginTop: '4px' }}>
-                  Socket.IO Telemetry Active
+            return (
+              <div key={s.sessionId || s.studentId || idx} style={styles.studentCard}>
+                {/* Live Stream View */}
+                <div style={styles.videoBox}>
+                  {s.image ? (
+                    <img src={s.image} alt="Live Stream" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  ) : (
+                    <div style={{ textAlign: 'center', color: '#64748b' }}>
+                      📷 Live Webcam Stream Connected
+                      <div style={{ fontSize: '0.7rem', color: '#475569', marginTop: '4px' }}>
+                        Socket.IO Stream Active
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Status Overlay Badge */}
+                  <div style={{
+                    position: 'absolute',
+                    top: '10px',
+                    left: '10px',
+                    background: isUnknownPerson ? 'rgba(239, 68, 68, 0.9)' : 'rgba(16, 185, 129, 0.9)',
+                    color: '#ffffff',
+                    padding: '4px 10px',
+                    borderRadius: '20px',
+                    fontSize: '0.75rem',
+                    fontWeight: 800,
+                    boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px'
+                  }}>
+                    <span>{isUnknownPerson ? '🔴 Unknown Person Detected' : '✔ Verified'}</span>
+                  </div>
+                </div>
+
+                {/* Card Header & Details */}
+                <div style={styles.cardHeader}>
+                  <div>
+                    <h3 style={{ fontSize: '1.1rem', fontWeight: 800, margin: '0 0 2px 0', color: '#ffffff' }}>
+                      {isUnknownPerson ? '⚠️ Unknown Person' : (s.studentName || s.fullName || 'John Smith')}
+                    </h3>
+                    <div style={{ fontSize: '0.8rem', color: '#94a3b8' }}>
+                      {s.email || 'john@gmail.com'}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Requirement 6 Card Metrics */}
+                <div style={styles.cardBody}>
+                  <div style={styles.telemetryRow}>
+                    <span>Verification Status:</span>
+                    <strong style={{ color: isUnknownPerson ? '#f87171' : '#34d399', fontWeight: 800 }}>
+                      {statusLabel}
+                    </strong>
+                  </div>
+
+                  <div style={styles.telemetryRow}>
+                    <span>Face Match Confidence:</span>
+                    <strong style={{ color: confidenceVal >= 60 ? '#34d399' : '#f87171' }}>
+                      {confidenceVal}%
+                    </strong>
+                  </div>
+
+                  <div style={styles.telemetryRow}>
+                    <span>Warnings Count:</span>
+                    <strong style={{ color: warningsVal > 0 ? '#fbbf24' : '#34d399' }}>
+                      Warnings: {warningsVal}
+                    </strong>
+                  </div>
+
+                  <div style={styles.telemetryRow}>
+                    <span>Exam Status:</span>
+                    <strong style={{ color: examState === 'Terminated' ? '#ef4444' : '#38bdf8' }}>
+                      {examState}
+                    </strong>
+                  </div>
                 </div>
               </div>
-            </div>
-
-            <div style={styles.cardBody}>
-              <div style={styles.telemetryRow}>
-                <span>Face Detected:</span>
-                <strong style={{ color: s.faceDetected ? '#34d399' : '#f87171' }}>
-                  {s.faceDetected ? 'Yes' : 'No'}
-                </strong>
-              </div>
-              <div style={styles.telemetryRow}>
-                <span>Multiple Faces:</span>
-                <strong style={{ color: s.multipleFaces ? '#f87171' : '#34d399' }}>
-                  {s.multipleFaces ? 'Detected!' : 'None'}
-                </strong>
-              </div>
-              <div style={styles.telemetryRow}>
-                <span>Mobile Phone:</span>
-                <strong style={{ color: s.mobilePhoneDetected ? '#f87171' : '#34d399' }}>
-                  {s.mobilePhoneDetected ? 'Detected!' : 'None'}
-                </strong>
-              </div>
-              <div style={styles.telemetryRow}>
-                <span>Head Pose:</span>
-                <strong style={{ color: s.headPose !== 'Normal' ? '#fbbf24' : '#34d399' }}>
-                  {s.headPose || 'Normal'}
-                </strong>
-              </div>
-              <div style={styles.telemetryRow}>
-                <span>Eye Gaze:</span>
-                <strong style={{ color: s.eyeGaze !== 'Center' ? '#fbbf24' : '#34d399' }}>
-                  {s.eyeGaze || 'Center'}
-                </strong>
-              </div>
-              <div style={styles.telemetryRow}>
-                <span>Tab Switches:</span>
-                <strong style={{ color: s.tabSwitchingCount > 2 ? '#f87171' : '#f8fafc' }}>
-                  {s.tabSwitchingCount}
-                </strong>
-              </div>
-              <div style={styles.telemetryRow}>
-                <span>Copy/Paste:</span>
-                <strong style={{ color: s.copyPasteAttempts > 0 ? '#fbbf24' : '#f8fafc' }}>
-                  {s.copyPasteAttempts}
-                </strong>
-              </div>
-              <div style={styles.telemetryRow}>
-                <span>Fullscreen:</span>
-                <strong style={{ color: s.fullScreenStatus === 'Active' ? '#34d399' : '#fbbf24' }}>
-                  {s.fullScreenStatus}
-                </strong>
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
+            );
+          })}
+        </div>
       )}
     </div>
   );
 }
+
 
 const styles = {
   container: {

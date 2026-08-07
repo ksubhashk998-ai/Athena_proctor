@@ -117,12 +117,17 @@ const Proctoring = () => {
               return;
             }
 
+            if (!videoRef.current || videoRef.current.readyState < 4 || !videoRef.current.videoWidth || !videoRef.current.videoHeight || videoRef.current.paused) {
+              return;
+            }
+
             try {
               // 👤 Face Detection
-              const detections = await faceapi.detectAllFaces(
+              const rawDets = await faceapi.detectAllFaces(
                 videoRef.current,
                 new faceapi.TinyFaceDetectorOptions()
               );
+              const detections = (rawDets || []).filter(d => d && d.box && d.box.width > 0);
 
               if (detections.length > 1) {
                 setStatus("⚠️ Multiple Faces Detected");

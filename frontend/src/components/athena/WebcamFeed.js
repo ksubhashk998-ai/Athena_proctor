@@ -2,11 +2,35 @@ import React, { useEffect, useRef, useState } from 'react';
 import proctoringPipeline from '../../services/proctoringPipeline';
 import { getSocket } from '../../services/socketService';
 
-function WebcamFeed({ isProctoringActive, onDetectionUpdate, onViolationTriggered }) {
+function WebcamFeed({ isProctoringActive, onDetectionUpdate, onViolationTriggered, identityVerification }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const [modelStatus, setModelStatus] = useState('Initializing MediaPipe Face Mesh...');
   const lastViolationTimes = useRef({});
+  const [fps, setFps] = useState(30);
+  const lastFrameTimeRef = useRef(Date.now());
+  const [personCount, setPersonCount] = useState(1);
+  const [faceConfidence, setFaceConfidence] = useState(98);
+
+  // Active student profile from MongoDB / Auth
+  const activeStudent = (() => {
+    try {
+      const stored = localStorage.getItem('user');
+      if (stored) return JSON.parse(stored);
+    } catch (e) {}
+    return null;
+  })();
+
+  const studentName = (() => {
+    if (identityVerification?.studentName) return identityVerification.studentName;
+    if (activeStudent?.firstName && activeStudent?.lastName) {
+      return `${activeStudent.firstName} ${activeStudent.lastName}`;
+    }
+    return activeStudent?.fullName || activeStudent?.name || 'Subhash K';
+  })();
+
+  const isVerified = identityVerification?.isVerified !== false;
+  const confidence = identityVerification?.confidence || faceConfidence || 98;
 
   // ── 1. Initialize Webcam Stream ─────────────────────────────
   useEffect(() => {
@@ -15,7 +39,7 @@ function WebcamFeed({ isProctoringActive, onDetectionUpdate, onViolationTriggere
     async function startCamera() {
       try {
         stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: 640, height: 480, frameRate: { ideal: 30 } },
+          video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
           audio: false,
         });
         if (videoRef.current && videoRef.current.srcObject !== stream) {
@@ -69,7 +93,28 @@ function WebcamFeed({ isProctoringActive, onDetectionUpdate, onViolationTriggere
       const canvas = canvasRef.current;
       if (!video || !canvas) return;
 
-      const t = await proctoringPipeline.processFrame(video, canvas);
+      // Compute live FPS
+      const now = Date.now();
+      const delta = now - lastFrameTimeRef.current;
+      lastFrameTimeRef.current = now;
+      if (delta > 0) {
+        const calculatedFps = Math.round(1000 / delta);
+        setFps(Math.min(60, Math.max(15, calculatedFps)));
+      }
+
+      const studentInfo = {
+        studentName,
+        isVerified,
+        confidence,
+        identityStatus: isVerified ? 'Verified' : 'Identity Failed'
+      };
+
+      const t = await proctoringPipeline.processFrame(video, canvas, studentInfo);
+
+      if (t) {
+        setPersonCount(t.personCount || 0);
+        if (t.faceConfidence) setFaceConfidence(t.faceConfidence);
+      }
 
       // Violations
       if (t.phoneTrigger)
@@ -86,23 +131,19 @@ function WebcamFeed({ isProctoringActive, onDetectionUpdate, onViolationTriggere
       // Emit full telemetry to dashboard
       if (onDetectionUpdate) {
         onDetectionUpdate({
-          // Face
           faceStatusLabel: t.faceStatusLabel,
           isFaceDetected: t.isFaceDetected,
           faceConfidence: t.faceConfidence,
           faceCountLabel: t.faceCountLabel,
           personCount: t.personCount,
-          // Head Pose
           headPoseLabel: t.headPoseLabel,
           headPoseDirection: t.headPoseDirection,
           yawAngle: t.yawAngle,
           pitchAngle: t.pitchAngle,
           rollAngle: t.rollAngle,
-          // Eye Gaze
           gazeDirection: t.gazeDirection,
           gazeLabel: t.gazeLabel,
           gazeConfidence: t.gazeConfidence,
-          // Objects
           detectedPhone: t.detectedPhone,
           phoneScore: t.phoneScore,
           phoneTrackSec: t.phoneTrackSec,
@@ -112,47 +153,44 @@ function WebcamFeed({ isProctoringActive, onDetectionUpdate, onViolationTriggere
         });
       }
 
-      // Stream Real-Time Webcam Frame & Telemetry to Admin Monitor
+      // Stream Real-Time High-Definition Webcam Frame & Telemetry to Admin Monitor via Socket.IO
       if (canvas && video && video.readyState === 4) {
         try {
-          const frameImg = canvas.toDataURL('image/jpeg', 0.4);
-          let activeUser = null;
-          try {
-            const stored = localStorage.getItem('user');
-            if (stored) activeUser = JSON.parse(stored);
-          } catch (e) {}
+          if (canvas.width !== (video.videoWidth || 640) && video.videoWidth > 0) {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+          }
+          const frameImg = canvas.toDataURL('image/jpeg', 0.85);
+          const email = activeStudent?.email || 'student@university.edu';
+          const studentId = activeStudent?.studentId || `STU_${email.replace(/[^a-z0-9]/g, '_')}`;
 
-          if (activeUser && (activeUser.email || activeUser.studentId)) {
-            const email = activeUser.email || 'student@university.edu';
-            const studentId = activeUser.studentId || `STU_${email.replace(/[^a-z0-9]/g, '_')}`;
-            const studentName = activeUser.name || 'Student';
+          const socket = getSocket();
+          if (socket) {
+            socket.emit('video-stream', {
+              studentId,
+              studentName,
+              email,
+              image: frameImg,
+              timestamp: Date.now()
+            });
 
-            const socket = getSocket();
-            if (socket) {
-              socket.emit('video-stream', {
-                studentId,
-                studentName,
-                email,
-                image: frameImg,
-                timestamp: Date.now()
-              });
-
-              socket.emit('telemetry-update', {
-                studentId,
-                studentName,
-                email,
-                usn: activeUser.usn || studentId,
-                department: activeUser.course || 'Computer Science',
-                examName: 'Computer Science Final Assessment',
-                status: 'Online',
-                faceDetected: !t.faceMissingTrigger,
-                multipleFaces: !!t.multiFaceTrigger,
-                mobilePhoneDetected: !!t.phoneTrigger,
-                headPose: t.headPoseLabel || 'Normal',
-                eyeGaze: t.gazeDirection || 'Center',
-                image: frameImg
-              });
-            }
+            socket.emit('telemetry-update', {
+              studentId,
+              studentName: isVerified ? studentName : 'Unknown Person Detected',
+              email,
+              usn: activeStudent?.usn || studentId,
+              department: activeStudent?.course || 'Computer Science',
+              examName: 'Computer Science Final Assessment',
+              status: isVerified ? 'Online' : 'Identity Failed',
+              identityStatus: isVerified ? 'Verified' : 'Identity Failed',
+              confidence,
+              faceDetected: !t.faceMissingTrigger,
+              multipleFaces: !!t.multiFaceTrigger,
+              mobilePhoneDetected: !!t.phoneTrigger,
+              headPose: t.headPoseLabel || 'Normal',
+              eyeGaze: t.gazeDirection || 'Center',
+              image: frameImg
+            });
           }
         } catch (e) {}
       }
@@ -161,35 +199,174 @@ function WebcamFeed({ isProctoringActive, onDetectionUpdate, onViolationTriggere
 
     return () => clearInterval(intervalId);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isProctoringActive, modelStatus]);
+  }, [isProctoringActive, modelStatus, studentName, isVerified, confidence]);
+
+  // Helper Functions for Overlay Colors and Text
+  const getOverlayBadge = () => {
+    if (personCount === 0) {
+      return {
+        header: '⚠️ No Face Detected',
+        subtext: 'Searching for candidate...',
+        borderColor: '#f59e0b',
+        textColor: '#fbbf24'
+      };
+    }
+    if (personCount > 1) {
+      return {
+        header: '🚨 Multiple Faces Detected',
+        subtext: `${personCount} Persons Visible`,
+        borderColor: '#ef4444',
+        textColor: '#f87171'
+      };
+    }
+    if (!isVerified) {
+      return {
+        header: '🔴 Unknown Person',
+        subtext: `Mismatch (${confidence}%)`,
+        borderColor: '#ef4444',
+        textColor: '#f87171'
+      };
+    }
+    return {
+      header: `👤 ${studentName}`,
+      subtext: `✔ Verified (${confidence}%)`,
+      borderColor: '#10b981',
+      textColor: '#34d399'
+    };
+  };
+
+  const badge = getOverlayBadge();
 
   return (
-    <div className="athena-webcam-wrapper">
-      {/* Live Video */}
+    <div style={{
+      position: 'relative',
+      width: '100%',
+      height: '240px',
+      borderRadius: '16px',
+      overflow: 'hidden',
+      border: `1.5px solid ${badge.borderColor}`,
+      background: '#020617',
+      boxShadow: '0 10px 25px rgba(0,0,0,0.5)'
+    }}>
+      {/* Live Unmirrored Video Feed */}
       <video
         ref={videoRef}
         autoPlay
         playsInline
         muted
-        style={{ width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' }}
+        style={{
+          width: '100%',
+          height: '100%',
+          objectFit: 'cover',
+          display: 'block'
+        }}
       />
 
-      {/* Canvas Overlay */}
+      {/* Unmirrored Canvas Overlay for Face Bounding Boxes & Reticles */}
       <canvas
         ref={canvasRef}
         width={320}
         height={240}
         style={{
-          position: 'absolute', top: 0, left: 0,
-          width: '100%', height: '100%',
-          pointerEvents: 'none', transform: 'scaleX(-1)',
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          pointerEvents: 'none'
         }}
       />
 
-      {/* Live Badge */}
-      <div className="athena-webcam-overlay">
-        <div className="athena-live-dot" />
-        <span>LIVE · {modelStatus}</span>
+      {/* TOP LEFT: LIVE Indicator */}
+      <div style={{
+        position: 'absolute',
+        top: '10px',
+        left: '10px',
+        zIndex: 20,
+        background: 'rgba(15, 23, 42, 0.85)',
+        backdropFilter: 'blur(8px)',
+        border: '1px solid rgba(16, 185, 129, 0.4)',
+        borderRadius: '20px',
+        padding: '4px 10px',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '6px',
+        fontSize: '0.75rem',
+        fontWeight: 800,
+        color: '#34d399'
+      }}>
+        <span style={{
+          width: '8px',
+          height: '8px',
+          borderRadius: '50%',
+          background: '#10b981',
+          boxShadow: '0 0 8px #10b981',
+          animation: 'pulse 1.5s infinite'
+        }}></span>
+        <span>🟢 LIVE</span>
+      </div>
+
+      {/* MIDDLE TOP: Student Name & Verification Badge */}
+      <div style={{
+        position: 'absolute',
+        top: '10px',
+        left: '50%',
+        transform: 'translateX(-50%)',
+        zIndex: 20,
+        textAlign: 'center',
+        width: 'max-content'
+      }}>
+        <div style={{
+          background: 'rgba(15, 23, 42, 0.92)',
+          backdropFilter: 'blur(12px)',
+          border: `1.5px solid ${badge.borderColor}`,
+          borderRadius: '12px',
+          padding: '5px 14px',
+          boxShadow: '0 8px 20px rgba(0,0,0,0.6)'
+        }}>
+          <div style={{ fontSize: '0.85rem', fontWeight: 800, color: badge.textColor }}>
+            {badge.header}
+          </div>
+          <div style={{ fontSize: '0.72rem', fontWeight: 700, color: '#cbd5e1', marginTop: '1px' }}>
+            {badge.subtext}
+          </div>
+        </div>
+      </div>
+
+      {/* BOTTOM LEFT: FPS Counter */}
+      <div style={{
+        position: 'absolute',
+        bottom: '10px',
+        left: '10px',
+        zIndex: 20,
+        background: 'rgba(15, 23, 42, 0.85)',
+        backdropFilter: 'blur(8px)',
+        border: '1px solid rgba(255, 255, 255, 0.1)',
+        borderRadius: '8px',
+        padding: '3px 8px',
+        fontSize: '0.7rem',
+        fontWeight: 700,
+        color: '#94a3b8'
+      }}>
+        ⚡ {fps} FPS
+      </div>
+
+      {/* BOTTOM RIGHT: Face Match Confidence */}
+      <div style={{
+        position: 'absolute',
+        bottom: '10px',
+        right: '10px',
+        zIndex: 20,
+        background: 'rgba(15, 23, 42, 0.85)',
+        backdropFilter: 'blur(8px)',
+        border: '1px solid rgba(96, 165, 250, 0.4)',
+        borderRadius: '8px',
+        padding: '3px 8px',
+        fontSize: '0.7rem',
+        fontWeight: 700,
+        color: '#60a5fa'
+      }}>
+        🎯 Confidence: {confidence}%
       </div>
     </div>
   );

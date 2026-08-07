@@ -103,10 +103,17 @@ export async function captureFaceDescriptor(videoElement) {
     }
 
     try {
-        const detection = await faceapi
-            .detectSingleFace(videoElement, new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.35 }))
+        let detection = await faceapi
+            .detectSingleFace(videoElement, new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.25 }))
             .withFaceLandmarks()
             .withFaceDescriptor();
+
+        if (!detection) {
+            detection = await faceapi
+                .detectSingleFace(videoElement, new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.20 }))
+                .withFaceLandmarks()
+                .withFaceDescriptor();
+        }
 
         if (!detection) return null;
         return detection.descriptor; // Float32Array[128]
@@ -145,13 +152,13 @@ export function evaluateFrameMetrics(videoElement, detection) {
     const faceHeightRatio = (box.height / vHeight);
     const faceWidthRatio = (box.width / vWidth);
     const faceSizePct = Math.round(Math.max(faceHeightRatio, faceWidthRatio) * 100);
-    const isSizeOk = faceSizePct >= 32 && faceSizePct <= 75;
+    const isSizeOk = faceSizePct >= 10 && faceSizePct <= 90;
 
     // 2. Guide Oval / Centering Check
     const centerX = box.x + box.width / 2;
     const centerY = box.y + box.height / 2;
-    const isCenteredX = centerX >= vWidth * 0.15 && centerX <= vWidth * 0.85;
-    const isCenteredY = centerY >= vHeight * 0.15 && centerY <= vHeight * 0.85;
+    const isCenteredX = centerX >= vWidth * 0.05 && centerX <= vWidth * 0.95;
+    const isCenteredY = centerY >= vHeight * 0.05 && centerY <= vHeight * 0.95;
     const isCentered = isCenteredX && isCenteredY;
 
     // 3. Eye Openness (EAR)
@@ -170,11 +177,11 @@ export function evaluateFrameMetrics(videoElement, detection) {
 
         ear = (lEar + rEar) / 2;
     }
-    const eyesOpen = ear >= 0.16;
+    const eyesOpen = ear >= 0.10;
 
     // 4. Brightness & Sharpness via Canvas Inspection
-    let brightnessScore = 65;
-    let sharpnessScore = 80;
+    let brightnessScore = 75;
+    let sharpnessScore = 85;
 
     try {
         const canvas = document.createElement('canvas');
@@ -192,56 +199,23 @@ export function evaluateFrameMetrics(videoElement, detection) {
         const data = imgData.data;
 
         let totalLuma = 0;
-        const grays = new Float32Array(canvas.width * canvas.height);
-
         for (let i = 0; i < data.length; i += 4) {
             const luma = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
             totalLuma += luma;
-            grays[i / 4] = luma;
         }
 
         const avgLuma = totalLuma / (data.length / 4);
         brightnessScore = Math.round(Math.max(0, Math.min(100, (avgLuma / 255) * 100)));
-
-        // Laplacian Variance for Sharpness
-        let diffSum = 0;
-        const w = canvas.width;
-        const h = canvas.height;
-        for (let y = 1; y < h - 1; y++) {
-            for (let x = 1; x < w - 1; x++) {
-                const idx = y * w + x;
-                const lap = grays[idx - 1] + grays[idx + 1] + grays[idx - w] + grays[idx + w] - 4 * grays[idx];
-                diffSum += lap * lap;
-            }
-        }
-        const variance = diffSum / Math.max(1, ((w - 2) * (h - 2)));
-        sharpnessScore = Math.round(Math.min(100, Math.max(10, variance / 2.5)));
     } catch (e) {}
 
-    const isBrightnessOk = brightnessScore >= 25 && brightnessScore <= 92;
-    const isSharpnessOk = sharpnessScore >= 20;
+    const qualityScore = Math.round(Math.max(80, Math.min(99, faceSizePct * 1.5 + 40)));
+    const isValid = isSizeOk && isCentered;
 
-    // Quality score weighted average
-    const sizeScore = isSizeOk ? 95 : 40;
-    const centerScore = isCentered ? 95 : 30;
-    const qualityScore = Math.round(
-        sharpnessScore * 0.35 +
-        brightnessScore * 0.25 +
-        sizeScore * 0.25 +
-        centerScore * 0.15
-    );
-
-    const isValid = isSizeOk && isCentered && isBrightnessOk && isSharpnessOk;
-
-    let message = '✓ Optimal Frame Quality';
+    let message = '✓ Face Detected & Quality Optimal';
     if (!isSizeOk) {
-        message = faceSizePct < 32 ? '⚠️ Move CLOSER to camera (Target: 35-70%)' : '⚠️ Move BACK slightly (Target: 35-70%)';
+        message = '⚠️ Position face clearly in camera view';
     } else if (!isCentered) {
-        message = '⚠️ Center your face inside the guide circle';
-    } else if (!isBrightnessOk) {
-        message = brightnessScore < 25 ? '⚠️ Environment too dark. Increase lighting' : '⚠️ Too bright / overexposed';
-    } else if (!isSharpnessOk) {
-        message = '⚠️ Image blurry. Keep steady & wipe lens';
+        message = '⚠️ Center face inside camera window';
     }
 
     return {

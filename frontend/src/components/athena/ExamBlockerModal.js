@@ -38,7 +38,7 @@ function ExamBlockerModal({ onStartExam }) {
 
   // Active Student & Token Credentials
   const getAuthDetails = useCallback(() => {
-    let studentId = 'STU_DEMO';
+    let studentId = 'STU_' + Date.now();
     let token = '';
     try {
       const stored = localStorage.getItem('user');
@@ -116,11 +116,10 @@ function ExamBlockerModal({ onStartExam }) {
       });
   }, []);
 
-  // Initial Hardware Request on Mount & Load Models
+  // Load AI face models on mount (hardware access requested ONLY when user clicks Grant button)
   useEffect(() => {
     loadFaceModels();
-    requestHardwareAccess();
-  }, [requestHardwareAccess]);
+  }, []);
 
   // Real-Time Canvas Inspection Loop (Every 150ms)
   useEffect(() => {
@@ -128,12 +127,13 @@ function ExamBlockerModal({ onStartExam }) {
 
     const interval = setInterval(async () => {
       const video = videoRef.current;
-      if (!video || video.readyState < 2 || !areModelsReady()) return;
+      if (!video || video.readyState < 4 || !video.videoWidth || !video.videoHeight || video.paused || !areModelsReady()) return;
 
       try {
-        const detections = await faceapi
+        const rawDets = await faceapi
           .detectAllFaces(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.35 }))
           .withFaceLandmarks();
+        const detections = (rawDets || []).filter(d => d && d.detection && d.detection.box && d.detection.box.width > 0);
 
         if (detections.length === 1) {
           const metrics = evaluateFrameMetrics(video, detections[0]);

@@ -37,14 +37,22 @@ export const SocketProvider = ({ children }) => {
 
     const handleViolation = (violationData) => {
       console.log('⚠️ Violation received:', violationData);
-      setActiveAlert({
+      const alertObj = {
         id: Date.now(),
-        type: violationData.type || 'VIOLATION',
-        message: violationData.description || 'Violation recorded',
-        studentName: violationData.studentName || 'Student',
+        type: violationData.type || violationData.violationType || 'VIOLATION',
+        severity: violationData.severity || (violationData.isCritical ? 'Critical' : 'High'),
+        message: violationData.description || violationData.message || 'Violation recorded',
+        studentName: violationData.studentName || violationData.studentId || 'Student',
         studentId: violationData.studentId,
+        examName: violationData.examName || 'Assessment',
         timestamp: new Date().toLocaleTimeString()
-      });
+      };
+      setActiveAlert(alertObj);
+
+      setAlertsList((prev) => [
+        { id: Date.now(), ...violationData, timestamp: new Date() },
+        ...prev.slice(0, 49)
+      ]);
     };
 
     const handleVideoStream = (frameData) => {
@@ -61,12 +69,18 @@ export const SocketProvider = ({ children }) => {
 
     socketService.on('ai-alert', handleAIAlert);
     socketService.on('violation', handleViolation);
+    socketService.on('violation-detected', handleViolation);
     socketService.on('video-stream', handleVideoStream);
+    socketService.on('warning-issued', handleViolation);
+    socketService.on('student-terminated', handleViolation);
 
     return () => {
       socketService.off('ai-alert', handleAIAlert);
       socketService.off('violation', handleViolation);
+      socketService.off('violation-detected', handleViolation);
       socketService.off('video-stream', handleVideoStream);
+      socketService.off('warning-issued', handleViolation);
+      socketService.off('student-terminated', handleViolation);
     };
   }, []);
 
@@ -79,6 +93,8 @@ export const SocketProvider = ({ children }) => {
       value={{
         socket,
         activeAlert,
+        lastAlert: activeAlert,
+        clearLastAlert: dismissAlert,
         alertsList,
         liveStreamFrame,
         dismissAlert

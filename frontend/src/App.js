@@ -1,12 +1,23 @@
 import React, { useEffect, useState } from "react";
 import { BrowserRouter as Router, Routes, Route, useLocation, Navigate } from "react-router-dom";
 import Login from "./pages/Login";
+import Register from "./pages/Register";
 import Dashboard from "./pages/Dashboard";
 import ProctorDashboard from "./pages/ProctorDashboard";
 import AthenaExamDashboard from "./pages/AthenaExamDashboard";
-import AdminMonitor from "./pages/AdminMonitor";
 import { detectPhone, showPhoneWarning } from "./utils/deviceDetection";
 import EyeTrackingWidget from "./components/EyeTrackingWidget";
+
+const ExternalAdminRedirect = () => {
+  useEffect(() => {
+    window.location.href = "http://localhost:3001";
+  }, []);
+  return (
+    <div style={{ padding: '40px', textAlign: 'center', background: '#0b0f19', color: '#818cf8', minHeight: '100vh', fontFamily: 'Inter, sans-serif' }}>
+      <h2>🔄 Connecting to Admin Command Center on Port 3001...</h2>
+    </div>
+  );
+};
 
 function AppContent() {
   const [showBanner, setShowBanner] = useState(false);
@@ -93,17 +104,16 @@ function AppContent() {
 
       <div>
         <Routes>
-          {/* Login Route */}
-          <Route
-            path="/"
-            element={<Login />}
-          />
+          {/* Login Routes */}
+          <Route path="/" element={<Login />} />
+          <Route path="/login" element={<Login />} />
+
+          {/* Student Registration Route */}
+          <Route path="/register" element={<Register />} />
 
           {/* Student Dashboard */}
-          <Route
-            path="/dashboard"
-            element={<Dashboard user={faceUser} onLogout={handleLogout} />}
-          />
+          <Route path="/dashboard" element={<Dashboard user={faceUser} onLogout={handleLogout} />} />
+          <Route path="/student" element={<Dashboard user={faceUser} onLogout={handleLogout} />} />
 
           {/* Modern Proctoring Dashboard */}
           <Route
@@ -124,7 +134,7 @@ function AppContent() {
           {/* Admin Live Monitoring Section */}
           <Route
             path="/admin"
-            element={<AdminMonitor />}
+            element={<ExternalAdminRedirect />}
           />
 
 

@@ -101,7 +101,7 @@ export const StudentCard = ({ student, onWatchLive }) => {
           <img
             src={currentFrame.startsWith('data:') ? currentFrame : `data:image/jpeg;base64,${currentFrame}`}
             alt="Live Stream"
-            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+            style={{ width: '100%', height: '100%', objectFit: 'cover', imageRendering: 'high-quality' }}
           />
         ) : (
           <Box sx={{ textAlign: 'center', color: '#64748b' }}>

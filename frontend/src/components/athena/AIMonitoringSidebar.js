@@ -23,7 +23,8 @@ function AIMonitoringSidebar({
   onDetectionUpdate,
   onViolationTriggered,
   onVoiceStatusChange,
-  onVoiceViolationTriggered
+  onVoiceViolationTriggered,
+  identityVerification
 }) {
   const getTabSwitchStatus = () => {
     if (tabSwitchesCount === 0) return 'green';
@@ -82,6 +83,7 @@ function AIMonitoringSidebar({
           isProctoringActive={isProctoringActive}
           onDetectionUpdate={onDetectionUpdate}
           onViolationTriggered={onViolationTriggered}
+          identityVerification={identityVerification}
         />
       </div>
 

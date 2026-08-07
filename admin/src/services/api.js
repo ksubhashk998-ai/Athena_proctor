@@ -36,25 +36,37 @@ api.interceptors.response.use(
   }
 );
 
-// API Endpoints
+// Comprehensive Admin API Endpoints
 export const adminApi = {
-  // Admin Login
+  // 1. Auth
   login: (credentials) => api.post('/admin/login', credentials),
 
-  // Live Student Monitoring
+  // 2. Dashboard & Overview Statistics
+  getDashboard: () => api.get('/admin/dashboard'),
+
+  // 3. Live Student Monitoring
   getLiveStudents: (params) => api.get('/admin/students/live', { params }),
 
-  // Student Detail Page
+  // 4. Student Details Page
   getStudentDetail: (id) => api.get(`/admin/student/${id}`),
 
-  // Reports
+  // 5. Violations Center
+  getViolations: (params) => api.get('/admin/violations', { params }),
+
+  // 6. Terminated Students
+  getTerminatedStudents: (params) => api.get('/admin/terminated', { params }),
+
+  // 7. Finished Students
+  getFinishedStudents: (params) => api.get('/admin/finished', { params }),
+
+  // 8. Reports & Analytics
   getReports: (params) => api.get('/admin/reports', { params }),
-
-  // Analytics
   getAnalytics: () => api.get('/admin/analytics'),
+  getAlerts: () => api.get('/admin/alerts'),
 
-  // Alerts
-  getAlerts: () => api.get('/admin/alerts')
+  // 9. Admin Session Control Actions
+  terminateSession: (studentId, reason) => api.post('/admin/terminate-session', { studentId, reason }),
+  warnStudent: (studentId, message) => api.post('/admin/warn-student', { studentId, message })
 };
 
 export default api;

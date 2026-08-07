@@ -8,6 +8,7 @@ import TheorySection from '../components/athena/TheorySection';
 import AIMonitoringSidebar from '../components/athena/AIMonitoringSidebar';
 import { mcqQuestions, codingProblems, theoryQuestions } from '../data/examData';
 import { getSocket } from '../services/socketService';
+import { captureFaceDescriptor } from '../services/faceVerificationService';
 import '../styles/athena.css';
 
 function AthenaExamDashboard() {
@@ -19,6 +20,28 @@ function AthenaExamDashboard() {
   const [hasMic, setHasMic] = useState(false);
   const [isExamUnlocked, setIsExamUnlocked] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // Requirement 5 & 7 Identity Verification & Auto-Termination States
+  const [identityVerification, setIdentityVerification] = useState(() => {
+    let studentName = 'John Smith';
+    try {
+      const stored = localStorage.getItem('user');
+      if (stored) {
+        const u = JSON.parse(stored);
+        studentName = u.fullName || u.name || studentName;
+      }
+    } catch (e) {}
+    return {
+      isVerified: true,
+      studentName,
+      confidence: 98,
+      status: 'Verified'
+    };
+  });
+
+  const [, setConsecutiveIdentityFailures] = useState(0);
+  const [isExamTerminated, setIsExamTerminated] = useState(false);
+  const [terminationReason, setTerminationReason] = useState('');
 
   // Timer State (60 minutes = 3600 seconds)
   const [timerSeconds, setTimerSeconds] = useState(3600);
@@ -89,6 +112,199 @@ function AthenaExamDashboard() {
     addLog(message, 'danger');
   }, [addLog]);
 
+  // Auto-Termination Helper Function (Requirement 7)
+  const handleAutoTermination = useCallback(async (videoEl, studentId, fullName, email, reason) => {
+    setIsExamTerminated(true);
+    setTerminationReason(reason);
+    recordViolation(`🔴 AUTO-TERMINATION: ${reason}`);
+
+    let screenshotBase64 = null;
+    if (videoEl) {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = videoEl.videoWidth || 640;
+        canvas.height = videoEl.videoHeight || 480;
+        canvas.getContext('2d').drawImage(videoEl, 0, 0);
+        screenshotBase64 = canvas.toDataURL('image/jpeg', 0.5);
+      } catch (e) {}
+    }
+
+    // 1. Send termination to Admin Backend REST API
+    try {
+      await fetch('/api/admin/terminate-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          studentId,
+          reason: reason || 'Exceeded maximum proctoring violation threshold',
+          status: 'Terminated'
+        })
+      });
+    } catch (e) {}
+
+    // 2. Save Incident to Database
+    try {
+      await fetch('/api/incidents/log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          studentId,
+          fullName,
+          email,
+          screenshot: screenshotBase64,
+          reason: reason || 'Face Mismatch',
+          confidence: 0,
+          timestamp: new Date()
+        })
+      });
+    } catch (err) {
+      console.error('Save incident log error:', err);
+    }
+
+    // 3. Broadcast Real-Time Events to Admin via Socket.IO
+    const socket = getSocket();
+    if (socket) {
+      const payload = {
+        studentId,
+        studentName: fullName,
+        email,
+        reason: reason || 'Exam Terminated',
+        status: 'Terminated',
+        screenshot: screenshotBase64,
+        timestamp: new Date()
+      };
+      socket.emit('student-terminated', payload);
+      socket.emit('student-status', { studentId, status: 'Terminated' });
+      socket.emit('dashboard-updated', { timestamp: Date.now() });
+    }
+  }, [recordViolation]);
+
+  // Requirement 5, 7, & 10: Continuous Real-Time Identity Verification Loop (Every 6 Seconds)
+  useEffect(() => {
+    if (!isExamUnlocked || isExamTerminated) return;
+
+    const activeUser = (() => {
+      try {
+        const stored = localStorage.getItem('user');
+        return stored ? JSON.parse(stored) : null;
+      } catch (e) {
+        return null;
+      }
+    })();
+
+    const studentId = activeUser?.studentId || ('STU_' + Date.now());
+    const email = activeUser?.email || 'john@gmail.com';
+    const fullName = activeUser?.fullName || activeUser?.name || 'John Smith';
+    const token = localStorage.getItem('token') || 'temp_token';
+
+    const interval = setInterval(async () => {
+      const video = document.querySelector('video');
+      if (!video || video.readyState < 2) return;
+
+      try {
+        const descriptor = await captureFaceDescriptor(video);
+
+        if (!descriptor) {
+          // Face missing in camera frame
+          setConsecutiveIdentityFailures(prev => {
+            const nextFailures = prev + 1;
+            console.warn(`🔴 Identity Check Failed (No Face). Consecutive failures: ${nextFailures}/3`);
+
+            setIdentityVerification({
+              isVerified: false,
+              studentName: '', // Name disappears on mismatch / missing face!
+              confidence: 0,
+              status: 'Unknown Person Detected'
+            });
+
+            if (nextFailures > 3) {
+              handleAutoTermination(video, studentId, fullName, email, 'Face Mismatch - Candidate Absent / No Face Detected');
+            }
+            return nextFailures;
+          });
+          return;
+        }
+
+        // Compare live face embedding with enrolled embedding via backend API
+        const response = await fetch('/api/face/verify', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            studentId,
+            email,
+            embedding: Array.from(descriptor)
+          })
+        });
+
+        const data = await response.json();
+
+        if (data.match === true) {
+          setConsecutiveIdentityFailures(0);
+          setIdentityVerification({
+            isVerified: true,
+            studentName: data.student?.fullName || fullName,
+            confidence: data.similarityPct || 98,
+            status: 'Verified'
+          });
+
+          // Broadcast verified status update to Admin via Socket.IO
+          const socket = getSocket();
+          if (socket) {
+            socket.emit('telemetry-update', {
+              studentId,
+              studentName: fullName,
+              email,
+              identityStatus: 'Verified',
+              confidence: data.similarityPct || 98,
+              examStatus: 'Exam Running',
+              faceDetected: true
+            });
+          }
+        } else {
+          // Mismatch detected!
+          setConsecutiveIdentityFailures(prev => {
+            const nextFailures = prev + 1;
+            console.warn(`🔴 Face Verification Mismatch (${data.similarityPct}% match). Consecutive failures: ${nextFailures}/3`);
+
+            setIdentityVerification({
+              isVerified: false,
+              studentName: '', // Student name disappears while mismatched!
+              confidence: data.similarityPct || 0,
+              status: 'Unknown Person Detected'
+            });
+
+            const socket = getSocket();
+            if (socket) {
+              socket.emit('telemetry-update', {
+                studentId,
+                studentName: 'Unknown Person Detected',
+                email,
+                identityStatus: 'Identity Failed',
+                confidence: data.similarityPct || 0,
+                examStatus: 'Identity Failed',
+                faceDetected: false
+              });
+            }
+
+            // Requirement 7: If match fails for > 3 consecutive checks (4 failures), auto terminate
+            if (nextFailures > 3) {
+              handleAutoTermination(video, studentId, fullName, email, 'Face Mismatch - Live face does not match registered student');
+            }
+            return nextFailures;
+          });
+        }
+
+      } catch (err) {
+        console.warn('Continuous verification loop error:', err);
+      }
+    }, 6000);
+
+    return () => clearInterval(interval);
+  }, [isExamUnlocked, isExamTerminated, handleAutoTermination]);
+
   // Live Admin Monitoring & Socket Sync Effect
   useEffect(() => {
     let activeUser = null;
@@ -134,6 +350,7 @@ function AthenaExamDashboard() {
   }, [violationsCount, tabSwitchesCount, faceDetectionState, phoneDetectionState, headPoseState, eyeTrackingState]);
 
 
+
   // Request Permissions Callback (Immediate & Non-Blocking)
   const handleRequestPermissions = useCallback(async () => {
     setHasCamera(true);
@@ -151,10 +368,7 @@ function AthenaExamDashboard() {
     }
   }, [addLog]);
 
-  // Auto request permissions on mount
-  useEffect(() => {
-    handleRequestPermissions();
-  }, [handleRequestPermissions]);
+
 
   // EXAM START FLOW — Directly starts exam after System Check & Pre-Exam Audit
   const handleStartExam = useCallback(() => {
@@ -288,7 +502,7 @@ function AthenaExamDashboard() {
     lastMultiFaceTimeRef.current = now;
 
     let activeUser = null;
-    let studentId = 'STU_DEMO';
+    let studentId = activeUser?.studentId || ('STU_' + Date.now());
     let studentEmail = 'student@university.edu';
     let token = '';
 
@@ -351,6 +565,16 @@ function AthenaExamDashboard() {
       // Requirement 4: Action on 3rd Confirmed Violation
       if (nextWarn >= 3) {
         setIsExamUnlocked(false);
+        
+        // Trigger auto-termination pipeline
+        handleAutoTermination(
+          document.querySelector('video'),
+          activeUser?.studentId || 'STUDENT',
+          activeUser?.fullName || activeUser?.name || 'Student',
+          activeUser?.email || '',
+          'Exceeded maximum 3 violation warnings'
+        );
+
         // Stop webcam and mic streams
         try {
           navigator.mediaDevices.getUserMedia({ video: true, audio: true }).then(stream => {
@@ -473,7 +697,9 @@ function AthenaExamDashboard() {
         isFullscreen={isFullscreen}
         toggleFullscreen={toggleFullscreen}
         onOpenSubmitModal={() => setIsSubmitModalOpen(true)}
+        identityVerification={identityVerification}
       />
+
 
       {/* Main Examination Dashboard Grid (70% Left / 30% Right) */}
       <div className="athena-dashboard-grid">
@@ -552,6 +778,7 @@ function AthenaExamDashboard() {
           onViolationTriggered={handleViolationTriggered}
           onVoiceStatusChange={handleVoiceStatusChange}
           onVoiceViolationTriggered={handleVoiceViolationTriggered}
+          identityVerification={identityVerification}
         />
       </div>
 
@@ -602,6 +829,67 @@ function AthenaExamDashboard() {
         />
       )}
 
+      {/* Requirement 7: Automatic Exam Termination Locking Modal Overlay */}
+      {isExamTerminated && (
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(2, 6, 23, 0.98)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 999999,
+          backdropFilter: 'blur(16px)'
+        }}>
+          <div style={{
+            background: 'rgba(15, 23, 42, 0.98)',
+            border: '2px solid #ef4444',
+            borderRadius: '24px',
+            padding: '36px',
+            maxWidth: '520px',
+            width: '90%',
+            textAlign: 'center',
+            boxShadow: '0 25px 50px rgba(239, 68, 68, 0.4)',
+            color: '#f8fafc'
+          }}>
+            <div style={{ fontSize: '3.5rem', marginBottom: '12px' }}>🔴</div>
+            <h2 style={{ fontSize: '1.6rem', fontWeight: 800, color: '#ef4444', marginBottom: '10px' }}>
+              EXAM TERMINATED AUTOMATICALLY
+            </h2>
+            <div style={{
+              background: 'rgba(239, 68, 68, 0.15)',
+              border: '1px solid #ef4444',
+              color: '#fca5a5',
+              padding: '12px 16px',
+              borderRadius: '12px',
+              fontSize: '0.88rem',
+              fontWeight: 700,
+              marginBottom: '20px'
+            }}>
+              Reason: {terminationReason || 'Face Mismatch (Identity Failed > 3 Consecutive Checks)'}
+            </div>
+            <p style={{ color: '#cbd5e1', fontSize: '0.9rem', lineHeight: 1.6, marginBottom: '24px' }}>
+              The AI proctoring engine detected a face mismatch for 4 consecutive verification checks. An incident report with video evidence has been logged to the database and sent to the administrator.
+            </p>
+            <button
+              onClick={() => window.location.href = '/dashboard'}
+              style={{
+                background: 'linear-gradient(135deg, #ef4444, #dc2626)',
+                color: 'white',
+                border: 'none',
+                padding: '12px 28px',
+                borderRadius: '12px',
+                fontWeight: 700,
+                fontSize: '1rem',
+                cursor: 'pointer'
+              }}
+            >
+              Return to Student Dashboard ➔
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Final Submit Confirmation Modal */}
       <SubmitConfirmationModal
         isOpen={isSubmitModalOpen}
@@ -620,3 +908,4 @@ function AthenaExamDashboard() {
 }
 
 export default AthenaExamDashboard;
+

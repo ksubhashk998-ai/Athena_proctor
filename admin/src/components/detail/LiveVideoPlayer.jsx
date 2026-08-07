@@ -10,7 +10,13 @@ export const LiveVideoPlayer = ({ student }) => {
   const { liveStreamFrame } = useSocket();
 
   const studentId = student?.studentId || student?._id || student?.sessionId;
-  const currentFrame = studentId ? liveStreamFrame[studentId] || liveStreamFrame[student?.sessionId] : null;
+  const currentFrame =
+    (studentId && liveStreamFrame[studentId]) ||
+    (student?.sessionId && liveStreamFrame[student.sessionId]) ||
+    (student?.usn && liveStreamFrame[student.usn]) ||
+    (student?.email && liveStreamFrame[student.email]) ||
+    student?.lastWebcamFrame ||
+    student?.screenshotBase64;
 
   useEffect(() => {
     if (studentId) {
@@ -36,7 +42,7 @@ export const LiveVideoPlayer = ({ student }) => {
           <img
             src={currentFrame.startsWith('data:') ? currentFrame : `data:image/jpeg;base64,${currentFrame}`}
             alt="Live Webcam Feed"
-            style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+            style={{ width: '100%', height: '100%', objectFit: 'contain', imageRendering: 'high-quality' }}
           />
         ) : (
           <Box sx={{ textAlign: 'center', color: '#94a3b8' }}>

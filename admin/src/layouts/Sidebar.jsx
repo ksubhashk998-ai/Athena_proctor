@@ -16,8 +16,13 @@ import {
 import {
   LayoutDashboard,
   Users,
-  BarChart3,
+  ShieldAlert,
+  XCircle,
+  CheckCircle,
+  History,
   FileSpreadsheet,
+  BarChart3,
+  Settings,
   ShieldCheck,
   Radio
 } from 'lucide-react';
@@ -27,8 +32,13 @@ const DRAWER_WIDTH = 260;
 const menuItems = [
   { text: 'Dashboard', path: '/', icon: <LayoutDashboard size={20} /> },
   { text: 'Live Monitoring', path: '/live', icon: <Users size={20} />, badge: 'LIVE' },
+  { text: 'Violations Center', path: '/violations', icon: <ShieldAlert size={20} /> },
+  { text: 'Terminated Students', path: '/terminated', icon: <XCircle size={20} /> },
+  { text: 'Finished Exams', path: '/finished', icon: <CheckCircle size={20} /> },
+  { text: 'Activity History', path: '/history', icon: <History size={20} /> },
+  { text: 'Reports', path: '/reports', icon: <FileSpreadsheet size={20} /> },
   { text: 'Analytics', path: '/analytics', icon: <BarChart3 size={20} /> },
-  { text: 'Reports', path: '/reports', icon: <FileSpreadsheet size={20} /> }
+  { text: 'Settings', path: '/settings', icon: <Settings size={20} /> }
 ];
 
 export const Sidebar = ({ mobileOpen, handleDrawerToggle }) => {
@@ -85,12 +95,12 @@ export const Sidebar = ({ mobileOpen, handleDrawerToggle }) => {
       <Divider sx={{ mx: 2, opacity: 0.5 }} />
 
       {/* Navigation List */}
-      <List sx={{ px: 2, py: 3, flexGrow: 1 }}>
+      <List sx={{ px: 2, py: 2, flexGrow: 1, overflowY: 'auto' }}>
         <Typography
           variant="caption"
           sx={{
             px: 2,
-            mb: 1.5,
+            mb: 1,
             display: 'block',
             fontWeight: 700,
             color: theme.palette.text.secondary,
@@ -98,14 +108,14 @@ export const Sidebar = ({ mobileOpen, handleDrawerToggle }) => {
             textTransform: 'uppercase'
           }}
         >
-          Main Menu
+          Main Navigation
         </Typography>
 
         {menuItems.map((item) => {
           const isActive = location.pathname === item.path;
 
           return (
-            <ListItem key={item.text} disablePadding sx={{ mb: 1 }}>
+            <ListItem key={item.text} disablePadding sx={{ mb: 0.5 }}>
               <ListItemButton
                 onClick={() => {
                   navigate(item.path);
@@ -113,7 +123,7 @@ export const Sidebar = ({ mobileOpen, handleDrawerToggle }) => {
                 }}
                 sx={{
                   borderRadius: '12px',
-                  py: 1.2,
+                  py: 1,
                   px: 2,
                   backgroundColor: isActive
                     ? theme.palette.mode === 'dark'
@@ -131,7 +141,7 @@ export const Sidebar = ({ mobileOpen, handleDrawerToggle }) => {
               >
                 <ListItemIcon
                   sx={{
-                    minWidth: 36,
+                    minWidth: 34,
                     color: isActive ? theme.palette.primary.main : theme.palette.text.secondary
                   }}
                 >
@@ -140,20 +150,20 @@ export const Sidebar = ({ mobileOpen, handleDrawerToggle }) => {
                 <ListItemText
                   primary={item.text}
                   primaryTypographyProps={{
-                    fontSize: '0.925rem',
+                    fontSize: '0.875rem',
                     fontWeight: isActive ? 700 : 500
                   }}
                 />
                 {item.badge && (
                   <Chip
-                    icon={<Radio size={12} color="#ef4444" className="animate-pulse" />}
+                    icon={<Radio size={10} color="#ef4444" />}
                     label={item.badge}
                     size="small"
                     color="error"
                     variant="soft"
                     sx={{
-                      height: 22,
-                      fontSize: '0.675rem',
+                      height: 20,
+                      fontSize: '0.625rem',
                       fontWeight: 800,
                       backgroundColor: 'rgba(239, 68, 68, 0.15)',
                       color: '#ef4444'
@@ -167,15 +177,15 @@ export const Sidebar = ({ mobileOpen, handleDrawerToggle }) => {
       </List>
 
       {/* Footer System Info */}
-      <Box sx={{ p: 2.5, m: 2, borderRadius: 3, backgroundColor: theme.palette.surface.main }}>
+      <Box sx={{ p: 2, m: 2, borderRadius: 3, backgroundColor: theme.palette.surface.main }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
           <Box sx={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: '#10b981' }} />
           <Typography variant="caption" sx={{ fontWeight: 700, color: theme.palette.text.primary }}>
-            AI Engine Connected
+            AI Engine Active
           </Typography>
         </Box>
-        <Typography variant="caption" sx={{ color: theme.palette.text.secondary, display: 'block', fontSize: '0.72rem' }}>
-          FastAPI & TensorFlow Active
+        <Typography variant="caption" sx={{ color: theme.palette.text.secondary, display: 'block', fontSize: '0.7rem' }}>
+          FastAPI, OpenCV & YOLO Active
         </Typography>
       </Box>
     </Box>
@@ -183,7 +193,6 @@ export const Sidebar = ({ mobileOpen, handleDrawerToggle }) => {
 
   return (
     <Box component="nav" sx={{ width: { md: DRAWER_WIDTH }, flexShrink: { md: 0 } }}>
-      {/* Mobile Drawer */}
       <Drawer
         variant="temporary"
         open={mobileOpen}
@@ -197,7 +206,6 @@ export const Sidebar = ({ mobileOpen, handleDrawerToggle }) => {
         {drawerContent}
       </Drawer>
 
-      {/* Desktop Permanent Drawer */}
       <Drawer
         variant="permanent"
         sx={{

@@ -6,7 +6,8 @@ function AthenaHeader({
   isFullscreen,
   toggleFullscreen,
   onOpenSubmitModal,
-  saveStatus = "Saved"
+  saveStatus = "Saved",
+  identityVerification
 }) {
   const [student] = React.useState(() => {
     try {
@@ -46,21 +47,48 @@ function AthenaHeader({
         </div>
       </div>
 
-      {/* Student Metadata Card */}
-      <div className="athena-student-info">
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <i className="fas fa-user-circle" style={{ color: '#818cf8', fontSize: '1rem' }}></i>
-          <span><strong>{student.name || (student.email ? student.email.split('@')[0] : sampleStudent.name)}</strong></span>
-        </div>
+      {/* Student Metadata Card & Requirement 5 Live Identity Verification Badge */}
+      <div className="athena-student-info" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+        {identityVerification && !identityVerification.isVerified ? (
+          <div style={{
+            background: 'rgba(239, 68, 68, 0.15)',
+            border: '1px solid #ef4444',
+            color: '#f87171',
+            padding: '4px 12px',
+            borderRadius: '20px',
+            fontSize: '0.8rem',
+            fontWeight: 800,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px'
+          }}>
+            <span>🔴 Unknown Person Detected</span>
+          </div>
+        ) : (
+          <div style={{
+            background: 'rgba(16, 185, 129, 0.15)',
+            border: '1px solid #10b981',
+            color: '#34d399',
+            padding: '4px 12px',
+            borderRadius: '20px',
+            fontSize: '0.8rem',
+            fontWeight: 800,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px'
+          }}>
+            <i className="fas fa-check-circle"></i>
+            <span>✔ Verified Student - {identityVerification?.studentName || student.fullName || student.name || 'John Smith'}</span>
+            <span style={{ opacity: 0.8, fontSize: '0.75rem' }}>({identityVerification?.confidence || 98}%)</span>
+          </div>
+        )}
+
         <span style={{ color: '#334155' }}>|</span>
-        <div style={{ color: '#94a3b8' }}>
+        <div style={{ color: '#94a3b8', fontSize: '0.8rem' }}>
           🆔 <span>{student.studentId || sampleStudent.studentId}</span>
         </div>
-        <span style={{ color: '#334155' }}>|</span>
-        <div style={{ color: '#94a3b8' }}>
-          📚 <span>{student.course || sampleStudent.course}</span>
-        </div>
       </div>
+
 
       {/* Right Controls: Timer, Fullscreen, Save Status & Submit */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>

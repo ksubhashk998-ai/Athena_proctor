@@ -562,8 +562,8 @@ class EyeMovementDetection {
 
             // Post real-time alert to backend API
             const token = localStorage.getItem('token') || localStorage.getItem('authToken');
-            const studentId = localStorage.getItem('studentId') || 'STU_DEMO';
-            const sessionId = localStorage.getItem('sessionId') || 'demo_session';
+            const studentId = localStorage.getItem('studentId') || ('STU_' + Date.now());
+            const sessionId = localStorage.getItem('sessionId') || ('sess_' + Date.now());
 
             fetch('/api/log-suspicious-activity', {
                 method: 'POST',

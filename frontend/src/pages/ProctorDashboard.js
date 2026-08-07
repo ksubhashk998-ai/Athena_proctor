@@ -19,7 +19,7 @@ export default function ProctorDashboard({ user, onLogout }) {
   const [student] = useState(() => {
     if (user) return user;
     const stored = localStorage.getItem('user');
-    return stored ? JSON.parse(stored) : { studentId: 'STU_DEMO', name: 'Demo Student', email: 'student@demo.com' };
+    return stored ? JSON.parse(stored) : { studentId: 'STU_' + Date.now(), name: 'Student', email: 'student@proctor.com' };
   });
 
   const [token] = useState(() => localStorage.getItem('token') || '');

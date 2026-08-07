@@ -86,7 +86,7 @@ export const VideoStreamModal = ({ open, onClose, student }) => {
             <img
               src={currentFrame.startsWith('data:') ? currentFrame : `data:image/jpeg;base64,${currentFrame}`}
               alt="Live WebCam"
-              style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+              style={{ width: '100%', height: '100%', objectFit: 'contain', imageRendering: 'high-quality' }}
             />
           ) : (
             <Box sx={{ textAlign: 'center', color: '#94a3b8' }}>

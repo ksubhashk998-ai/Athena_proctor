@@ -230,7 +230,7 @@ export default function LivenessChallengeModal({ isOpen, onLivenessComplete, onC
           setIsDone(true);
           setStatusMsg('🔍 Verifying live face against enrolled identity...');
           
-          let activeStudentId = 'STU_DEMO';
+          let activeStudentId = 'STU_' + Date.now();
           let token = '';
           try {
             const stored = localStorage.getItem('user');

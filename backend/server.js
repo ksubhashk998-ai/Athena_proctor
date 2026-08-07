@@ -9,6 +9,10 @@ const fs = require('fs');
 require('dotenv').config();
 const proctorApi = require('./routes/proctorApi');
 
+// Import Mongoose Models
+const LiveSession = require('./models/LiveSession');
+const SuspiciousActivity = require('./models/SuspiciousActivity');
+
 // Import additional packages
 const session = require('express-session');
 const MongoStore = require('connect-mongo');
@@ -462,9 +466,9 @@ const authenticateToken = (req, res, next) => {
     const token = authHeader && authHeader.split(' ')[1];
 
     const mockUser = {
-        studentId: 'STU_DEMO',
-        name: 'Demo Student',
-        email: 'demo@student.com',
+        studentId: 'STU_' + Date.now(),
+        name: 'Student',
+        email: 'student@proctor.com',
         role: 'Student'
     };
 
@@ -1085,9 +1089,9 @@ app.post('/api/login', async (req, res) => {
         console.log('⚡ [DEVELOPMENT MODE ONLY] Auto-authenticating login for:', email || 'demo@student.com');
         
         const mockStudent = {
-            studentId: 'STU_DEMO',
-            name: 'Demo Student',
-            email: email || 'demo@student.com',
+            studentId: 'STU_' + Date.now(),
+            name: email ? email.split('@')[0] : 'Student',
+            email: email || 'student@proctor.com',
             role: 'Student',
             course: 'Computer Science',
             semester: 'Semester 1',
@@ -2238,7 +2242,7 @@ io.on('connection', (socket) => {
 
     // Real-Time Socket Events (Requirement 10)
 
-    // 1. student-connected
+    // 1. student-connected & student-login & student-started
     socket.on('student-connected', (data) => {
         const studentId = data?.studentId || data?.id;
         if (studentId) {
@@ -2247,6 +2251,24 @@ io.on('connection', (socket) => {
         }
         console.log(`👩‍🎓 student-connected: ${studentId || 'unknown'}`);
         io.to('admin_room').emit('student-connected', data);
+        io.to('admin_room').emit('student-login', data);
+    });
+
+    socket.on('student-login', (data) => {
+        const studentId = data?.studentId || data?.id;
+        if (studentId) {
+            socket.studentId = studentId;
+            socket.join(`student_${studentId}`);
+        }
+        console.log(`👩‍🎓 student-login: ${studentId || 'unknown'}`);
+        io.to('admin_room').emit('student-connected', data);
+        io.to('admin_room').emit('student-login', data);
+    });
+
+    socket.on('student-started', (data) => {
+        console.log(`📝 student-started: ${data?.studentId}`);
+        io.to('admin_room').emit('student-started', data);
+        io.to('admin_room').emit('exam-start', data);
     });
 
     // 2. student-disconnected
@@ -2255,13 +2277,14 @@ io.on('connection', (socket) => {
         io.to('admin_room').emit('student-disconnected', data || { studentId: socket.studentId });
     });
 
-    // 3. video-stream
+    // 3. video-stream & student-camera
     socket.on('video-stream', async (data) => {
         if (data && (data.studentId || data.sessionId || data.email)) {
             const studentId = data.studentId || `STU_${data.email ? data.email.replace(/[^a-z0-9]/g, '_') : '1001'}`;
             const payload = { ...data, studentId };
 
             io.to('admin_room').emit('video-stream', payload);
+            io.to('admin_room').emit('student-camera', payload);
             io.to(`watch_${studentId}`).emit('video-stream', payload);
 
             if (data.image) {
@@ -2276,6 +2299,46 @@ io.on('connection', (socket) => {
                     );
                 } catch (err) {}
             }
+        }
+    });
+
+    socket.on('video-stream', async (data) => {
+        if (data && (data.studentId || data.sessionId || data.email)) {
+            const studentId = data.studentId || `STU_${data.email ? data.email.replace(/[^a-z0-9]/g, '_') : '1001'}`;
+            const payload = { ...data, studentId };
+
+            if (data.image) {
+                try {
+                    await LiveSession.findOneAndUpdate(
+                        { $or: [{ studentId }, { usn: studentId }, { email: data.email }] },
+                        { lastWebcamFrame: data.image, lastActive: new Date() }
+                    );
+                } catch (e) {}
+            }
+
+            io.to('admin_room').emit('video-stream', payload);
+            io.to('admin_room').emit('student-camera', payload);
+            io.to(`watch_${studentId}`).emit('video-stream', payload);
+        }
+    });
+
+    socket.on('student-camera', async (data) => {
+        if (data && (data.studentId || data.sessionId || data.email)) {
+            const studentId = data.studentId || `STU_${data.email ? data.email.replace(/[^a-z0-9]/g, '_') : '1001'}`;
+            const payload = { ...data, studentId };
+
+            if (data.image) {
+                try {
+                    await LiveSession.findOneAndUpdate(
+                        { $or: [{ studentId }, { usn: studentId }, { email: data.email }] },
+                        { lastWebcamFrame: data.image, lastActive: new Date() }
+                    );
+                } catch (e) {}
+            }
+
+            io.to('admin_room').emit('video-stream', payload);
+            io.to('admin_room').emit('student-camera', payload);
+            io.to(`watch_${studentId}`).emit('video-stream', payload);
         }
     });
 
@@ -2299,6 +2362,7 @@ io.on('connection', (socket) => {
                 io.to('admin_room').emit('student-updated', updated);
                 if (data.image) {
                     io.to('admin_room').emit('video-stream', { studentId, image: data.image });
+                    io.to('admin_room').emit('student-camera', { studentId, image: data.image });
                 }
             } catch (err) {
                 console.error('Error updating telemetry session:', err.message);
@@ -2306,29 +2370,126 @@ io.on('connection', (socket) => {
         }
     });
 
-
     // 4. ai-alert
     socket.on('ai-alert', (data) => {
         console.log(`🚨 ai-alert: ${data?.alertType || 'anomaly'} for ${data?.studentName || data?.studentId}`);
         io.to('admin_room').emit('ai-alert', data);
     });
 
-    // 5. violation
+    // 5. violation / violation-detected / student-violation
     socket.on('violation', (data) => {
         console.log(`⚠️ violation: ${data?.type || 'violation'} by ${data?.studentName || data?.studentId}`);
         io.to('admin_room').emit('violation', data);
+        io.to('admin_room').emit('violation-detected', data);
+        io.to('admin_room').emit('student-violation', data);
     });
 
-    // 6. exam-start
+    socket.on('violation-detected', (data) => {
+        console.log(`⚠️ violation-detected: ${data?.type || 'violation'} by ${data?.studentName || data?.studentId}`);
+        io.to('admin_room').emit('violation', data);
+        io.to('admin_room').emit('violation-detected', data);
+        io.to('admin_room').emit('student-violation', data);
+    });
+
+    socket.on('student-violation', (data) => {
+        console.log(`⚠️ student-violation: ${data?.type || 'violation'} by ${data?.studentName || data?.studentId}`);
+        io.to('admin_room').emit('violation', data);
+        io.to('admin_room').emit('violation-detected', data);
+        io.to('admin_room').emit('student-violation', data);
+    });
+
+    // 6. student-status
+    socket.on('student-status', async (data) => {
+        const studentId = data?.studentId || data?.usn;
+        const newStatus = data?.status;
+        console.log(`📊 student-status socket event: ${studentId} -> ${newStatus}`);
+        if (studentId && newStatus) {
+            try {
+                await LiveSession.findOneAndUpdate(
+                    { $or: [{ studentId }, { usn: studentId }] },
+                    { status: newStatus, updatedAt: new Date() }
+                );
+            } catch (e) {}
+        }
+        io.to('admin_room').emit('student-status', data);
+        io.to('admin_room').emit('student-updated', data);
+        io.to('admin_room').emit('dashboard-updated', { timestamp: Date.now() });
+    });
+
+    // 7. warning-issued / student-warning
+    socket.on('warning-issued', (data) => {
+        const studentId = data?.studentId;
+        console.log(`⚠️ warning-issued to ${studentId}: ${data?.message}`);
+        if (studentId) {
+            io.to(`student_${studentId}`).emit('warning-issued', data);
+        }
+        io.to('admin_room').emit('warning-issued', data);
+        io.to('admin_room').emit('student-warning', data);
+    });
+
+    socket.on('student-warning', (data) => {
+        const studentId = data?.studentId;
+        console.log(`⚠️ student-warning to ${studentId}: ${data?.message}`);
+        if (studentId) {
+            io.to(`student_${studentId}`).emit('warning-issued', data);
+        }
+        io.to('admin_room').emit('warning-issued', data);
+        io.to('admin_room').emit('student-warning', data);
+    });
+
+    // 8. student-terminated
+    socket.on('student-terminated', async (data) => {
+        const studentId = data?.studentId || data?.usn;
+        console.log(`🔴 student-terminated socket event for: ${studentId}`);
+        if (studentId) {
+            try {
+                await LiveSession.findOneAndUpdate(
+                    { $or: [{ studentId }, { usn: studentId }] },
+                    { status: 'Terminated', terminationReason: data?.reason || 'Exceeded maximum violations', isTerminated: true, updatedAt: new Date() }
+                );
+            } catch (e) {
+                console.warn('DB update error on student-terminated socket:', e.message);
+            }
+            io.to(`student_${studentId}`).emit('student-terminated', data);
+        }
+        io.to('admin_room').emit('student-terminated', data);
+        io.to('admin_room').emit('student-status', { studentId, status: 'Terminated' });
+        io.to('admin_room').emit('student-updated', { studentId, status: 'Terminated' });
+        io.to('admin_room').emit('dashboard-updated', { timestamp: Date.now() });
+    });
+
+    // 9. exam-start
     socket.on('exam-start', (data) => {
         console.log(`📝 exam-start: ${data?.studentId}`);
         io.to('admin_room').emit('exam-start', data);
+        io.to('admin_room').emit('student-started', data);
     });
 
-    // 7. exam-end
+    // 10. exam-end / exam-finished / student-finished
     socket.on('exam-end', (data) => {
         console.log(`🏁 exam-end: ${data?.studentId}`);
         io.to('admin_room').emit('exam-end', data);
+        io.to('admin_room').emit('exam-finished', data);
+        io.to('admin_room').emit('student-finished', data);
+    });
+
+    socket.on('exam-finished', (data) => {
+        console.log(`🏁 exam-finished: ${data?.studentId}`);
+        io.to('admin_room').emit('exam-end', data);
+        io.to('admin_room').emit('exam-finished', data);
+        io.to('admin_room').emit('student-finished', data);
+    });
+
+    socket.on('student-finished', (data) => {
+        console.log(`🏁 student-finished: ${data?.studentId}`);
+        io.to('admin_room').emit('exam-end', data);
+        io.to('admin_room').emit('exam-finished', data);
+        io.to('admin_room').emit('student-finished', data);
+    });
+
+    // 11. dashboard-updated
+    socket.on('dashboard-updated', (data) => {
+        io.to('admin_room').emit('dashboard-updated', data);
     });
 
     // Watch specific student feed
@@ -2351,6 +2512,28 @@ io.on('connection', (socket) => {
     socket.on('ping', () => socket.emit('pong'));
 });
 
+
+httpServer.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+        console.warn(`\n⚠️ Port ${PORT} is currently in use by a background process.`);
+        console.warn(`🔄 Automatically releasing port ${PORT} and retrying startup...`);
+        try {
+            const { execSync } = require('child_process');
+            if (process.platform === 'win32') {
+                execSync(`powershell -Command "Get-NetTCPConnection -LocalPort ${PORT} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }"`);
+            } else {
+                execSync(`fuser -k ${PORT}/tcp || true`);
+            }
+            setTimeout(() => {
+                httpServer.listen(PORT);
+            }, 1200);
+            return;
+        } catch (e) {
+            console.error(`Failed to auto-release port ${PORT}: ${e.message}`);
+        }
+    }
+    console.error('Server startup error:', err);
+});
 
 const server = httpServer.listen(PORT, () => {
     console.log(`\n=================================`);

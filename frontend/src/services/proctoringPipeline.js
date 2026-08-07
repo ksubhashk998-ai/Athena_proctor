@@ -217,57 +217,37 @@ class ProctoringPipeline {
   // ═══════════════════════════════════════════════════════════
   // PROCESS FRAME — Main entry point called every 300ms
   // ═══════════════════════════════════════════════════════════
-  async processFrame(videoElement, canvasElement, options = {}) {
-    if (!videoElement || videoElement.readyState < 2) {
+  async processFrame(videoElement, canvasElement, studentInfo = {}, options = {}) {
+    if (!videoElement || videoElement.readyState < 4 || !videoElement.videoWidth || !videoElement.videoHeight || videoElement.paused) {
       return this.getDefaultTelemetry();
     }
 
-    const ctx = canvasElement?.getContext('2d') ?? null;
-    if (ctx) ctx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+    const canvasW = canvasElement ? (canvasElement.width || 320) : 320;
+    const canvasH = canvasElement ? (canvasElement.height || 240) : 240;
+    const ctx = canvasElement ? canvasElement.getContext('2d') : null;
 
-    const canvasW = canvasElement?.width ?? 320;
-    const canvasH = canvasElement?.height ?? 240;
+    if (ctx && options.clearCanvas !== false) {
+      ctx.drawImage(videoElement, 0, 0, canvasW, canvasH);
+    }
 
-    // ── A. Face Detection & 68-Landmark Inference ─────────────
-    let detections = [];
-    if (this.faceApiReady) {
+    // ── A. Multi-Face Detection via face-api.js TinyFaceDetector ─────────
+    let rawDetections = [];
+    if (this.faceApiReady && videoElement.videoWidth > 0 && videoElement.videoHeight > 0) {
       try {
-        detections = await faceapi
-          .detectAllFaces(videoElement, new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.45 }))
+        const dets = await faceapi
+          .detectAllFaces(videoElement, new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.25 }))
           .withFaceLandmarks();
+        if (Array.isArray(dets)) {
+          rawDetections = dets.filter(d => d && d.detection && d.detection.box && d.detection.box.width > 0 && d.detection.box.height > 0);
+        }
       } catch (err) {
-        console.warn('[Athena] face-api frame error:', err.message);
+        if (!err.message?.includes('expected box')) {
+          console.warn('[Athena] face-api frame error:', err.message);
+        }
       }
     }
 
-    const vW = videoElement?.videoWidth || 640;
-    const vH = videoElement?.videoHeight || 480;
-
-    // Smart Candidate Selection: Sort faces by centrality + bounding box area
-    if (detections && detections.length > 0) {
-      detections.forEach(d => {
-        const box = d.detection.box;
-        const centerX = box.x + box.width / 2;
-        const centerY = box.y + box.height / 2;
-        const distFromCenterX = Math.abs(centerX - (vW / 2)) / (vW / 2);
-        const distFromCenterY = Math.abs(centerY - (vH / 2)) / (vH / 2);
-        const area = box.width * box.height;
-        // Candidate in center with larger area gets highest priority
-        d.candidateScore = (area * d.detection.score) / (1.0 + (distFromCenterX * 2.5) + (distFromCenterY * 1.5));
-      });
-
-      detections.sort((a, b) => b.candidateScore - a.candidateScore);
-    }
-
-    // Filter secondary faces: must be at least 25% area of primary candidate face and score >= 0.50
-    let validDetections = detections;
-    if (detections && detections.length > 1) {
-      const primaryArea = detections[0].detection.box.width * detections[0].detection.box.height;
-      validDetections = detections.filter((d, idx) =>
-        idx === 0 || (d.detection.box.width * d.detection.box.height >= primaryArea * 0.25 && d.detection.score >= 0.50)
-      );
-    }
-
+    const validDetections = rawDetections.filter(d => d.detection.score >= 0.25);
     const personCount = validDetections.length;
 
     // ── B. Head Pose & Eye Gaze from Landmarks ────────────────
@@ -282,15 +262,13 @@ class ProctoringPipeline {
     }
     const objectResult = this._extractObjects(rawPredictions, videoElement, canvasW, canvasH);
 
-    // ── D. Temporal Persistence Counters (5s / 30-frame False Positive Filter) ──
+    // ── D. Temporal Persistence Counters ─────────────
     if (personCount === 0) this.faceMissingFrames++;
     else this.faceMissingFrames = 0;
 
     if (personCount >= 2) this.multiFaceFrames++;
     else this.multiFaceFrames = 0;
 
-    // Rule: Eye movement alone MUST NEVER trigger a warning.
-    // Require head pose deviation (Yaw > 35°, Pitch > 30°, Roll > 30°) OR continuous off-screen gaze
     const isBlinkingOrNormalReading = poseResult.rawBlink || poseResult.gazeDirection === 'blinking' || (Math.abs(poseResult.yaw) <= 20 && Math.abs(poseResult.pitch) <= 20);
     const isHeadOrExtremeGazeAway = !isBlinkingOrNormalReading && (poseResult.headPoseDirection !== 'Center' || poseResult.gazeDirection !== 'Center');
     
@@ -299,8 +277,8 @@ class ProctoringPipeline {
 
     // ── E. Canvas Overlays ────────────────────────────────────
     if (ctx && options.drawOverlays !== false) {
-      this._drawFaceBoxes(ctx, validDetections, videoElement, canvasW, canvasH, personCount, poseResult);
-      this._drawObjectBoxes(ctx, objectResult);
+      this._drawFaceBoxes(ctx, validDetections, videoElement, canvasW, canvasH, personCount, poseResult, studentInfo);
+      this._drawObjectBoxes(ctx, objectResult, canvasW);
       this._drawGazeIndicator(ctx, poseResult, personCount, canvasW, canvasH);
     }
 
@@ -317,13 +295,11 @@ class ProctoringPipeline {
     else if (personCount >= 3) faceCountLabel = `Faces: ${personCount}+`;
 
     return {
-      // Face
       faceStatusLabel,
       isFaceDetected,
       faceConfidence,
       faceCountLabel,
       personCount,
-      // Head Pose
       headPoseLabel: poseResult.headPoseDirection !== 'Center'
         ? `⚠ Looking ${poseResult.headPoseDirection}`
         : '✓ Looking Center',
@@ -332,7 +308,6 @@ class ProctoringPipeline {
       yawAngle: poseResult.yaw,
       pitchAngle: poseResult.pitch,
       rollAngle: poseResult.roll,
-      // Eye Gaze
       gazeDirection: poseResult.gazeDirection,
       rawGazeDir: poseResult.rawGazeDir || poseResult.gazeDirection,
       rawBlink: poseResult.rawBlink || (poseResult.ear !== undefined && poseResult.ear < 0.26),
@@ -341,11 +316,9 @@ class ProctoringPipeline {
         ? `⚠ Looking ${poseResult.gazeDirection}`
         : '✓ Looking Center',
       gazeConfidence: poseResult.gazeConfidence,
-      // Phone
       detectedPhone: objectResult.isPhoneActive,
       phoneScore: objectResult.phoneScore,
       phoneTrackSec: (this.phoneTrackFrames * 0.3).toFixed(1),
-      // Earphones
       detectedEarphones: objectResult.isEarphonesActive,
       earphonesScore: objectResult.earphonesScore,
       // Trigger flags strictly filtered by 5 continuous seconds (17 frames at 300ms intervals = 5.1s)

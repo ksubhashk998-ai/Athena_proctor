@@ -15,9 +15,34 @@ const FaceEmbedding = require('../models/FaceEmbedding');
 const SuspiciousActivity = require('../models/SuspiciousActivity');
 const ScreenshotEvidence = require('../models/ScreenshotEvidence');
 const Student = require('../models/Student');
+const Incident = require('../models/Incident');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this-in-production';
 const PYTHON_DETECTOR_URL = process.env.PYTHON_DETECTOR_URL || 'http://localhost:8001';
+
+// Vector math helper functions
+function cosineSimilarity(a, b) {
+    if (!a || !b || a.length !== b.length) return 0;
+    let dot = 0, normA = 0, normB = 0;
+    for (let i = 0; i < a.length; i++) {
+        dot += a[i] * b[i];
+        normA += a[i] * a[i];
+        normB += b[i] * b[i];
+    }
+    if (normA === 0 || normB === 0) return 0;
+    return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+function euclideanDistance(a, b) {
+    if (!a || !b || a.length !== b.length) return 1;
+    let sum = 0;
+    for (let i = 0; i < a.length; i++) {
+        const diff = a[i] - b[i];
+        sum += diff * diff;
+    }
+    return Math.sqrt(sum);
+}
+
 
 // In-memory OTP Store: Map<cleanEmail, { hashedOtp, attempts, expiresAt, lastSentAt, studentId, studentName }>
 const otpStore = new Map();
@@ -218,15 +243,184 @@ router.post('/auth/resend-otp', handleResendOtp);
 router.post('/resend-otp', handleResendOtp);
 router.post('/otp/resend', handleResendOtp);
 
+// =========================================================================
+// STUDENT REGISTRATION & AUTHENTICATION ENDPOINTS
+// =========================================================================
+
+const handleRegister = async (req, res) => {
+    console.log('📥 Received registration request:', {
+        firstName: req.body?.firstName,
+        lastName: req.body?.lastName,
+        email: req.body?.email,
+        faceEmbeddingsLength: Array.isArray(req.body?.faceEmbeddings) ? req.body.faceEmbeddings.length : 0
+    });
+
+    try {
+        const { firstName, lastName, email, password, faceEmbeddings, imageSnapshot } = req.body;
+
+        if (!firstName || !lastName || !email || !password) {
+            console.warn('⚠️ Registration validation failed: Missing required fields');
+            return res.status(400).json({ 
+                success: false, 
+                error: 'First name, last name, email, and password are required.' 
+            });
+        }
+
+        if (!faceEmbeddings || !Array.isArray(faceEmbeddings) || faceEmbeddings.length === 0) {
+            console.warn('⚠️ Registration validation failed: Missing faceEmbeddings array');
+            return res.status(400).json({ 
+                success: false, 
+                error: 'Face enrollment is mandatory before registration. Please enroll your face first.' 
+            });
+        }
+
+        const cleanEmail = email.trim().toLowerCase();
+
+        // Check for duplicate email
+        const existingStudent = await Student.findOne({ email: cleanEmail });
+        if (existingStudent) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'An account with this email address already exists. Please login.' 
+            });
+        }
+
+        const fullName = `${firstName.trim()} ${lastName.trim()}`;
+        const studentId = 'STU_' + cleanEmail.replace(/[^a-z0-9]/g, '_');
+
+        // Create student record
+        const student = new Student({
+            studentId,
+            firstName: firstName.trim(),
+            lastName: lastName.trim(),
+            fullName,
+            name: fullName,
+            email: cleanEmail,
+            password, // Password hashing happens in Student pre-save hook
+            passwordHash: password,
+            faceEmbeddings,
+            faceEnrolled: true,
+            faceEnrolledAt: new Date(),
+            registrationDate: new Date(),
+            verificationStatus: 'Enrolled'
+        });
+
+        await student.save();
+
+        // Sync embedding into memory cache & FaceEmbedding collection
+        const encryptedVec = encryptEmbedding(faceEmbeddings);
+        inMemoryEmbeddings.set(studentId, {
+            studentId,
+            email: cleanEmail,
+            embedding: faceEmbeddings,
+            imageSnapshot: imageSnapshot || null,
+            enrolledAt: new Date(),
+            isActive: true
+        });
+
+        if (FaceEmbedding && FaceEmbedding.findOneAndUpdate) {
+            await FaceEmbedding.findOneAndUpdate(
+                { studentId },
+                {
+                    studentId,
+                    email: cleanEmail,
+                    embedding: faceEmbeddings,
+                    encryptedEmbedding: encryptedVec,
+                    imageSnapshot: imageSnapshot || null,
+                    enrolledAt: new Date(),
+                    isActive: true
+                },
+                { upsert: true, new: true }
+            ).catch(e => console.warn('FaceEmbedding upsert notice:', e.message));
+        }
+
+        console.log(`✅ Student registered successfully: ${fullName} (${cleanEmail})`);
+
+        const token = jwt.sign(
+            { studentId, email: cleanEmail, name: fullName, role: 'Student' },
+            JWT_SECRET,
+            { expiresIn: '24h' }
+        );
+
+        return res.status(201).json({
+            success: true,
+            message: 'Student account created and face enrolled successfully!',
+            token,
+            student: student.getPublicProfile()
+        });
+
+    } catch (error) {
+        console.error('Registration error:', error);
+        return res.status(500).json({ success: false, error: 'Registration failed: ' + error.message });
+    }
+};
+
+const handleLogin = async (req, res) => {
+    try {
+        const { email, password } = req.body;
+
+        if (!email || !password) {
+            return res.status(400).json({ success: false, error: 'Email and password are required.' });
+        }
+
+        const cleanEmail = email.trim().toLowerCase();
+        const student = await Student.findOne({ email: cleanEmail });
+
+        if (!student) {
+            return res.status(401).json({ success: false, error: 'Invalid email or password.' });
+        }
+
+        const isMatch = await student.comparePassword(password);
+        if (!isMatch) {
+            return res.status(401).json({ success: false, error: 'Invalid email or password.' });
+        }
+
+        const token = jwt.sign(
+            { 
+                studentId: student.studentId, 
+                email: student.email, 
+                name: student.fullName || student.name, 
+                role: 'Student' 
+            },
+            JWT_SECRET,
+            { expiresIn: '24h' }
+        );
+
+        console.log(`🔑 Login password authenticated for ${cleanEmail}. Proceeding to Face Verification.`);
+
+        return res.json({
+            success: true,
+            message: 'Password authenticated. Opening Face Verification...',
+            token,
+            requiresFaceVerification: true,
+            student: student.getPublicProfile()
+        });
+
+    } catch (error) {
+        console.error('Login error:', error);
+        return res.status(500).json({ success: false, error: 'Login failed: ' + error.message });
+    }
+};
+
+// Auth Route Registrations & Aliases
+router.post('/auth/register', handleRegister);
+router.post('/register', handleRegister);
+router.post('/user/register', handleRegister);
+
+router.post('/auth/login', handleLogin);
+router.post('/login', handleLogin);
+router.post('/user/login', handleLogin);
+
+
 // DEVELOPMENT MODE ONLY - REMOVE BEFORE PRODUCTION
 function authenticateToken(req, res, next) {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
 
     const mockUser = {
-        studentId: 'STU_DEMO',
-        name: 'Demo Student',
-        email: 'demo@student.com',
+        studentId: 'STU_' + Date.now(),
+        name: 'Student',
+        email: 'student@proctor.com',
         role: 'Student'
     };
 
@@ -366,38 +560,62 @@ router.post('/face/enroll', authenticateToken, async (req, res) => {
 
 /**
  * POST /api/face/verify
- * Body: { studentId, embedding: number[128], sessionId?: string }
- * Returns: { match: bool, confidence: number, similarity, distance, message }
+ * Body: { studentId?: string, email?: string, embedding: number[128], sessionId?: string }
+ * Returns: { match: bool, confidence: number, similarityPct, student, message }
  */
 router.post('/face/verify', authenticateToken, async (req, res) => {
     try {
-        const { studentId, embedding, sessionId } = req.body;
+        const { studentId, email, embedding, sessionId } = req.body;
 
-        if (!studentId) {
-            return res.status(400).json({ error: 'studentId is required for verification' });
+        const targetId = studentId || (email ? 'STU_' + email.trim().toLowerCase().replace(/[^a-z0-9]/g, '_') : null);
+
+        if (!targetId && !email) {
+            return res.status(400).json({ success: false, error: 'studentId or email is required for verification' });
         }
 
         if (!embedding || !Array.isArray(embedding) || (embedding.length !== 128 && embedding.length !== 512)) {
-            return res.status(400).json({ error: 'Invalid face embedding vector' });
+            return res.status(400).json({ success: false, error: 'Valid face embedding vector is required' });
         }
 
-        let storedRecord = inMemoryEmbeddings.get(studentId);
+        let storedRecord = inMemoryEmbeddings.get(targetId);
+        let studentRecord = null;
 
-        if (!storedRecord && FaceEmbedding && FaceEmbedding.findOne) {
+        if (Student) {
             try {
-                const dbRec = await FaceEmbedding.findOne({ studentId, isActive: true });
+                studentRecord = await Student.findOne({ 
+                    $or: [
+                        { studentId: targetId },
+                        { email: (email || '').trim().toLowerCase() }
+                    ] 
+                });
+            } catch (e) {}
+        }
+
+        if (!storedRecord && studentRecord && studentRecord.faceEmbeddings && studentRecord.faceEmbeddings.length >= 128) {
+            storedRecord = { 
+                studentId: studentRecord.studentId, 
+                embedding: studentRecord.faceEmbeddings, 
+                enrolledAt: studentRecord.faceEnrolledAt 
+            };
+            inMemoryEmbeddings.set(studentRecord.studentId, storedRecord);
+        }
+
+        if (!storedRecord && FaceEmbedding) {
+            try {
+                const dbRec = await FaceEmbedding.findOne({ 
+                    $or: [{ studentId: targetId }, { email: (email || '').trim().toLowerCase() }], 
+                    isActive: true 
+                });
                 if (dbRec) {
                     let vec = dbRec.embedding;
                     if (dbRec.encryptedEmbedding) {
                         const decrypted = decryptEmbedding(dbRec.encryptedEmbedding);
                         if (decrypted) vec = decrypted;
                     }
-                    storedRecord = { studentId, embedding: vec, enrolledAt: dbRec.enrolledAt };
-                    inMemoryEmbeddings.set(studentId, storedRecord);
+                    storedRecord = { studentId: dbRec.studentId, embedding: vec, enrolledAt: dbRec.enrolledAt };
+                    inMemoryEmbeddings.set(dbRec.studentId, storedRecord);
                 }
-            } catch (e) {
-                console.warn('FaceEmbedding DB fetch notice:', e.message);
-            }
+            } catch (e) {}
         }
 
         if (!storedRecord || !storedRecord.embedding || storedRecord.embedding.length < 128) {
@@ -405,32 +623,40 @@ router.post('/face/verify', authenticateToken, async (req, res) => {
                 match: false,
                 confidence: 0,
                 similarity: 0,
+                similarityPct: 0,
                 distance: 1,
                 message: 'No face registered for this student. Please enroll first.',
                 needsEnrollment: true
             });
         }
 
-        // Cosine similarity against stored average enrollment embedding
+        // Cosine similarity comparison
         const sim = cosineSimilarity(embedding, storedRecord.embedding);
         const dist = euclideanDistance(embedding, storedRecord.embedding);
-        const similarityPct = Math.round(Math.max(0, Math.min(1, sim)) * 100);
+        const similarityPct = Math.round(Math.max(0, Math.min(100, sim * 100)));
 
-        // Calibrated Production Matching Rule: Similarity >= 0.65 (or 0.72) -> Accept
-        const simThreshold = parseFloat(process.env.FACE_MATCH_THRESHOLD) || 0.65;
-        const match = sim >= simThreshold || dist <= 0.55;
+        // Confidence threshold around 0.60 (or configurable via env)
+        const simThreshold = parseFloat(process.env.FACE_MATCH_THRESHOLD) || 0.60;
+        const match = sim >= simThreshold;
+
+        const fullName = studentRecord ? (studentRecord.fullName || studentRecord.name) : (targetId || 'Student');
+
+        if (studentRecord) {
+            studentRecord.lastVerification = new Date();
+            studentRecord.verificationStatus = match ? 'Verified' : 'Failed';
+            await studentRecord.save().catch(() => {});
+        }
 
         const displayMessage = match
-            ? `Face Match: ${similarityPct}%`
-            : `Face Mismatch (${similarityPct}% similarity)`;
+            ? `Verified Student - ${fullName}`
+            : 'Face does not match the registered student.';
 
-        console.log(`🔒 Face Verification [studentId: ${studentId}]: CosineSim=${sim.toFixed(4)} (Threshold: ${simThreshold}), Dist=${dist.toFixed(4)} => Match=${match} (${displayMessage})`);
+        console.log(`🔒 Face Verification [${targetId}]: CosineSim=${sim.toFixed(4)} (Threshold: ${simThreshold}) => Match=${match}`);
 
-        // Requirement 9: Log failed verification attempts
         if (!match) {
             try {
                 new SuspiciousActivity({
-                    studentId,
+                    studentId: targetId,
                     sessionId: sessionId || `verify_${Date.now()}`,
                     type: 'face_mismatch',
                     severity: 'high',
@@ -448,6 +674,11 @@ router.post('/face/verify', authenticateToken, async (req, res) => {
             similarityPct,
             distance: parseFloat(dist.toFixed(4)),
             threshold: simThreshold,
+            student: {
+                studentId: targetId,
+                fullName,
+                email: studentRecord ? studentRecord.email : email
+            },
             message: displayMessage
         });
     } catch (error) {
@@ -455,6 +686,76 @@ router.post('/face/verify', authenticateToken, async (req, res) => {
         return res.status(500).json({ error: 'Face verification failed: ' + error.message });
     }
 });
+
+/**
+ * POST /api/incidents/log
+ * Body: { studentId, fullName, email, screenshot, reason, confidence, timestamp }
+ */
+router.post('/incidents/log', authenticateToken, async (req, res) => {
+    try {
+        const { studentId, fullName, email, screenshot, reason, confidence, timestamp } = req.body;
+
+        if (!studentId || !fullName || !email) {
+            return res.status(400).json({ success: false, error: 'studentId, fullName, and email are required.' });
+        }
+
+        const incident = new Incident({
+            studentId,
+            fullName,
+            email,
+            screenshot: screenshot || null,
+            reason: reason || 'Face Mismatch',
+            confidence: confidence || 0,
+            timestamp: timestamp ? new Date(timestamp) : new Date()
+        });
+
+        await incident.save();
+
+        if (Student) {
+            await Student.findOneAndUpdate(
+                { $or: [{ studentId }, { email: email.trim().toLowerCase() }] },
+                { verificationStatus: 'Terminated', lastVerification: new Date() }
+            ).catch(() => {});
+        }
+
+        // Send real-time Socket.IO alert to Admin Dashboard
+        const io = req.app.get('io');
+        if (io) {
+            io.to('admin_room').emit('incident_logged', {
+                incidentId: incident._id,
+                studentId,
+                fullName,
+                email,
+                reason: incident.reason,
+                confidence: incident.confidence,
+                screenshot: incident.screenshot,
+                timestamp: incident.timestamp,
+                status: 'Identity Failed'
+            });
+            io.to('admin_room').emit('ai-alert', {
+                type: 'IDENTITY_FAILED_AUTO_TERMINATED',
+                studentId,
+                studentName: fullName,
+                email,
+                reason: incident.reason,
+                timestamp: incident.timestamp
+            });
+        }
+
+        console.log(`🚨 Incident Logged & Admin Notified: ${fullName} (${reason})`);
+
+        return res.status(201).json({
+            success: true,
+            message: 'Incident logged and admin notified in real time.',
+            incidentId: incident._id
+        });
+
+    } catch (error) {
+        console.error('Incident logging error:', error);
+        return res.status(500).json({ success: false, error: 'Incident logging failed: ' + error.message });
+    }
+});
+
 
 /**
  * GET /api/face/status/:studentId
@@ -585,7 +886,7 @@ router.post('/violations/log', authenticateToken, async (req, res) => {
 
         // Save violation (Requirement 7)
         const activity = new SuspiciousActivity({
-            studentId: studentId || 'STU_DEMO',
+            studentId: studentId || ('STU_' + Date.now()),
             studentEmail: studentEmail || req.user?.email || null,
             examId: examId || 'CS_EXAM_FINAL',
             violationType: effectiveType,
@@ -774,7 +1075,7 @@ router.post('/detect/headphone', authenticateToken, async (req, res) => {
 router.post('/head-movement', authenticateToken, async (req, res) => {
     try {
         const {
-            studentId = req.user?.studentId || 'STU_DEMO',
+            studentId = req.user?.studentId || ('STU_' + Date.now()),
             sessionId = 'demo_session',
             pitch = 0,
             yaw = 0,
@@ -845,7 +1146,7 @@ router.post('/head-movement', authenticateToken, async (req, res) => {
 router.post('/eye-movement', authenticateToken, async (req, res) => {
     try {
         const {
-            studentId = req.user?.studentId || 'STU_DEMO',
+            studentId = req.user?.studentId || ('STU_' + Date.now()),
             sessionId = 'demo_session',
             direction = 'center',
             hRatio = 0.5,

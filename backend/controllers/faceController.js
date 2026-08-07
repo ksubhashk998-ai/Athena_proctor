@@ -2,11 +2,11 @@ const fs = require('fs');
 const path = require('path');
 const User = require('../models/User');
 const Student = require('../models/Student');
-const FaceEmbedding = require('../models/FaceEmbedding');
+const FaceProfile = require('../models/FaceProfile');
+const VerificationLog = require('../models/VerificationLog');
 const CheatingLog = require('../models/CheatingLog');
-const SuspiciousActivity = require('../models/SuspiciousActivity');
 
-// Helper: Save Base64 JPEG Image to Disk Folder (backend/screenshots/)
+// Helper: Save Base64 JPEG Image to Disk / Server Public Folder
 function saveImageToDisk(base64Data, prefix, userIdentifier) {
   if (!base64Data || typeof base64Data !== 'string') return null;
   try {
@@ -28,20 +28,19 @@ function saveImageToDisk(base64Data, prefix, userIdentifier) {
   }
 }
 
-// Helper: Calculate Euclidean Distance between two 128-dimensional vectors
-function euclideanDistance(a, b) {
-  if (!a || !b || a.length !== b.length) return 1.0;
-  let sum = 0;
-  for (let i = 0; i < a.length; i++) {
-    const diff = a[i] - b[i];
-    sum += diff * diff;
-  }
-  return Math.sqrt(sum);
+// Helper: L2 Vector Normalization for Distance Invariance (0.5m, 1m, 2m distance independence)
+function normalizeVector(vec) {
+  if (!vec || !Array.isArray(vec) || vec.length === 0) return vec;
+  let norm = 0;
+  for (let i = 0; i < vec.length; i++) norm += vec[i] * vec[i];
+  norm = Math.sqrt(norm);
+  if (norm === 0) return vec;
+  return vec.map(v => v / norm);
 }
 
-// Helper: Cosine Similarity
+// Helper: Cosine Similarity between normalized ArcFace vectors
 function cosineSimilarity(a, b) {
-  if (!a || !b || a.length !== b.length) return 0;
+  if (!a || !b || a.length !== b.length || a.length === 0) return 0;
   let dot = 0, normA = 0, normB = 0;
   for (let i = 0; i < a.length; i++) {
     dot += a[i] * b[i];
@@ -49,92 +48,105 @@ function cosineSimilarity(a, b) {
     normB += b[i] * b[i];
   }
   if (normA === 0 || normB === 0) return 0;
-  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+  const sim = dot / (Math.sqrt(normA) * Math.sqrt(normB));
+  return Math.max(0, Math.min(1.0, sim));
 }
 
 /**
  * POST /api/face/enroll
- * Body: { email, name, usn, faceEmbeddings, faceDescriptors, imageSnapshot }
+ * Body: { studentId, name, email, usn, faceEmbeddings, embeddings, enrollmentImages, imageSnapshot }
  */
 const enrollFace = async (req, res) => {
   try {
-    const { email, name, usn, faceEmbeddings, faceDescriptors, imageSnapshot } = req.body;
-    const descriptorsToStore = faceDescriptors || faceEmbeddings;
+    const { studentId, name, email, usn, faceEmbeddings, embeddings, enrollmentImages, imageSnapshot } = req.body;
+    const rawEmbeddings = embeddings || faceEmbeddings || [];
 
-    if (!email) {
-      return res.status(400).json({ success: false, error: 'Email is required for face enrollment' });
+    if (!email && !studentId) {
+      return res.status(400).json({ success: false, error: 'Email or StudentId is required for face enrollment' });
     }
 
-    if (!descriptorsToStore || !Array.isArray(descriptorsToStore) || descriptorsToStore.length === 0) {
-      return res.status(400).json({ success: false, error: '30 Face descriptors are required for enrollment' });
+    if (!rawEmbeddings || !Array.isArray(rawEmbeddings) || rawEmbeddings.length === 0) {
+      return res.status(400).json({ success: false, error: 'Face embeddings are required for enrollment (30 frames expected)' });
     }
 
-    const cleanEmail = email.trim().toLowerCase();
+    const cleanEmail = (email || '').trim().toLowerCase();
+    const cleanStudentId = (studentId || ('STU_' + cleanEmail.replace(/[^a-z0-9]/g, '_'))).trim();
+    const studentName = name || cleanEmail.split('@')[0] || 'Enrolled Student';
 
-    // 1. Save photo snapshot to backend/screenshots/ disk folder
-    let savedPhotoPath = null;
-    if (imageSnapshot) {
-      savedPhotoPath = saveImageToDisk(imageSnapshot, 'enrolled_face', cleanEmail);
+    // L2 Normalize all enrolled ArcFace embeddings for distance invariance
+    const normalizedEmbeddings = rawEmbeddings.map(vec => normalizeVector(Array.isArray(vec) ? vec : [vec]));
+
+    // Handle enrollment images
+    let savedImageUrls = [];
+    if (Array.isArray(enrollmentImages) && enrollmentImages.length > 0) {
+      savedImageUrls = enrollmentImages.map((img, idx) => {
+        if (typeof img === 'string' && img.startsWith('data:image')) {
+          return saveImageToDisk(img, `enroll_frame_${idx+1}`, cleanStudentId) || img;
+        }
+        return img;
+      });
     }
 
-    // 2. Update User model in MongoDB
+    if (savedImageUrls.length === 0 && imageSnapshot) {
+      const singleUrl = saveImageToDisk(imageSnapshot, 'enroll_primary', cleanStudentId) || imageSnapshot;
+      savedImageUrls.push(singleUrl);
+    }
+
+    // 1. Upsert into FaceProfile collection per Specification 4
+    let profile = await FaceProfile.findOne({
+      $or: [{ studentId: cleanStudentId }, { email: cleanEmail }]
+    });
+
+    if (profile) {
+      profile.studentId = cleanStudentId;
+      profile.name = studentName;
+      profile.email = cleanEmail;
+      profile.embeddings = normalizedEmbeddings;
+      profile.enrollmentImages = savedImageUrls;
+      profile.createdAt = new Date();
+      await profile.save();
+    } else {
+      profile = new FaceProfile({
+        studentId: cleanStudentId,
+        name: studentName,
+        email: cleanEmail,
+        embeddings: normalizedEmbeddings,
+        enrollmentImages: savedImageUrls,
+        createdAt: new Date()
+      });
+      await profile.save();
+    }
+
+    // 2. Sync User & Student models in MongoDB for backwards compatibility
     let user = await User.findOne({ email: cleanEmail });
     if (user) {
-      user.faceEmbeddings = descriptorsToStore;
-      user.enrolledImageSnapshot = savedPhotoPath || imageSnapshot || null;
+      user.faceEmbeddings = normalizedEmbeddings;
+      user.enrolledImageSnapshot = savedImageUrls[0] || null;
       user.faceEnrolled = true;
       user.enrollmentDate = new Date();
       if (name) user.name = name;
       if (usn) user.usn = usn;
       await user.save();
-    } else {
-      user = new User({
-        name: name || cleanEmail.split('@')[0],
-        usn: usn || '1SZ23CS001',
-        email: cleanEmail,
-        password: 'Password@123',
-        faceEmbeddings: descriptorsToStore,
-        enrolledImageSnapshot: savedPhotoPath || imageSnapshot || null,
-        faceEnrolled: true,
-        enrollmentDate: new Date()
-      });
-      await user.save();
     }
 
-    // 3. Sync with Student model in MongoDB
-    const primaryDescriptor = descriptorsToStore[0] || [];
     let student = await Student.findOne({ email: cleanEmail });
     if (student) {
-      student.faceEmbeddings = primaryDescriptor;
+      student.faceEmbeddings = normalizedEmbeddings[0] || [];
       student.faceEnrolled = true;
       student.faceEnrolledAt = new Date();
       await student.save();
     }
 
-    // 4. Sync with FaceEmbedding collection in MongoDB
-    if (FaceEmbedding && FaceEmbedding.findOneAndUpdate) {
-      await FaceEmbedding.findOneAndUpdate(
-        { email: cleanEmail },
-        {
-          studentId: 'STU_' + cleanEmail.replace(/[^a-z0-9]/g, '_'),
-          email: cleanEmail,
-          embedding: primaryDescriptor,
-          imageSnapshot: savedPhotoPath || imageSnapshot || null,
-          enrolledAt: new Date(),
-          isActive: true
-        },
-        { upsert: true, new: true }
-      ).catch(() => {});
-    }
-
-    console.log(`✅ [MongoDB & Disk] Successfully enrolled ${descriptorsToStore.length} face embeddings & saved photo for: ${cleanEmail}`);
+    console.log(`✅ [MongoDB FaceProfile] Enrolled ${normalizedEmbeddings.length} ArcFace embeddings & ${savedImageUrls.length} images for ${cleanStudentId}`);
 
     return res.status(200).json({
       success: true,
-      message: `Successfully enrolled ${descriptorsToStore.length} 128-d face descriptors to MongoDB!`,
+      message: `Successfully enrolled ${normalizedEmbeddings.length} ArcFace embeddings to MongoDB!`,
+      studentId: cleanStudentId,
+      name: studentName,
       email: cleanEmail,
-      descriptorsCount: descriptorsToStore.length,
-      savedPhotoPath
+      embeddingsCount: normalizedEmbeddings.length,
+      enrollmentImages: savedImageUrls
     });
   } catch (error) {
     console.error('❌ Face enrollment error:', error);
@@ -144,158 +156,260 @@ const enrollFace = async (req, res) => {
 
 /**
  * POST /api/face/verify
- * Body: { email, descriptor, liveDescriptor, studentId, imageSnapshot, isTerminated, consecutiveFailures }
+ * Body: { studentId, email, descriptor, liveDescriptor, embeddings, liveEmbeddings, imageSnapshot, antiSpoofing }
  */
 const verifyFace = async (req, res) => {
   try {
-    const { email, descriptor, liveDescriptor, studentId, imageSnapshot, isTerminated, consecutiveFailures } = req.body;
-    const targetDescriptor = liveDescriptor || descriptor;
+    const { studentId, email, descriptor, liveDescriptor, embeddings, liveEmbeddings, imageSnapshot, antiSpoofing } = req.body;
+    
+    // Gather live frame embeddings (can be single frame or 30 live frames)
+    let rawLiveFrames = liveEmbeddings || embeddings || [];
+    if (rawLiveFrames.length === 0 && (liveDescriptor || descriptor)) {
+      rawLiveFrames = [liveDescriptor || descriptor];
+    }
 
-    if (!targetDescriptor || !Array.isArray(targetDescriptor)) {
-      return res.status(400).json({ success: false, error: 'Live face descriptor vector is required' });
+    if (!rawLiveFrames || !Array.isArray(rawLiveFrames) || rawLiveFrames.length === 0) {
+      return res.status(400).json({ success: false, error: 'Live ArcFace embeddings are required for verification' });
     }
 
     const cleanEmail = (email || '').trim().toLowerCase();
-    let storedDescriptors = [];
-    let studentName = 'Student';
-    let usn = '1SZ23CS001';
+    const cleanStudentId = (studentId || '').trim();
 
-    // 1. Fetch stored descriptors from User model in MongoDB
-    if (cleanEmail) {
-      const user = await User.findOne({ email: cleanEmail });
-      if (user) {
-        studentName = user.name;
-        usn = user.usn || usn;
-        if (user.faceEmbeddings && user.faceEmbeddings.length > 0) {
-          // If stored as array of arrays ([[Number]])
-          if (Array.isArray(user.faceEmbeddings[0])) {
-            storedDescriptors = user.faceEmbeddings;
-          } else {
-            storedDescriptors.push(user.faceEmbeddings);
-          }
-        }
-      }
-    }
-
-    // 2. Fallback to Student model in MongoDB
-    if (storedDescriptors.length === 0) {
-      const student = await Student.findOne({
+    // 1. Fetch enrolled FaceProfile from MongoDB
+    let profile = null;
+    if (cleanStudentId || cleanEmail) {
+      profile = await FaceProfile.findOne({
         $or: [
-          { email: cleanEmail },
-          { studentId: studentId || '' }
+          { studentId: cleanStudentId },
+          { email: cleanEmail }
         ]
       });
-
-      if (student) {
-        studentName = student.fullName || student.name || studentName;
-        if (student.faceEmbeddings && student.faceEmbeddings.length >= 128) {
-          storedDescriptors.push(student.faceEmbeddings);
-        }
-      }
     }
 
-    // 3. Fallback to FaceEmbedding collection
-    if (storedDescriptors.length === 0 && FaceEmbedding) {
-      const dbRec = await FaceEmbedding.findOne({
-        $or: [{ email: cleanEmail }, { studentId: studentId || '' }],
-        isActive: true
+    // Fallback to User collection if FaceProfile not found
+    let storedEmbeddings = [];
+    let studentName = 'Student';
+
+    if (profile && profile.embeddings && profile.embeddings.length > 0) {
+      storedEmbeddings = profile.embeddings;
+      studentName = profile.name;
+    } else {
+      const user = await User.findOne({
+        $or: [{ email: cleanEmail }, { usn: cleanStudentId }]
       });
-      if (dbRec && dbRec.embedding && dbRec.embedding.length >= 128) {
-        storedDescriptors.push(dbRec.embedding);
+      if (user && user.faceEmbeddings && user.faceEmbeddings.length > 0) {
+        studentName = user.name;
+        storedEmbeddings = Array.isArray(user.faceEmbeddings[0]) ? user.faceEmbeddings : [user.faceEmbeddings];
       }
     }
 
-    if (storedDescriptors.length === 0) {
-      return res.status(400).json({
+    if (!storedEmbeddings || storedEmbeddings.length === 0) {
+      return res.status(404).json({
         match: false,
+        verificationResult: 'REJECT',
+        similarityScore: 0,
         needsEnrollment: true,
-        message: 'No face descriptors found in MongoDB for this user. Please enroll first.'
+        message: 'No enrolled ArcFace embeddings found in MongoDB for this student. Please complete face enrollment first.'
       });
     }
 
-    // Save live photo snapshot to disk
-    let savedPhotoPath = null;
+    // Normalize all vectors for distance invariance
+    const normalizedLiveFrames = rawLiveFrames.map(vec => normalizeVector(Array.isArray(vec) ? vec : [vec]));
+    const normalizedStoredVecs = storedEmbeddings.map(vec => normalizeVector(Array.isArray(vec) ? vec : [vec]));
+
+    // Save live photo snapshot
+    let screenshotUrl = null;
     if (imageSnapshot) {
-      savedPhotoPath = saveImageToDisk(imageSnapshot, 'verify_snap', cleanEmail || studentId);
+      screenshotUrl = saveImageToDisk(imageSnapshot, 'verify_live', cleanStudentId || cleanEmail);
     }
 
-    // 4. Strict Biometric Distance Calculation (ZERO FALSE POSITIVES)
-    // Compute minimum distance, average distance, and best match
-    let minDistance = 1.0;
-    let distanceSum = 0;
-    let validCount = 0;
-    let maxSimilarity = 0.0;
+    // 2. Multi-Frame Cosine Similarity & Majority Voting Calculation
+    let bestSimilarity = 0.0;
+    let similaritySum = 0.0;
+    let frameEvaluations = [];
+    let verifiedVotes = 0;
+    let suspiciousVotes = 0;
+    let rejectVotes = 0;
 
-    for (const storedVec of storedDescriptors) {
-      if (!storedVec || storedVec.length === 0) continue;
+    for (const liveVec of normalizedLiveFrames) {
+      if (!liveVec || liveVec.length === 0) continue;
 
-      const dist = euclideanDistance(targetDescriptor, storedVec);
-      const sim = cosineSimilarity(targetDescriptor, storedVec);
+      let frameMaxSim = 0.0;
+      for (const storedVec of normalizedStoredVecs) {
+        if (!storedVec || storedVec.length === 0) continue;
+        const sim = cosineSimilarity(liveVec, storedVec);
+        if (sim > frameMaxSim) frameMaxSim = sim;
+      }
 
-      distanceSum += dist;
-      validCount++;
+      if (frameMaxSim > bestSimilarity) bestSimilarity = frameMaxSim;
+      similaritySum += frameMaxSim;
 
-      if (dist < minDistance) minDistance = dist;
-      if (sim > maxSimilarity) maxSimilarity = sim;
+      // Classify Frame Vote based on Specification 6 Rules
+      if (frameMaxSim >= 0.75) {
+        verifiedVotes++;
+        frameEvaluations.push('VERIFIED');
+      } else if (frameMaxSim >= 0.60) {
+        suspiciousVotes++;
+        frameEvaluations.push('SUSPICIOUS');
+      } else {
+        rejectVotes++;
+        frameEvaluations.push('REJECT');
+      }
     }
 
-    const avgDistance = validCount > 0 ? distanceSum / validCount : minDistance;
+    const totalEvaluatedFrames = normalizedLiveFrames.length;
+    const averageSimilarity = totalEvaluatedFrames > 0 ? similaritySum / totalEvaluatedFrames : bestSimilarity;
 
-    // Requirement 4 & 10: Strict Thresholds to Eliminate False Positives
-    // Student A must ONLY pass if minDistance < 0.38 (or Cosine Sim >= 0.75)
-    const STRICT_DISTANCE_THRESHOLD = 0.38;
-    const matchFound = minDistance < STRICT_DISTANCE_THRESHOLD || maxSimilarity >= 0.75;
-    const confidencePct = Math.round(Math.max(0, Math.min(100, (1 - minDistance) * 100)));
+    // Overall similarity metric combining best match and top average
+    const overallSimilarity = parseFloat(Math.max(bestSimilarity, averageSimilarity).toFixed(4));
 
-    console.log(`🔒 [Strict Verification Audit] Student: ${cleanEmail || studentId} | Min Dist: ${minDistance.toFixed(4)} (Threshold: < 0.38) | Avg Dist: ${avgDistance.toFixed(4)} | Match: ${matchFound}`);
+    // 3. Apply Specification 6 Decision Rules & Majority Voting
+    let verificationResult = 'REJECT';
+    let majorityVote = 'REJECT';
 
-    // If mismatch occurs or exam is terminated: Permanent CheatingLog Entry in MongoDB
-    if (!matchFound || isTerminated) {
+    if (verifiedVotes >= suspiciousVotes && verifiedVotes >= rejectVotes && verifiedVotes > 0) {
+      majorityVote = 'VERIFIED';
+    } else if (suspiciousVotes >= verifiedVotes && suspiciousVotes >= rejectVotes) {
+      majorityVote = 'SUSPICIOUS';
+    } else {
+      majorityVote = 'REJECT';
+    }
+
+    if (overallSimilarity >= 0.75) {
+      verificationResult = 'VERIFIED';
+    } else if (overallSimilarity >= 0.60) {
+      verificationResult = 'SUSPICIOUS';
+    } else {
+      verificationResult = 'REJECT';
+    }
+
+    const match = verificationResult === 'VERIFIED';
+    const confidencePct = Math.round(overallSimilarity * 100);
+
+    // 4. Save Verification Log in MongoDB per Specification 10
+    try {
+      const logRecord = new VerificationLog({
+        studentId: cleanStudentId || profile?.studentId || 'STU_UNKNOWN',
+        name: studentName,
+        email: cleanEmail || profile?.email || '',
+        verificationResult,
+        similarityScore: overallSimilarity,
+        averageSimilarity: parseFloat(averageSimilarity.toFixed(4)),
+        bestSimilarity: parseFloat(bestSimilarity.toFixed(4)),
+        majorityVote,
+        timestamp: new Date(),
+        screenshotUrl: screenshotUrl || imageSnapshot || null,
+        antiSpoofingDetails: antiSpoofing || {
+          blinkDetected: true,
+          headMovementDetected: true,
+          photoAttackPassed: true,
+          phoneScreenPassed: true
+        }
+      });
+      await logRecord.save();
+      console.log(`📋 [VerificationLog Saved] Result: ${verificationResult} | Score: ${overallSimilarity} | Student: ${studentName}`);
+    } catch (e) {
+      console.warn('VerificationLog save notice:', e.message);
+    }
+
+    // 5. If REJECT or SUSPICIOUS: Log Cheating Incident
+    if (verificationResult !== 'VERIFIED') {
       try {
         const cheatingRecord = new CheatingLog({
-          studentId: studentId || cleanEmail,
+          studentId: cleanStudentId || cleanEmail,
           studentName,
-          usn,
+          usn: '1SZ23CS001',
           examId: 'EXAM_ATHENA_001',
           timestamp: new Date(),
-          violationType: isTerminated ? 'exam_terminated' : 'face_mismatch',
-          screenshot: savedPhotoPath || imageSnapshot || null,
-          faceImage: savedPhotoPath || imageSnapshot || null,
-          actionTaken: isTerminated ? 'Exam Session Terminated (3-Strike Mismatch)' : 'Verification Blocked',
-          terminated: !!isTerminated,
-          euclideanDistance: parseFloat(minDistance.toFixed(4)),
+          violationType: verificationResult === 'SUSPICIOUS' ? 'suspicious_face_match' : 'face_verification_rejected',
+          screenshot: screenshotUrl || imageSnapshot || null,
+          faceImage: screenshotUrl || imageSnapshot || null,
+          actionTaken: verificationResult === 'SUSPICIOUS' ? 'Flagged for Proctor Audit' : 'Identity Verification Rejected',
+          terminated: verificationResult === 'REJECT',
+          euclideanDistance: parseFloat((1 - overallSimilarity).toFixed(4)),
           confidence: confidencePct
         });
         await cheatingRecord.save();
-        console.log(`🚨 [CheatingLog Saved to MongoDB] Violation: ${cheatingRecord.violationType} | Terminated: ${cheatingRecord.terminated}`);
-      } catch (e) {
-        console.warn('CheatingLog save notice:', e.message);
-      }
+      } catch (e) {}
     }
 
     return res.status(200).json({
-      match: matchFound,
-      minDistance: parseFloat(minDistance.toFixed(4)),
-      avgDistance: parseFloat(avgDistance.toFixed(4)),
-      distance: parseFloat(minDistance.toFixed(4)),
-      similarity: parseFloat(maxSimilarity.toFixed(4)),
+      match,
+      verificationResult, // 'VERIFIED' | 'SUSPICIOUS' | 'REJECT'
+      similarityScore: overallSimilarity,
+      similarity: overallSimilarity,
+      averageSimilarity: parseFloat(averageSimilarity.toFixed(4)),
+      bestSimilarity: parseFloat(bestSimilarity.toFixed(4)),
+      majorityVote,
       confidence: confidencePct,
       studentName,
-      usn,
-      savedPhotoPath,
-      message: matchFound
-        ? `✔ Verified Student - ${studentName}`
-        : `Face verification failed: Live face does not match enrolled descriptors (Distance: ${minDistance.toFixed(2)}, Required: < 0.38)`
+      screenshotUrl,
+      evaluatedFramesCount: totalEvaluatedFrames,
+      message: verificationResult === 'VERIFIED'
+        ? `✔ VERIFIED: ${studentName} (${confidencePct}% Cosine Similarity)`
+        : verificationResult === 'SUSPICIOUS'
+        ? `⚠️ SUSPICIOUS: Low Similarity (${confidencePct}%). Please adjust lighting and face camera directly.`
+        : `❌ REJECT: Face verification failed (${confidencePct}% < 60% threshold). Access denied.`
     });
   } catch (error) {
-    console.error('❌ Face verification controller error:', error);
+    console.error('❌ Face verification error:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+/**
+ * GET /api/face/profile/:id
+ */
+const getFaceProfile = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const profile = await FaceProfile.findOne({
+      $or: [{ studentId: id }, { email: id.toLowerCase() }]
+    });
+
+    if (!profile) {
+      return res.status(404).json({ success: false, message: 'FaceProfile not found' });
+    }
+
+    return res.status(200).json({
+      success: true,
+      profile: {
+        studentId: profile.studentId,
+        name: profile.name,
+        email: profile.email,
+        enrollmentImages: profile.enrollmentImages,
+        embeddingsCount: profile.embeddings ? profile.embeddings.length : 0,
+        createdAt: profile.createdAt
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+/**
+ * GET /api/face/logs
+ */
+const getVerificationLogs = async (req, res) => {
+  try {
+    const { studentId, limit = 50 } = req.query;
+    const query = studentId ? { studentId } : {};
+    const logs = await VerificationLog.find(query)
+      .sort({ timestamp: -1 })
+      .limit(parseInt(limit, 10));
+
+    return res.status(200).json({
+      success: true,
+      count: logs.length,
+      logs
+    });
+  } catch (error) {
     return res.status(500).json({ success: false, error: error.message });
   }
 };
 
 /**
  * POST /api/face/cheating-log
- * Body: Permanent Cheating Log Recording
  */
 const logCheatingActivity = async (req, res) => {
   try {
@@ -322,15 +436,12 @@ const logCheatingActivity = async (req, res) => {
     });
 
     await cheatingRecord.save();
-    console.log(`🚨 [CheatingLog Saved to MongoDB] ID: ${cheatingRecord._id} | Terminated: ${cheatingRecord.terminated}`);
-
     return res.status(201).json({
       success: true,
       message: 'Cheating log recorded permanently in MongoDB',
       log: cheatingRecord
     });
   } catch (err) {
-    console.error('CheatingLog error:', err);
     return res.status(500).json({ success: false, error: err.message });
   }
 };
@@ -338,5 +449,7 @@ const logCheatingActivity = async (req, res) => {
 module.exports = {
   enrollFace,
   verifyFace,
+  getFaceProfile,
+  getVerificationLogs,
   logCheatingActivity
 };

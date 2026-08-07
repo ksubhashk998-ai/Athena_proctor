@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "start": "node scripts/start-all.js",
-    "build": "react-app-rewired build",
+    "build": "cd frontend && npm run build",
     "backend": "cd backend && npm start",
     "frontend": "cd frontend && npm start",
     "admin": "cd admin && npm start"

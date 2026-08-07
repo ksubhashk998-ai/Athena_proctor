@@ -12,15 +12,15 @@ import { getApiBaseUrl } from "../utils/config";
 // Student Authentication Page
 
 const postWithFallback = async (primaryUrl, fallbackUrl, payload) => {
+  const baseUrl = getApiBaseUrl();
+  const fullUrl = primaryUrl.startsWith('http') ? primaryUrl : `${baseUrl}${primaryUrl}`;
   try {
-    const baseUrl = getApiBaseUrl();
-    const fullUrl = primaryUrl.startsWith('http') ? primaryUrl : `${baseUrl}${primaryUrl}`;
     return await axios.post(fullUrl, payload);
   } catch (err) {
     if (fallbackUrl) {
-      console.warn(`Primary route ${primaryUrl} failed (${err.message}), attempting fallback ${fallbackUrl}`);
-      const baseUrl = getApiBaseUrl();
-      const fullFallback = fallbackUrl.startsWith('http') ? fallbackUrl : `${baseUrl}${fallbackUrl}`;
+      const cleanFallback = fallbackUrl.replace(/^http:\/\/localhost:5000/, '');
+      const fullFallback = cleanFallback.startsWith('http') ? cleanFallback : `${baseUrl}${cleanFallback}`;
+      console.warn(`Primary route ${fullUrl} failed (${err.message}), attempting fallback ${fullFallback}`);
       return await axios.post(fullFallback, payload);
     }
     throw err;
@@ -457,7 +457,8 @@ function Login() {
     localStorage.setItem("user", JSON.stringify(activeStudent));
 
     // Register Live Session for Admin Monitoring
-    fetch('http://localhost:5000/api/admin/live-session', {
+    const apiBase = getApiBaseUrl();
+    fetch(`${apiBase}/api/admin/live-session`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

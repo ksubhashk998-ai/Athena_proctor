@@ -2,6 +2,7 @@
 // CORRECTED IMPORT PATHS ✅
 import PhoneDetection from '../utils/phoneDetection.js';
 import EyeMovementDetection from '../utils/eyeMovementDetection.js';
+import { getApiBaseUrl } from '../utils/config.js';
 
 class EnhancedProctoringService {
     constructor() {
@@ -394,7 +395,8 @@ class EnhancedProctoringService {
 
     async sendLogToBackend(log) {
         try {
-            const response = await fetch('http://localhost:5000/api/proctoring/logs', {
+            const apiBase = getApiBaseUrl();
+            const response = await fetch(`${apiBase}/api/proctoring/logs`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',

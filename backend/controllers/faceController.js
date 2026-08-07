@@ -160,6 +160,19 @@ const enrollFace = async (req, res) => {
  */
 const verifyFace = async (req, res) => {
   try {
+    // Task 8 & 10: Check MongoDB Connection
+    const mongoose = require('mongoose');
+    if (mongoose.connection.readyState !== 1) {
+      console.error('❌ [MongoDB Check Failed] Database connection unavailable');
+      return res.status(503).json({
+        match: false,
+        verificationResult: 'REJECT',
+        similarityScore: 0,
+        error: 'Database connection unavailable',
+        message: 'Database connection unavailable. Please check MongoDB Atlas connection.'
+      });
+    }
+
     const { studentId, email, descriptor, liveDescriptor, embeddings, liveEmbeddings, imageSnapshot, antiSpoofing } = req.body;
     
     // Gather live frame embeddings (can be single frame or 30 live frames)
@@ -169,7 +182,7 @@ const verifyFace = async (req, res) => {
     }
 
     if (!rawLiveFrames || !Array.isArray(rawLiveFrames) || rawLiveFrames.length === 0) {
-      return res.status(400).json({ success: false, error: 'Live ArcFace embeddings are required for verification' });
+      return res.status(400).json({ success: false, error: 'Missing embedding: Live ArcFace embeddings are required' });
     }
 
     const cleanEmail = (email || '').trim().toLowerCase();
@@ -203,13 +216,16 @@ const verifyFace = async (req, res) => {
       }
     }
 
+    // Task 11: Handle missing student biometric template
     if (!storedEmbeddings || storedEmbeddings.length === 0) {
+      console.warn(`⚠️ [Face Enrollment Missing] No biometric profile found for student: ${cleanStudentId || cleanEmail}`);
       return res.status(404).json({
         match: false,
         verificationResult: 'REJECT',
         similarityScore: 0,
         needsEnrollment: true,
-        message: 'No enrolled ArcFace embeddings found in MongoDB for this student. Please complete face enrollment first.'
+        error: 'Face enrollment not found',
+        message: 'Face enrollment not found. Please complete 30-frame face enrollment first.'
       });
     }
 

@@ -5,6 +5,7 @@ import Register from "./pages/Register";
 import Dashboard from "./pages/Dashboard";
 import ProctorDashboard from "./pages/ProctorDashboard";
 import AthenaExamDashboard from "./pages/AthenaExamDashboard";
+import Diagnostics from "./pages/Diagnostics";
 import { detectPhone, showPhoneWarning } from "./utils/deviceDetection";
 import EyeTrackingWidget from "./components/EyeTrackingWidget";
 
@@ -129,6 +130,12 @@ function AppContent() {
           <Route
             path="/athena-exam"
             element={<AthenaExamDashboard />}
+          />
+
+          {/* Diagnostics Deployment Page */}
+          <Route
+            path="/diagnostics"
+            element={<Diagnostics />}
           />
 
           {/* Admin Live Monitoring Section */}

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
+import { getApiBaseUrl } from '../utils/config';
 import { getSocket } from '../services/socketService';
 
 export default function AdminMonitor() {
@@ -19,9 +20,10 @@ export default function AdminMonitor() {
   const fetchData = async () => {
     try {
       setLoading(true);
+      const apiBase = getApiBaseUrl();
       const [studentsRes, analyticsRes] = await Promise.all([
-        axios.get('http://localhost:5000/api/admin/students/live'),
-        axios.get('http://localhost:5000/api/admin/analytics')
+        axios.get(`${apiBase}/api/admin/students/live`),
+        axios.get(`${apiBase}/api/admin/analytics`)
       ]);
 
       if (studentsRes.data && studentsRes.data.success) {

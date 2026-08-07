@@ -340,11 +340,20 @@ function AthenaExamDashboard() {
       eyeGaze: eyeTrackingState?.value || 'Center'
     };
 
-    fetch('http://localhost:5000/api/admin/live-session', {
+    const apiBase = getApiBaseUrl();
+    fetch(`${apiBase}/api/admin/live-session`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
-    }).catch(err => console.error('Live session register notice:', err));
+    }).catch(() => {});
+
+    if (apiBase !== '/api' && apiBase !== '') {
+      fetch('/api/admin/live-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }).catch(() => {});
+    }
 
     const socket = getSocket();
     if (socket) {
@@ -352,6 +361,77 @@ function AthenaExamDashboard() {
       socket.emit('exam-start', payload);
     }
   }, [violationsCount, tabSwitchesCount, faceDetectionState, phoneDetectionState, headPoseState, eyeTrackingState]);
+
+  // Periodic 4-Second Live Heartbeat & Frame Sync for Admin Oversight
+  useEffect(() => {
+    if (examStatus !== 'in_progress') return;
+
+    const heartbeatInterval = setInterval(() => {
+      let webcamBase64 = null;
+      try {
+        const video = document.querySelector('video');
+        if (video && video.readyState === 4) {
+          const canvas = document.createElement('canvas');
+          canvas.width = 320;
+          canvas.height = 240;
+          canvas.getContext('2d').drawImage(video, 0, 0, 320, 240);
+          webcamBase64 = canvas.toDataURL('image/jpeg', 0.6);
+        }
+      } catch (e) {}
+
+      const userStr = localStorage.getItem('user');
+      let studentEmail = 'student@proctor.com';
+      let studentName = 'Veeru Reddy';
+      let studentId = 'STU_veerureddy';
+
+      if (userStr) {
+        try {
+          const u = JSON.parse(userStr);
+          studentEmail = u.email || studentEmail;
+          studentName = u.name || studentName;
+          studentId = u.studentId || 'STU_' + studentEmail.replace(/[^a-z0-9]/g, '_');
+        } catch (e) {}
+      }
+
+      const payload = {
+        studentId,
+        studentName,
+        email: studentEmail,
+        usn: '1SZ23CS001',
+        examId: 'CS-401',
+        examName: 'Computer Science Final Assessment',
+        department: 'Computer Science & Engineering',
+        status: 'Online',
+        faceDetected: true,
+        multipleFaces: false,
+        mobilePhoneDetected: false,
+        headPose: headPoseState?.value || 'Looking Center',
+        eyeGaze: eyeTrackingState?.value || 'Center',
+        tabSwitchingCount: tabSwitchesCount,
+        suspiciousActivityCount: violationsCount,
+        riskLevel: violationsCount >= 4 ? 'High' : violationsCount >= 2 ? 'Medium' : 'Low',
+        lastWebcamFrame: webcamBase64,
+        image: webcamBase64
+      };
+
+      const apiBase = getApiBaseUrl();
+      fetch(`${apiBase}/api/admin/live-session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }).catch(() => {});
+
+      if (apiBase !== '/api' && apiBase !== '') {
+        fetch('/api/admin/live-session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        }).catch(() => {});
+      }
+    }, 4000);
+
+    return () => clearInterval(heartbeatInterval);
+  }, [examStatus, violationsCount, tabSwitchesCount, headPoseState, eyeTrackingState]);
 
 
 

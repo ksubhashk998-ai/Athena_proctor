@@ -115,7 +115,13 @@ export const StudentCard = ({ student, onWatchLive }) => {
         {/* Live Badge Overlay */}
         <Box sx={{ position: 'absolute', top: 10, left: 10, zIndex: 2 }}>
           <StatusBadge
-            isTrue={student.status === 'Online'}
+            isTrue={
+              student.status === 'Online' ||
+              student.status === 'Active' ||
+              student.isOnline ||
+              (student.updatedAt && (new Date() - new Date(student.updatedAt)) < 90000) ||
+              (student.lastActive && (new Date() - new Date(student.lastActive)) < 90000)
+            }
             trueText="ONLINE LIVE"
             falseText="OFFLINE"
             trueColor="#10b981"

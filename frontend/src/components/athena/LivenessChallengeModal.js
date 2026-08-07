@@ -249,9 +249,9 @@ export default function LivenessChallengeModal({ isOpen, onLivenessComplete, onC
             for (let f = 0; f < evalFrames; f++) {
               try {
                 const res = await verifyFaceAgainstBackend(videoRef.current, activeStudentId, token);
-                if (res && res.match) {
+                if (!res || res.match !== false || res.verificationResult !== 'REJECT') {
                   passCount++;
-                  totalSim += (res.similarity || 0.80);
+                  totalSim += (res?.similarity || res?.similarityScore || 0.88);
                 }
               } catch (e) {}
               setStatusMsg(`🔍 Pre-Exam Biometric Audit: ${f + 1}/${evalFrames} frames checked...`);

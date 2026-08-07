@@ -9,6 +9,7 @@ import AIMonitoringSidebar from '../components/athena/AIMonitoringSidebar';
 import { mcqQuestions, codingProblems, theoryQuestions } from '../data/examData';
 import { getSocket } from '../services/socketService';
 import { captureFaceDescriptor } from '../services/faceVerificationService';
+import { getApiBaseUrl } from '../utils/config';
 import '../styles/athena.css';
 
 function AthenaExamDashboard() {
@@ -364,7 +365,7 @@ function AthenaExamDashboard() {
 
   // Periodic 4-Second Live Heartbeat & Frame Sync for Admin Oversight
   useEffect(() => {
-    if (examStatus !== 'in_progress') return;
+    if (!isExamUnlocked) return;
 
     const heartbeatInterval = setInterval(() => {
       let webcamBase64 = null;
@@ -431,7 +432,7 @@ function AthenaExamDashboard() {
     }, 4000);
 
     return () => clearInterval(heartbeatInterval);
-  }, [examStatus, violationsCount, tabSwitchesCount, headPoseState, eyeTrackingState]);
+  }, [isExamUnlocked, violationsCount, tabSwitchesCount, headPoseState, eyeTrackingState]);
 
 
 

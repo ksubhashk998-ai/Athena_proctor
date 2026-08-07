@@ -68,9 +68,7 @@ function AthenaExamDashboard() {
   const [violationsCount, setViolationsCount] = useState(0);
   const [voiceDetected, setVoiceDetected] = useState(false);
 
-  // Tab Switch & Exam Termination States
-  const [isTerminated, setIsTerminated] = useState(false);
-  const [terminationReason, setTerminationReason] = useState('');
+  // Tab Switch Warning State
   const [tabSwitchWarning, setTabSwitchWarning] = useState({ open: false, count: 0, max: 3, message: '' });
 
   const [eyeTrackingState, setEyeTrackingState] = useState({
@@ -725,7 +723,7 @@ function AthenaExamDashboard() {
 
     // Tab switch & visibility detection
     const handleVisibilityChange = () => {
-      if (document.hidden && !isTerminated) {
+      if (document.hidden && !isExamTerminated) {
         setTabSwitchesCount(prev => {
           const nextCount = prev + 1;
           const maxSwitches = 3;
@@ -734,7 +732,7 @@ function AthenaExamDashboard() {
 
           if (nextCount >= maxSwitches) {
             // Rule: Maximum tab switches reached -> TERMINATE EXAM IMMEDIATELY
-            setIsTerminated(true);
+            setIsExamTerminated(true);
             setTerminationReason(`Maximum ${maxSwitches} Tab Switches Exceeded`);
             recordViolation(`🚨 EXAM TERMINATED: Maximum ${maxSwitches} tab switches reached! Session locked.`);
 
@@ -1033,7 +1031,7 @@ function AthenaExamDashboard() {
       )}
 
       {/* ⚠️ Tab Switch Warning Popup Modal */}
-      {tabSwitchWarning.open && !isTerminated && (
+      {tabSwitchWarning.open && !isExamTerminated && (
         <div style={{
           position: 'fixed',
           top: 0,

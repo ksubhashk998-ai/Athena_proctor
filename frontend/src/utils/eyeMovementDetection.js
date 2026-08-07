@@ -112,8 +112,8 @@ class EyeMovementDetection {
             return null;
         }
 
-        // Guard 2: Video must exist and be playing
-        if (!this.video || this.video.paused || this.video.ended) {
+        // Guard 2: Video must exist, have valid dimensions, and be playing
+        if (!this.video || !this.video.videoWidth || !this.video.videoHeight || this.video.videoWidth === 0 || this.video.videoHeight === 0 || this.video.paused || this.video.ended) {
             return null;
         }
 

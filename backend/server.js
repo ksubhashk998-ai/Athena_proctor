@@ -1,5 +1,6 @@
 const express = require('express');
 const mongoose = require('mongoose');
+mongoose.set('bufferCommands', false);
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const bcrypt = require('bcryptjs');
@@ -371,15 +372,32 @@ if (!fs.existsSync(screenshotsDir)) {
 // ==================== DATABASE CONNECTION ====================
 const connectDB = async () => {
     try {
-        const conn = await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/smart-proctoring', {
+        mongoose.set('bufferCommands', false);
+
+        const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URL || 'mongodb://127.0.0.1:27017/smart-proctoring';
+        console.log(`🔌 [MongoDB Server] Initiating connection to: ${mongoUri}...`);
+
+        mongoose.connection.on('connected', () => {
+            console.log('✅ [MongoDB Debug] Mongoose connection established to cluster/host');
+        });
+        mongoose.connection.on('error', (err) => {
+            console.error('❌ [MongoDB Debug] Mongoose connection error:', err.message);
+        });
+        mongoose.connection.on('disconnected', () => {
+            console.warn('⚠️ [MongoDB Debug] Mongoose connection dropped');
+        });
+
+        const conn = await mongoose.connect(mongoUri, {
             useNewUrlParser: true,
             useUnifiedTopology: true,
             maxPoolSize: parseInt(process.env.DB_POOL_SIZE) || 10,
-            serverSelectionTimeoutMS: 3000,
+            serverSelectionTimeoutMS: 5000,
         });
-        console.log(`✅ MongoDB Connected: ${conn.connection.host}`);
+        console.log(`✅ [MongoDB Server] Connected Successfully: ${conn.connection.host} [Database: ${conn.connection.name}]`);
+        return conn;
     } catch (error) {
-        console.warn(`⚠️ MongoDB connection unavailable (${error.message}). Running server in Demo / In-Memory Mode.`);
+        console.error(`❌ [MongoDB Server] Connection Error (${error.message}). Running server in In-Memory / Demo Mode.`);
+        return null;
     }
 };
 connectDB();
@@ -2535,31 +2553,22 @@ httpServer.on('error', (err) => {
     console.error('Server startup error:', err);
 });
 
-const server = httpServer.listen(PORT, () => {
-    console.log(`\n=================================`);
-    console.log(`🎓 Smart Proctoring System`);
-    console.log(`=================================`);
-    console.log(`🚀 Server running on http://localhost:${PORT}`);
-    console.log(`📝 Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`🔗 API Root: http://localhost:${PORT}`);
-    console.log(`📹 Exam Page: http://localhost:${PORT}/exam`);
-    console.log(`🩺 Health Check: http://localhost:${PORT}/api/health`);
-    console.log(`📸 Screenshots Directory: ${screenshotsDir}`);
-    console.log(`💾 Database: ${process.env.MONGODB_URI || 'mongodb://localhost:27017/smart-proctoring'}`);
-    console.log(`\n✨ Enhanced Proctoring Features:`);
-    console.log(`   📱 Phone Detection API: /api/log-suspicious-activity`);
-    console.log(`   👁️ Eye Movement API: /api/log-suspicious-activity`);
-    console.log(`   📸 Screenshot Capture: /api/capture-screenshot`);
-    console.log(`   📊 Proctoring Stats: /api/proctoring/stats`);
-    console.log(`   🔍 Session Status: /api/proctoring/status`);
-    console.log(`\n🔒 Security Features:`);
-    console.log(`   📋 Copy-Paste Lock: /api/security/copy-paste`);
-    console.log(`   🖱️ Right-Click Block: /api/security/right-click`);
-    console.log(`   🛠️ Dev Tools Block: /api/security/dev-tools`);
-    console.log(`   🔒 Page Lock: /api/security/page-lock`);
-    console.log(`   📊 Security Report: /api/admin/security-report`);
-    console.log(`=================================\n`);
-});
+let server = null;
+if (!process.env.VERCEL) {
+    server = httpServer.listen(PORT, () => {
+        console.log(`\n=================================`);
+        console.log(`🎓 Smart Proctoring System`);
+        console.log(`=================================`);
+        console.log(`🚀 Server running on http://localhost:${PORT}`);
+        console.log(`📝 Environment: ${process.env.NODE_ENV || 'development'}`);
+        console.log(`🔗 API Root: http://localhost:${PORT}`);
+        console.log(`📹 Exam Page: http://localhost:${PORT}/exam`);
+        console.log(`🩺 Health Check: http://localhost:${PORT}/api/health`);
+        console.log(`📸 Screenshots Directory: ${screenshotsDir}`);
+        console.log(`💾 Database: ${process.env.MONGODB_URI || 'mongodb://localhost:27017/smart-proctoring'}`);
+        console.log(`=================================\n`);
+    });
+}
 
 // Graceful shutdown
 process.on('SIGTERM', () => {

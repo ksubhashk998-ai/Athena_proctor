@@ -1,20 +1,32 @@
 const express = require('express');
 const router = express.Router();
+const { enrollFace, verifyFace, logCheatingActivity } = require('../controllers/faceController');
 
-router.post('/face/register', (req, res) => {
-  res.json({ success: true, message: 'Face registered successfully' });
-});
+// Requirement 3: POST /api/face/enroll
+router.post('/enroll', enrollFace);
+router.post('/face/enroll', enrollFace);
 
-router.post('/face/verify', (req, res) => {
-  res.json({ match: true, confidence: 0.95, message: 'Face verified successfully' });
-});
+// Requirement 4: POST /api/face/verify
+router.post('/verify', verifyFace);
+router.post('/face/verify', verifyFace);
 
-router.post('/face/detect', (req, res) => {
-  res.json({ faceDetected: true, count: 1 });
-});
+// Requirement 1 & 5: Permanent Cheating Logs & Terminated Exams
+router.post('/cheating-log', logCheatingActivity);
+router.post('/face/cheating-log', logCheatingActivity);
 
-router.get('/face/status/:userId', (req, res) => {
-  res.json({ enrolled: true, userId: req.params.userId });
+router.post('/face/register', enrollFace);
+
+router.get('/status/:email', async (req, res) => {
+  try {
+    const User = require('../models/User');
+    const user = await User.findOne({ email: req.params.email.toLowerCase() });
+    res.json({
+      enrolled: !!(user && user.faceEnrolled),
+      descriptorsCount: user && user.faceEmbeddings ? user.faceEmbeddings.length : 0
+    });
+  } catch (e) {
+    res.json({ enrolled: false, descriptorsCount: 0 });
+  }
 });
 
 module.exports = router;

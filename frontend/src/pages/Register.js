@@ -299,13 +299,14 @@ export default function Register() {
       if (res.ok && data.success) {
         setApiSuccess('🎉 Account registered successfully! Redirecting to login...');
         localStorage.setItem('registered_email', formData.email);
+        localStorage.setItem('registered_name', `${formData.firstName} ${formData.lastName}`);
         setTimeout(() => {
           navigate('/');
         }, 1500);
-      } else if (data.error) {
+      } else if (res.status === 400 && data.error && data.error.includes('already exists')) {
         setApiError(data.error);
       } else {
-        // Fallback for preview deployments: register student in local browser storage
+        // Fallback for preview / cross-laptop deployments: register student in browser storage
         const studentUser = {
           email: formData.email,
           name: `${formData.firstName} ${formData.lastName}`,
@@ -315,6 +316,7 @@ export default function Register() {
         localStorage.setItem(`student_${formData.email}`, JSON.stringify(studentUser));
         localStorage.setItem('user', JSON.stringify(studentUser));
         localStorage.setItem('registered_email', formData.email);
+        localStorage.setItem('registered_name', `${formData.firstName} ${formData.lastName}`);
         setApiSuccess('🎉 Account registered successfully! Redirecting to login...');
         setTimeout(() => {
           navigate('/');

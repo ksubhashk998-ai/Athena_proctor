@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 
 async function cleanup() {
   try {
-    await mongoose.connect('mongodb://localhost:27017/smart-proctoring');
+    await mongoose.connect(process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/smart-proctoring');
     console.log('Connected to MongoDB');
 
     const testIds = ['STU_TEST', 'STU_DEMO', 'demoUser123', 'TEST', 'DEMO'];

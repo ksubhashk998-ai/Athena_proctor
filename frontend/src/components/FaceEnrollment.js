@@ -105,7 +105,7 @@ export default function FaceEnrollment({ studentId, token, onEnrolled, onSkip })
         return;
       }
 
-      if (!video || video.readyState < 2) return;
+      if (!video || !video.videoWidth || !video.videoHeight || video.videoWidth === 0 || video.videoHeight === 0 || video.readyState < 3 || video.paused) return;
 
       try {
         const detections = await faceapi
@@ -113,16 +113,34 @@ export default function FaceEnrollment({ studentId, token, onEnrolled, onSkip })
           .withFaceLandmarks()
           .withFaceDescriptor();
 
-        // Rule: Ensure EXACTLY 1 face detected
-        if (!detections || detections.length !== 1) {
-          setStatusMsg('⚠️ Rejected Frame: Exactly 1 face must be visible');
+        // Rule 1: Ensure EXACTLY 1 face detected
+        if (!detections || detections.length === 0) {
+          setStatusMsg('⚠️ Rejected Frame: No face detected');
+          return;
+        }
+
+        if (detections.length > 1) {
+          setStatusMsg('🚫 Rejected Frame: Multiple faces detected! Only 1 face allowed.');
           return;
         }
 
         const det = detections[0];
+
+        // Rule 2: Ensure face confidence >= 0.90
+        if (det.detection.score < 0.90) {
+          setStatusMsg(`⚠️ Rejected Frame: Low Face Confidence (${Math.round(det.detection.score * 100)}% < 90%). Hold still in good lighting.`);
+          return;
+        }
+
         const metrics = evaluateFrameMetrics(video, det);
 
-        // Reject poor quality frames (blurry, dark, out of center, bad size)
+        // Rule 3: Ensure face size is at least 30% of frame
+        if (metrics.faceSizeRatioPct < 30) {
+          setStatusMsg(`⚠️ Rejected Frame: Move closer to camera (Face size ${metrics.faceSizeRatioPct}% < 30%)`);
+          return;
+        }
+
+        // Rule 4: Reject blurry or out-of-bounds frames
         if (!metrics.isValid) {
           setStatusMsg(metrics.message);
           return;
@@ -184,6 +202,7 @@ export default function FaceEnrollment({ studentId, token, onEnrolled, onSkip })
       }
 
       const activeToken = token || localStorage.getItem('token') || 'temp_token';
+      const userEmail = localStorage.getItem('registered_email') || studentId || 'student@proctor.com';
 
       const response = await fetch('/api/face/enroll', {
         method: 'POST',
@@ -192,7 +211,9 @@ export default function FaceEnrollment({ studentId, token, onEnrolled, onSkip })
           Authorization: `Bearer ${activeToken}`
         },
         body: JSON.stringify({
+          email: userEmail,
           studentId,
+          faceDescriptors: samples,
           embedding: avgEmbedding,
           imageSnapshot: snapshotBase64,
           sampleCount: samples.length,

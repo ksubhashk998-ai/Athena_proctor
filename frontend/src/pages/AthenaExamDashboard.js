@@ -23,12 +23,16 @@ function AthenaExamDashboard() {
 
   // Requirement 5 & 7 Identity Verification & Auto-Termination States
   const [identityVerification, setIdentityVerification] = useState(() => {
-    let studentName = 'John Smith';
+    let studentName = 'Subhash K';
     try {
       const stored = localStorage.getItem('user');
       if (stored) {
         const u = JSON.parse(stored);
-        studentName = u.fullName || u.name || studentName;
+        if (u.firstName && u.lastName) {
+          studentName = `${u.firstName} ${u.lastName}`;
+        } else {
+          studentName = u.fullName || u.name || studentName;
+        }
       }
     } catch (e) {}
     return {

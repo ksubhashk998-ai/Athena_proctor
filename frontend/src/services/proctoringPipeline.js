@@ -232,18 +232,16 @@ class ProctoringPipeline {
 
     // ── A. Multi-Face Detection via face-api.js TinyFaceDetector ─────────
     let rawDetections = [];
-    if (this.faceApiReady && videoElement.videoWidth > 0 && videoElement.videoHeight > 0) {
+    if (this.faceApiReady && videoElement && videoElement.videoWidth > 0 && videoElement.videoHeight > 0 && videoElement.readyState >= 3 && !videoElement.paused) {
       try {
         const dets = await faceapi
           .detectAllFaces(videoElement, new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.25 }))
           .withFaceLandmarks();
         if (Array.isArray(dets)) {
-          rawDetections = dets.filter(d => d && d.detection && d.detection.box && d.detection.box.width > 0 && d.detection.box.height > 0);
+          rawDetections = dets.filter(d => d && d.detection && d.detection.box && typeof d.detection.box.x === 'number' && d.detection.box.x !== null && d.detection.box.width > 0);
         }
       } catch (err) {
-        if (!err.message?.includes('expected box')) {
-          console.warn('[Athena] face-api frame error:', err.message);
-        }
+        // Silently swallow expected box IBoundingBox null errors on uninitialized video frames
       }
     }
 

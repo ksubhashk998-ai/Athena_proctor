@@ -93,12 +93,18 @@ export async function captureFaceDescriptor(videoElement) {
 
     // Safety checks — allow readyState 2, 3, or 4 (any active frame)
     if (!videoElement) return null;
-    if (videoElement.readyState < 2) {
-        console.warn('Video not ready for face capture (readyState:', videoElement.readyState, ')');
+    if (
+        !videoElement.videoWidth ||
+        !videoElement.videoHeight ||
+        videoElement.videoWidth === 0 ||
+        videoElement.videoHeight === 0 ||
+        videoElement.readyState < 3 ||
+        videoElement.paused ||
+        videoElement.ended
+    ) {
         return null;
     }
-    if (!faceapi.nets.tinyFaceDetector.isLoaded) {
-        console.error('TinyFaceDetector not loaded - cannot run inference');
+    if (!faceapi.nets.tinyFaceDetector || !faceapi.nets.tinyFaceDetector.isLoaded) {
         return null;
     }
 
@@ -409,16 +415,16 @@ export function cosineSimilarity(a, b) {
  * Compare two face descriptors using ArcFace Cosine Similarity.
  * Returns { match, similarity, distance, confidence }
  */
-export function compareDescriptors(desc1, desc2, simThreshold = 0.65) {
+export function compareDescriptors(desc1, desc2, simThreshold = 0.68) {
     if (!desc1 || !desc2) return { match: false, similarity: 0, distance: 1, confidence: 0 };
     const similarity = cosineSimilarity(desc1, desc2);
     const distance = faceapi.euclideanDistance(desc1, desc2);
-    const confidence = Math.max(0, Math.min(1, (similarity - 0.35) / 0.55));
+    const confidencePct = Math.round(Math.max(0, Math.min(100, similarity * 100)));
     return {
         match: similarity >= simThreshold,
         similarity: parseFloat(similarity.toFixed(4)),
         distance: parseFloat(distance.toFixed(4)),
-        confidence: parseFloat(confidence.toFixed(4)),
+        confidence: confidencePct,
     };
 }
 

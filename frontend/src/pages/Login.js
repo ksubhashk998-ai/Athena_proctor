@@ -409,7 +409,7 @@ function Login() {
 
           // 2. Fallback to Local Embedding Comparison if Backend didn't return match
           if (!matchedThisFrame && localEnrolledEmbedding) {
-            const cmp = compareDescriptors(Array.from(descriptor), localEnrolledEmbedding, 0.50);
+            const cmp = compareDescriptors(Array.from(descriptor), localEnrolledEmbedding, 0.68);
             if (cmp.match) {
               matchedThisFrame = true;
               simVal = cmp.similarity;

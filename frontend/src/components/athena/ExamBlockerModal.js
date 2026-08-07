@@ -3,7 +3,6 @@ import * as faceapi from '@vladmandic/face-api';
 import {
   loadFaceModels,
   areModelsReady,
-  captureFaceDescriptor,
   evaluateFrameMetrics,
   verifyFaceAgainstBackend
 } from '../../services/faceVerificationService';

@@ -2,12 +2,14 @@
  * socketService.js - Socket.IO client singleton
  */
 import { io } from 'socket.io-client';
+import { getApiBaseUrl } from '../utils/config';
 
 let socket = null;
 
 export function getSocket() {
     if (!socket) {
-        socket = io('http://localhost:5000', {
+        const baseUrl = getApiBaseUrl();
+        socket = io(baseUrl, {
             transports: ['websocket', 'polling'],
             autoConnect: true,
         });

@@ -2588,3 +2588,5 @@ process.on('uncaughtException', (err) => {
     console.log(err.stack);
     process.exit(1);
 });
+
+module.exports = app;

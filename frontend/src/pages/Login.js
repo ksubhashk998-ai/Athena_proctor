@@ -7,17 +7,20 @@ import { detectPhone, showPhoneWarning } from "../utils/deviceDetection";
 import { captureFaceDescriptor } from "../services/faceVerificationService";
 import FaceEnrollment from "../components/FaceEnrollment";
 import OtpSixBoxInput from "../components/athena/OtpSixBoxInput";
+import { getApiBaseUrl } from "../utils/config";
 
 // Student Authentication Page
 
 const postWithFallback = async (primaryUrl, fallbackUrl, payload) => {
   try {
-    const fullUrl = primaryUrl.startsWith('http') ? primaryUrl : `http://localhost:5000${primaryUrl}`;
+    const baseUrl = getApiBaseUrl();
+    const fullUrl = primaryUrl.startsWith('http') ? primaryUrl : `${baseUrl}${primaryUrl}`;
     return await axios.post(fullUrl, payload);
   } catch (err) {
     if (fallbackUrl) {
       console.warn(`Primary route ${primaryUrl} failed (${err.message}), attempting fallback ${fallbackUrl}`);
-      const fullFallback = fallbackUrl.startsWith('http') ? fallbackUrl : `http://localhost:5000${fallbackUrl}`;
+      const baseUrl = getApiBaseUrl();
+      const fullFallback = fallbackUrl.startsWith('http') ? fallbackUrl : `${baseUrl}${fallbackUrl}`;
       return await axios.post(fullFallback, payload);
     }
     throw err;

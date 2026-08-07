@@ -1,7 +1,11 @@
 {
   "version": 2,
-  "buildCommand": "cd frontend && npm install && npx cross-env CI=false npm run build",
+  "buildCommand": "cd frontend && npm install && npm run build",
   "outputDirectory": "frontend/build",
+  "env": {
+    "CI": "false",
+    "GENERATE_SOURCEMAP": "false"
+  },
   "rewrites": [
     {
       "source": "/(.*)",

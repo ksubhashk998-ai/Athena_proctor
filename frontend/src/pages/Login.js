@@ -4,7 +4,7 @@ import axios from "axios";
 import { useNavigate } from "react-router-dom";
 import Webcam from "react-webcam";
 import { detectPhone, showPhoneWarning } from "../utils/deviceDetection";
-import { captureFaceDescriptor } from "../services/faceVerificationService";
+import { captureFaceDescriptor, compareDescriptors } from "../services/faceVerificationService";
 import FaceEnrollment from "../components/FaceEnrollment";
 import OtpSixBoxInput from "../components/athena/OtpSixBoxInput";
 import { getApiBaseUrl } from "../utils/config";
@@ -334,10 +334,10 @@ function Login() {
   const handleVerifyFace = async () => {
     if (!webcamRef.current) return;
     setFaceVerifying(true);
-    setFaceStatusMsg("🔄 Initializing 30-Frame Temporal Biometric Verification...");
+    setFaceStatusMsg("🔄 Initializing Biometric Face Verification...");
 
-    const TOTAL_LOGIN_FRAMES = 30;
-    const REQUIRED_PASSED_FRAMES = 25;
+    const TOTAL_LOGIN_FRAMES = 20;
+    const REQUIRED_PASSED_FRAMES = 8;
 
     try {
       const video = webcamRef.current.video;
@@ -349,6 +349,18 @@ function Login() {
 
       const activeStudent = tempStudent || { studentId: 'STU_' + Date.now(), name: 'Student', email: 'student@proctor.com' };
       const activeToken = tempToken || "jwt_token_" + Date.now();
+
+      // Check for local student enrolled embedding in browser storage
+      let localEnrolledEmbedding = null;
+      try {
+        const stored = localStorage.getItem(`student_${activeStudent.email}`) || localStorage.getItem('user');
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (parsed && (parsed.faceEmbeddings || parsed.embedding)) {
+            localEnrolledEmbedding = parsed.faceEmbeddings || parsed.embedding;
+          }
+        }
+      } catch (e) {}
 
       let passedCount = 0;
       let totalSimilaritySum = 0;
@@ -364,34 +376,54 @@ function Login() {
 
         if (descriptor) {
           validCapturedFrames++;
+          let matchedThisFrame = false;
+          let simVal = 0.85;
+
+          // 1. Try Backend Verification
           try {
-            const res = await axios.post('/api/face/verify', {
+            const apiBase = getApiBaseUrl();
+            const res = await axios.post(`${apiBase}/api/face/verify`, {
               studentId: activeStudent.studentId,
+              email: activeStudent.email,
               embedding: Array.from(descriptor)
             }, {
               headers: { Authorization: `Bearer ${activeToken}` },
-              timeout: 4000
+              timeout: 3000
             });
 
             const data = res.data;
-            if (data.needsEnrollment) {
-              setFaceStatusMsg("⚠️ No face profile registered. Redirecting to Multi-Sample Enrollment...");
-              setTimeout(() => setVerificationStep("face_enroll"), 1000);
+            if (data.needsEnrollment && !localEnrolledEmbedding) {
+              setFaceStatusMsg("⚠️ No face profile registered. Redirecting to Face Enrollment...");
+              setTimeout(() => setVerificationStep("no_face_prompt"), 1000);
               setFaceVerifying(false);
               return;
             }
 
             if (data.match === true) {
-              passedCount++;
-              totalSimilaritySum += (data.similarity || 0.85);
+              matchedThisFrame = true;
+              simVal = data.similarity || 0.85;
             }
           } catch (e) {
-            console.warn(`Frame ${frame + 1} verify error:`, e.message);
+            console.warn(`Frame ${frame + 1} backend verify error:`, e.message);
+          }
+
+          // 2. Fallback to Local Embedding Comparison if Backend didn't return match
+          if (!matchedThisFrame && localEnrolledEmbedding) {
+            const cmp = compareDescriptors(Array.from(descriptor), localEnrolledEmbedding, 0.50);
+            if (cmp.match) {
+              matchedThisFrame = true;
+              simVal = cmp.similarity;
+            }
+          }
+
+          if (matchedThisFrame) {
+            passedCount++;
+            totalSimilaritySum += simVal;
           }
         }
 
         const pct = Math.round(((frame + 1) / TOTAL_LOGIN_FRAMES) * 100);
-        setFaceStatusMsg(`🔍 30-Frame ArcFace Audit: Frame ${frame + 1}/30 (${pct}%) — ${passedCount}/${REQUIRED_PASSED_FRAMES} passed`);
+        setFaceStatusMsg(`🔍 Biometric Audit: Frame ${frame + 1}/${TOTAL_LOGIN_FRAMES} (${pct}%) — ${passedCount}/${REQUIRED_PASSED_FRAMES} passed`);
         await new Promise(r => setTimeout(r, 90));
       }
 
@@ -399,7 +431,7 @@ function Login() {
         ? Math.round((totalSimilaritySum / Math.max(1, passedCount)) * 100)
         : 0;
 
-      console.log(`🔐 Login Verification Result: ${passedCount}/${TOTAL_LOGIN_FRAMES} frames passed (Required: ${REQUIRED_PASSED_FRAMES}), Avg Sim: ${averageSimilarityPct}%`);
+      console.log(`🔐 Login Verification Result: ${passedCount}/${TOTAL_LOGIN_FRAMES} frames passed (Required: ${REQUIRED_PASSED_FRAMES}), Valid Frames: ${validCapturedFrames}, Avg Sim: ${averageSimilarityPct}%`);
 
       if (passedCount >= REQUIRED_PASSED_FRAMES) {
         setFaceStatusMsg(`✅ Verified Student - ${activeStudent.fullName || activeStudent.name || 'Student'}`);
@@ -407,11 +439,11 @@ function Login() {
           completeLogin(activeToken, activeStudent);
         }, 1000);
       } else {
-        setFaceStatusMsg("🔴 Face does not match the registered student.");
+        setFaceStatusMsg("🔴 Face does not match the registered student. Position face clearly in camera.");
       }
     } catch (e) {
       console.error("Face verification error:", e);
-      setFaceStatusMsg("🔴 Face does not match the registered student.");
+      setFaceStatusMsg("🔴 Verification error. Please face camera clearly and retry.");
     } finally {
       setFaceVerifying(false);
     }

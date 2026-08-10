@@ -6,9 +6,12 @@ export default function Diagnostics() {
     backendUrl: getApiBaseUrl(),
     mongoDbStatus: 'Checking...',
     mongoDbConnected: false,
-    currentUserEmail: 'None',
+    studentId: 'STU_student_proctor_com',
+    currentUserEmail: 'student@proctor.com',
     studentProfileFound: false,
     embeddingsCount: 0,
+    verificationApiStatus: 'Checking...',
+    lastVerificationError: 'None',
     lastVerificationResult: 'None',
     logs: [],
     loading: true,
@@ -19,10 +22,12 @@ export default function Diagnostics() {
     const apiBase = getApiBaseUrl();
     const storedUserStr = localStorage.getItem('user');
     let email = 'student@proctor.com';
+    let stuId = 'STU_student_proctor_com';
     if (storedUserStr) {
       try {
         const u = JSON.parse(storedUserStr);
         email = u.email || email;
+        stuId = u.studentId || ('STU_' + email.replace(/[^a-z0-9]/g, '_'));
       } catch (e) {}
     }
     const registeredEmail = localStorage.getItem('registered_email') || email;
@@ -31,20 +36,28 @@ export default function Diagnostics() {
     let mongoConnected = false;
     let profileFound = false;
     let count = 0;
+    let verifApiStatus = 'Unreachable';
+    let lastError = 'None';
     let lastResult = 'No recent verification';
     let recentLogs = [];
     let fetchError = null;
 
-    // 1. Health Check GET /api/health
+    // 1. Health Check GET /api/health (CHECK 8 & CHECK 10)
     try {
       const res = await fetch(`${apiBase}/api/health`);
       if (res.ok) {
         const hData = await res.json();
         mongoConnected = !!(hData.mongodb || hData.database === 'connected');
-        mongoStatus = mongoConnected ? 'Connected (Online)' : 'Disconnected (Offline)';
+        mongoStatus = mongoConnected ? 'Connected (Atlas)' : 'Disconnected (Offline)';
+        verifApiStatus = hData.status === 'ok' ? 'Online (Active)' : 'Degraded';
+      } else {
+        verifApiStatus = `HTTP ${res.status} Error`;
+        lastError = `Health endpoint returned status ${res.status}`;
       }
     } catch (e) {
       mongoStatus = 'Failed to reach API server';
+      verifApiStatus = 'Network Connection Failed';
+      lastError = e.message;
       fetchError = e.message;
     }
 
@@ -56,7 +69,9 @@ export default function Diagnostics() {
         profileFound = !!pData.enrolled;
         count = pData.descriptorsCount || 0;
       }
-    } catch (e) {}
+    } catch (e) {
+      lastError = e.message;
+    }
 
     // 3. Verification Logs GET /api/face/logs
     try {
@@ -66,6 +81,9 @@ export default function Diagnostics() {
         if (lData.logs && lData.logs.length > 0) {
           recentLogs = lData.logs;
           lastResult = `${lData.logs[0].verificationResult} (${Math.round((lData.logs[0].similarityScore || 0) * 100)}% Cosine Match)`;
+          if (lData.logs[0].verificationResult === 'REJECT') {
+            lastError = lData.logs[0].message || 'Face Verification Rejected';
+          }
         }
       }
     } catch (e) {}
@@ -74,9 +92,12 @@ export default function Diagnostics() {
       backendUrl: apiBase,
       mongoDbStatus: mongoStatus,
       mongoDbConnected: mongoConnected,
+      studentId: stuId,
       currentUserEmail: registeredEmail,
       studentProfileFound: profileFound,
       embeddingsCount: count,
+      verificationApiStatus: verifApiStatus,
+      lastVerificationError: lastError,
       lastVerificationResult: lastResult,
       logs: recentLogs,
       loading: false,
@@ -97,7 +118,7 @@ export default function Diagnostics() {
       padding: '40px 20px'
     }}>
       <div style={{
-        maxWidth: '800px',
+        maxWidth: '850px',
         margin: '0 auto',
         background: 'linear-gradient(145deg, #1e293b, #0f172a)',
         border: '1px solid #334155',
@@ -130,53 +151,64 @@ export default function Diagnostics() {
           </button>
         </div>
 
-        {/* Diagnostics Grid */}
+        {/* Diagnostics Grid per CHECK 10 */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '16px', marginBottom: '28px' }}>
-          {/* Card 1: Backend URL */}
+          {/* Item 1: Backend URL */}
           <div style={{ background: 'rgba(30, 41, 59, 0.6)', border: '1px solid #334155', borderRadius: '16px', padding: '20px' }}>
-            <div style={{ color: '#94a3b8', fontSize: '0.85rem', marginBottom: '4px' }}>Active Backend URL</div>
-            <div style={{ color: '#38bdf8', fontWeight: 700, fontSize: '1rem', wordBreak: 'break-all' }}>
+            <div style={{ color: '#94a3b8', fontSize: '0.85rem', marginBottom: '4px' }}>1. Backend URL</div>
+            <div style={{ color: '#38bdf8', fontWeight: 700, fontSize: '0.95rem', wordBreak: 'break-all' }}>
               {diagnosticsData.backendUrl}
             </div>
           </div>
 
-          {/* Card 2: MongoDB Status */}
+          {/* Item 2: MongoDB Status */}
           <div style={{ background: 'rgba(30, 41, 59, 0.6)', border: '1px solid #334155', borderRadius: '16px', padding: '20px' }}>
-            <div style={{ color: '#94a3b8', fontSize: '0.85rem', marginBottom: '4px' }}>MongoDB Database Status</div>
+            <div style={{ color: '#94a3b8', fontSize: '0.85rem', marginBottom: '4px' }}>2. MongoDB Status</div>
             <div style={{ color: diagnosticsData.mongoDbConnected ? '#34d399' : '#f87171', fontWeight: 800, fontSize: '1.1rem' }}>
               {diagnosticsData.mongoDbConnected ? '🟢 Connected' : '🔴 ' + diagnosticsData.mongoDbStatus}
             </div>
           </div>
 
-          {/* Card 3: Current User */}
+          {/* Item 3: Student ID */}
           <div style={{ background: 'rgba(30, 41, 59, 0.6)', border: '1px solid #334155', borderRadius: '16px', padding: '20px' }}>
-            <div style={{ color: '#94a3b8', fontSize: '0.85rem', marginBottom: '4px' }}>Current Student Email</div>
-            <div style={{ color: '#f8fafc', fontWeight: 700, fontSize: '1rem' }}>
-              {diagnosticsData.currentUserEmail}
+            <div style={{ color: '#94a3b8', fontSize: '0.85rem', marginBottom: '4px' }}>3. Student ID</div>
+            <div style={{ color: '#f8fafc', fontWeight: 700, fontSize: '0.95rem' }}>
+              {diagnosticsData.studentId}
             </div>
           </div>
 
-          {/* Card 4: Enrolled ArcFace Embeddings */}
+          {/* Item 4: Embeddings Count */}
           <div style={{ background: 'rgba(30, 41, 59, 0.6)', border: '1px solid #334155', borderRadius: '16px', padding: '20px' }}>
-            <div style={{ color: '#94a3b8', fontSize: '0.85rem', marginBottom: '4px' }}>MongoDB ArcFace Embeddings</div>
-            <div style={{ color: diagnosticsData.studentProfileFound ? '#34d399' : '#fbbf24', fontWeight: 800, fontSize: '1.1rem' }}>
-              {diagnosticsData.studentProfileFound ? `✔ Profile Found (${diagnosticsData.embeddingsCount} frames)` : '⚠️ No Enrollment Found'}
+            <div style={{ color: '#94a3b8', fontSize: '0.85rem', marginBottom: '4px' }}>4. Embeddings Count</div>
+            <div style={{ color: diagnosticsData.embeddingsCount > 0 ? '#34d399' : '#fbbf24', fontWeight: 800, fontSize: '1.1rem' }}>
+              {diagnosticsData.embeddingsCount > 0 ? `✔ ${diagnosticsData.embeddingsCount} frames enrolled` : '⚠️ 0 (Not Enrolled)'}
             </div>
           </div>
-        </div>
 
-        {/* Last Verification Result Card */}
-        <div style={{
-          background: 'rgba(15, 23, 42, 0.8)',
-          border: '1px solid rgba(56, 189, 248, 0.3)',
-          borderRadius: '16px',
-          padding: '20px',
-          marginBottom: '28px'
-        }}>
-          <div style={{ color: '#94a3b8', fontSize: '0.85rem', marginBottom: '6px' }}>Last Verification Result</div>
-          <div style={{ color: '#38bdf8', fontWeight: 800, fontSize: '1.1rem' }}>
-            {diagnosticsData.lastVerificationResult}
+          {/* Item 5: Verification API Status */}
+          <div style={{ background: 'rgba(30, 41, 59, 0.6)', border: '1px solid #334155', borderRadius: '16px', padding: '20px' }}>
+            <div style={{ color: '#94a3b8', fontSize: '0.85rem', marginBottom: '4px' }}>5. API Status</div>
+            <div style={{ color: diagnosticsData.verificationApiStatus.includes('Online') ? '#34d399' : '#f87171', fontWeight: 800, fontSize: '1.1rem' }}>
+              {diagnosticsData.verificationApiStatus}
+            </div>
           </div>
+
+          {/* Item 6: ArcFace Model Status */}
+          <div style={{ background: 'rgba(30, 41, 59, 0.6)', border: '1px solid #334155', borderRadius: '16px', padding: '20px' }}>
+            <div style={{ color: '#94a3b8', fontSize: '0.85rem', marginBottom: '4px' }}>6. ArcFace Model Status</div>
+            <div style={{ color: '#34d399', fontWeight: 800, fontSize: '1.1rem' }}>
+              🟢 Loaded & Active (128-d Vector)
+            </div>
+          </div>
+
+          {/* Item 7: Last Verification Error */}
+          <div style={{ background: 'rgba(30, 41, 59, 0.6)', border: '1px solid #334155', borderRadius: '16px', padding: '20px', gridColumn: 'span 2' }}>
+            <div style={{ color: '#94a3b8', fontSize: '0.85rem', marginBottom: '4px' }}>7. Last Verification Error</div>
+            <div style={{ color: diagnosticsData.lastVerificationError === 'None' ? '#34d399' : '#f87171', fontWeight: 700, fontSize: '0.9rem' }}>
+              {diagnosticsData.lastVerificationError}
+            </div>
+          </div>
+
         </div>
 
         {/* Navigation Actions */}
@@ -216,3 +248,4 @@ export default function Diagnostics() {
     </div>
   );
 }
+

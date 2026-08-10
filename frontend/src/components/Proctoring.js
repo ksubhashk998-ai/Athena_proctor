@@ -127,7 +127,8 @@ const Proctoring = () => {
                 videoRef.current,
                 new faceapi.TinyFaceDetectorOptions()
               );
-              const detections = (rawDets || []).filter(d => d && d.box && d.box.width > 0);
+              const detections = (rawDets || []).filter(d => d && d.box && typeof d.box.x === 'number' && d.box.x !== null && d.box.width > 0);
+
 
               if (detections.length > 1) {
                 setStatus("⚠️ Multiple Faces Detected");

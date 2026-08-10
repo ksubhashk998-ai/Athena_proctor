@@ -74,7 +74,13 @@ async function startService(key) {
     cwd: service.cwd,
     stdio: 'pipe',
     shell: true,
-    env: { ...process.env, BROWSER: 'none' }
+    env: { 
+      ...process.env, 
+      BROWSER: 'none',
+      GENERATE_SOURCEMAP: 'false',
+      DISABLE_ESLINT_PLUGIN: 'true',
+      FAST_REFRESH: 'true'
+    }
   });
 
   service.process = child;

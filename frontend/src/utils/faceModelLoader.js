@@ -180,10 +180,12 @@ export function getFaceApi() {
 export function canRunInference(videoRef) {
   if (!modelsLoaded || !faceapi) return false;
   if (!faceapi.nets.tinyFaceDetector.isLoaded) return false;
-  if (!videoRef?.current) return false;
-  if (videoRef.current.readyState !== 4) return false;
+  const video = videoRef?.current;
+  if (!video || video.paused || video.ended || video.readyState < 2) return false;
+  if (!video.videoWidth || !video.videoHeight || video.videoWidth === 0 || video.videoHeight === 0) return false;
   return true;
 }
+
 
 /**
  * Reset state (for testing/dev purposes only)

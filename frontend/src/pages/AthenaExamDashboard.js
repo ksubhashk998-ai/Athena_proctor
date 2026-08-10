@@ -234,7 +234,8 @@ function AthenaExamDashboard() {
         }
 
         // Compare live face embedding with enrolled embedding via backend API
-        const response = await fetch('/api/face/verify', {
+        const apiBase = getApiBaseUrl();
+        const response = await fetch(`${apiBase}/api/face/verify`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -247,7 +248,14 @@ function AthenaExamDashboard() {
           })
         });
 
-        const data = await response.json();
+        const contentType = response.headers.get('content-type') || '';
+        let data = { match: false, similarityPct: 0 };
+        if (contentType.includes('application/json')) {
+          data = await response.json();
+        } else {
+          console.warn(`⚠️ Non-JSON response status ${response.status} from ${apiBase}/api/face/verify`);
+        }
+
 
         if (data.match === true) {
           setConsecutiveIdentityFailures(0);

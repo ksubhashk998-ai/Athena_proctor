@@ -117,8 +117,8 @@ class EyeMovementDetection {
             return null;
         }
 
-        // Guard 3: Video must be fully ready (readyState 4 = HAVE_ENOUGH_DATA)
-        if (this.video.readyState !== 4) {
+        // Guard 3: Video must be fully active with non-zero dimensions
+        if (!this.video || this.video.paused || this.video.ended || this.video.readyState < 2 || !this.video.videoWidth || !this.video.videoHeight || this.video.videoWidth === 0 || this.video.videoHeight === 0) {
             return null;
         }
 
@@ -139,6 +139,11 @@ class EyeMovementDetection {
                 this.video,
                 new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.5 })
             ).withFaceLandmarks();
+
+            if (!detection || !detection.box || typeof detection.box.x !== 'number' || detection.box.x === null || !detection.landmarks) {
+                return null;
+            }
+
 
             if (detection && detection.landmarks) {
                 const landmarks = detection.landmarks;

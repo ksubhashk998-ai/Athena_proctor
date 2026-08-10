@@ -7,6 +7,10 @@ const faceEmbeddingSchema = new mongoose.Schema({
         unique: true,
         ref: 'Student'
     },
+    name: {
+        type: String,
+        required: false
+    },
     email: {
         type: String,
         required: false,
@@ -16,40 +20,39 @@ const faceEmbeddingSchema = new mongoose.Schema({
         type: Boolean,
         default: true
     },
-    enrollmentDate: {
-        type: Date,
-        default: Date.now
+    enrollmentImages: {
+        type: [String], // 30 face samples (Specification Enrollment)
+        default: []
     },
-    embeddingVersion: {
-        type: String,
-        default: 'ArcFace-v1.0'
+    embeddings: {
+        type: [[Number]], // 30 ArcFace 128-d or 512-d embedding vectors
+        default: []
+    },
+    encryptedEmbeddings: {
+        type: [String], // 30 AES-256 cipher strings
+        default: []
     },
     embedding: {
-        type: [Number],
-        required: false,
-        validate: {
-            validator: function(v) {
-                return !v || v.length === 0 || v.length === 128 || v.length === 512;
-            },
-            message: 'Face embedding must be a 128 or 512-dimensional vector'
-        }
+        type: [Number], // Primary centroid vector
+        default: []
     },
     encryptedEmbedding: {
-        type: String, // Encrypted AES-256 cipher string (Requirement 9)
+        type: String,
         default: null
     },
-    enrolledAt: {
-        type: Date,
-        default: Date.now
-    },
     imageSnapshot: {
-        type: String, // base64 thumbnail
+        type: String,
         default: null
     },
     isActive: {
         type: Boolean,
         default: true
+    },
+    createdAt: {
+        type: Date,
+        default: Date.now
     }
 }, { timestamps: true });
 
 module.exports = mongoose.model('FaceEmbedding', faceEmbeddingSchema);
+

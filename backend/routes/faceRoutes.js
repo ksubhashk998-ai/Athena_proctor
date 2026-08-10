@@ -4,9 +4,10 @@ const {
   enrollFace, 
   verifyFace, 
   getFaceProfile, 
-  getVerificationLogs, 
-  logCheatingActivity 
+  saveCheatingLog, 
+  getCheatingLogs 
 } = require('../controllers/faceController');
+
 
 // Specification 12: Backend APIs
 // POST /api/face/enroll
@@ -23,12 +24,13 @@ router.get('/profile/:id', getFaceProfile);
 router.get('/face/profile/:id', getFaceProfile);
 
 // GET /api/face/logs
-router.get('/logs', getVerificationLogs);
-router.get('/face/logs', getVerificationLogs);
+router.get('/logs', getCheatingLogs);
+router.get('/face/logs', getCheatingLogs);
 
 // Cheating Logs API
-router.post('/cheating-log', logCheatingActivity);
-router.post('/face/cheating-log', logCheatingActivity);
+router.post('/cheating-log', saveCheatingLog);
+router.post('/face/cheating-log', saveCheatingLog);
+
 
 // Status route
 router.get('/status/:email', async (req, res) => {

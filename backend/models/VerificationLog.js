@@ -1,26 +1,23 @@
 const mongoose = require('mongoose');
 
 const VerificationLogSchema = new mongoose.Schema({
-    studentId: { type: String, required: true },
-    name: { type: String },
-    email: { type: String },
-    verificationResult: { 
-        type: String, 
-        enum: ['VERIFIED', 'SUSPICIOUS', 'REJECT'], 
-        required: true 
-    },
-    similarityScore: { type: Number, required: true },
-    averageSimilarity: { type: Number },
-    bestSimilarity: { type: Number },
-    majorityVote: { type: String },
+    studentId: { type: String, required: true, index: true },
+    email: { type: String, required: true, index: true },
     timestamp: { type: Date, default: Date.now },
-    screenshotUrl: { type: String },
-    antiSpoofingDetails: {
-        blinkDetected: { type: Boolean, default: true },
-        headMovementDetected: { type: Boolean, default: true },
-        photoAttackPassed: { type: Boolean, default: true },
-        phoneScreenPassed: { type: Boolean, default: true }
-    }
+    bestSimilarity: { type: Number, required: true },
+    averageSimilarity: { type: Number, required: true },
+    verifiedFrames: { type: Number, required: true },
+    suspiciousFrames: { type: Number, required: true },
+    rejectedFrames: { type: Number, required: true },
+    result: { 
+        type: String, 
+        required: true, 
+        enum: ['VERIFIED', 'SUSPICIOUS', 'REJECTED', 'MULTIPLE_FACES_DETECTED', 'CHALLENGE_FAILED'] 
+    },
+    ipAddress: { type: String },
+    deviceFingerprint: { type: String },
+    details: { type: mongoose.Schema.Types.Mixed },
+    screenshot: { type: String }
 }, { timestamps: true });
 
 module.exports = mongoose.models.VerificationLog || mongoose.model('VerificationLog', VerificationLogSchema);

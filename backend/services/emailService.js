@@ -32,10 +32,15 @@ function createTransporter() {
  * @param {string} toEmail
  * @param {string} studentName
  * @param {string} otpCode
+ * @param {string} [customSubject]
+ * @param {string} [purposeText]
  * @returns {Promise<boolean>}
  */
-async function sendOtpEmail(toEmail, studentName, otpCode) {
+async function sendOtpEmail(toEmail, studentName, otpCode, customSubject, purposeText) {
   const transporter = createTransporter();
+
+  const subject = customSubject || 'Athena Smart Proctoring - Verification OTP';
+  const actionDescription = purposeText || 'Your One-Time Password (OTP) for Athena Smart Proctoring is:';
 
   const htmlContent = `
     <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #070c18; padding: 40px 20px; color: #f8fafc;">
@@ -54,7 +59,7 @@ async function sendOtpEmail(toEmail, studentName, otpCode) {
 
         <p style="font-size: 15px; color: #cbd5e1; margin-bottom: 8px;">Hello <strong style="color: #ffffff;">${studentName}</strong>,</p>
         <p style="font-size: 14px; color: #94a3b8; line-height: 1.6; margin-bottom: 24px;">
-          Your One-Time Password (OTP) for logging into Athena Smart Proctoring is:
+          ${actionDescription}
         </p>
 
         <!-- OTP Badge Container -->
@@ -89,9 +94,9 @@ async function sendOtpEmail(toEmail, studentName, otpCode) {
   const mailOptions = {
     from: `"Athena Smart Proctoring" <${normalizeEmailCredential(process.env.EMAIL_USER) || 'athena@localhost'}>`,
     to: toEmail,
-    subject: 'Athena Smart Proctoring - Login Verification OTP',
+    subject: subject,
     html: htmlContent,
-    text: `Hello ${studentName},\n\nYour OTP for logging into Athena Smart Proctoring is: ${otpCode}\n\nThis OTP is valid for 5 minutes.\n\nRegards,\nAthena Smart Proctoring Team`
+    text: `Hello ${studentName},\n\n${actionDescription} ${otpCode}\n\nThis OTP is valid for 5 minutes.\n\nRegards,\nAthena Smart Proctoring Team`
   };
 
   try {

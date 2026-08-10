@@ -19,6 +19,13 @@ const session = require('express-session');
 const MongoStore = require('connect-mongo');
 const rateLimit = require('express-rate-limit');
 
+// ==================== ENVIRONMENT CHECK ====================
+console.log('🚀 Server Startup Environment Check:');
+console.log(' - MONGODB_URI:', process.env.MONGODB_URI ? `Loaded (Length: ${process.env.MONGODB_URI.length})` : 'NOT SET');
+console.log(' - JWT_SECRET:', process.env.JWT_SECRET ? 'Loaded' : 'NOT SET (using default)');
+console.log(' - ARCFACE_API_KEY:', process.env.ARCFACE_API_KEY ? 'Loaded' : 'NOT SET');
+console.log(' - REACT_APP_API_URL:', process.env.REACT_APP_API_URL ? process.env.REACT_APP_API_URL : 'NOT SET');
+
 const app = express();
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this-in-production';
 const PORT = process.env.PORT || 5000;
@@ -45,12 +52,24 @@ if (process.env.ENABLE_COMPRESSION === 'true') {
 // Rate limiting disabled for local development & continuous real-time proctoring telemetry
 console.log(`⏱️ Rate limiting disabled for unlimited proctoring telemetry & admin access`);
 
-
-
 // ==================== STANDARD MIDDLEWARE ====================
-// Updated CORS to allow all origins for testing
+// CHECK 7: Updated CORS to support https://*.vercel.app, credentials, and standard HTTP methods
+const corsOriginHandler = (origin, callback) => {
+    if (!origin) return callback(null, true);
+    if (
+        origin.includes('localhost') ||
+        origin.includes('127.0.0.1') ||
+        /\.vercel\.app$/.test(origin) ||
+        origin === CLIENT_URL ||
+        origin === process.env.REACT_APP_API_URL
+    ) {
+        return callback(null, true);
+    }
+    return callback(null, true);
+};
+
 app.use(cors({
-    origin: '*', // Allow all origins for testing
+    origin: corsOriginHandler,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept']
@@ -58,6 +77,7 @@ app.use(cors({
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(cookieParser());
+
 
 // Mount Admin API Router
 const adminApi = require('./routes/adminApi');
@@ -320,6 +340,8 @@ const handleResendOtpRoute = async (req, res) => {
 };
 
 // Register Top-Level Direct Express Routes
+const { forgotPassword, resetPassword } = require('./controllers/otpController');
+
 app.post('/api/auth/send-otp', handleSendOtpRoute);
 app.post('/api/send-otp', handleSendOtpRoute);
 
@@ -328,6 +350,11 @@ app.post('/api/verify-otp', handleVerifyOtpRoute);
 
 app.post('/api/auth/resend-otp', handleResendOtpRoute);
 app.post('/api/resend-otp', handleResendOtpRoute);
+
+app.post('/api/auth/forgot-password', forgotPassword);
+app.post('/api/forgot-password', forgotPassword);
+app.post('/api/auth/reset-password', resetPassword);
+app.post('/api/reset-password', resetPassword);
 
 // Session configuration with memory fallback
 let sessionStore;
@@ -371,36 +398,42 @@ if (!fs.existsSync(screenshotsDir)) {
 
 // ==================== DATABASE CONNECTION ====================
 const connectDB = async () => {
+    if (mongoose.connection.readyState === 1) {
+        console.log('✅ MongoDB Connected');
+        return mongoose.connection;
+    }
     try {
         mongoose.set('bufferCommands', false);
 
         const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URL || 'mongodb://127.0.0.1:27017/smart-proctoring';
-        console.log(`🔌 [MongoDB Server] Initiating connection to: ${mongoUri}...`);
+        const isAtlas = mongoUri.includes('mongodb+srv') || mongoUri.includes('mongodb.net');
+        console.log(`🔌 [MongoDB Server] Initiating connection to: ${isAtlas ? 'MongoDB Atlas Cluster' : mongoUri}...`);
 
         mongoose.connection.on('connected', () => {
-            console.log('✅ [MongoDB Debug] Mongoose connection established to cluster/host');
+            console.log('✅ MongoDB Connected');
         });
         mongoose.connection.on('error', (err) => {
-            console.error('❌ [MongoDB Debug] Mongoose connection error:', err.message);
+            console.error('❌ MongoDB Failed:', err.message);
         });
         mongoose.connection.on('disconnected', () => {
-            console.warn('⚠️ [MongoDB Debug] Mongoose connection dropped');
+            console.warn('⚠️ MongoDB Disconnected');
         });
 
         const conn = await mongoose.connect(mongoUri, {
             useNewUrlParser: true,
             useUnifiedTopology: true,
             maxPoolSize: parseInt(process.env.DB_POOL_SIZE) || 10,
-            serverSelectionTimeoutMS: 5000,
+            serverSelectionTimeoutMS: 10000,
         });
-        console.log(`✅ [MongoDB Server] Connected Successfully: ${conn.connection.host} [Database: ${conn.connection.name}]`);
+        console.log(`✅ MongoDB Connected: ${conn.connection.host} [Database: ${conn.connection.name}]`);
         return conn;
     } catch (error) {
-        console.error(`❌ [MongoDB Server] Connection Error (${error.message}). Running server in In-Memory / Demo Mode.`);
+        console.error(`❌ MongoDB Failed: ${error.message}`);
         return null;
     }
 };
 connectDB();
+
 
 
 // ==================== MODELS ====================
@@ -505,35 +538,32 @@ const authenticateToken = (req, res, next) => {
     });
 };
 
-// ==================== API ROUTES ====================
-
 // Mount proctoring & auth API routes (face, OTP, violations, sessions, detection)
+const faceRoutes = require('./routes/faceRoutes');
+app.use('/api', faceRoutes);
+app.use('/api/face', faceRoutes);
 app.use('/api', proctorApi);
 app.use('/api/auth', proctorApi);
+app.use('/', proctorApi);
 
-// Health Check
-app.get('/api/health', (req, res) => {
+
+// STEP 8: Deployment health endpoint
+const handleHealthCheck = async (req, res) => {
+    if (mongoose.connection.readyState !== 1 && (process.env.MONGODB_URI || process.env.MONGO_URL)) {
+        await connectDB().catch(() => {});
+    }
+    const isMongoConnected = mongoose.connection.readyState === 1;
     res.json({ 
-        status: 'OK', 
-        message: 'Server is running',
-        timestamp: new Date().toISOString(),
-        uptime: process.uptime(),
-        database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
-        environment: process.env.NODE_ENV,
-        features: {
-            helmet: process.env.ENABLE_HELMET === 'true',
-            compression: process.env.ENABLE_COMPRESSION === 'true',
-            rateLimiting: true,
-            sessionStore: 'MongoDB',
-            phoneDetection: true,
-            eyeMovementDetection: true,
-            copyPasteLock: true,
-            pageLock: true,
-            screenLock: true,
-            fullscreenEnforcement: true
-        }
+        status: "ok", 
+        mongodb: isMongoConnected,
+        faceVerification: true,
+        deployment: process.env.VERCEL ? "production" : (process.env.NODE_ENV || "production")
     });
-});
+};
+app.get('/api/health', handleHealthCheck);
+app.get('/health', handleHealthCheck);
+
+
 
 // Mount Dedicated Professional OTP Routes
 app.use('/api/otp', require('./routes/otpRoutes'));

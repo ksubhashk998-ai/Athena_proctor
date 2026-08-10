@@ -6,7 +6,7 @@ import PhoneDetectionCard from '../components/PhoneDetectionCard';
 import HeadphoneDetectionCard from '../components/HeadphoneDetectionCard';
 import ViolationHistory from '../components/ViolationHistory';
 import NotificationToast from '../components/NotificationToast';
-import FaceEnrollment from '../components/FaceEnrollment';
+
 
 import { useContinuousVerification } from '../hooks/useContinuousVerification';
 import { useObjectDetection } from '../hooks/useObjectDetection';
@@ -27,23 +27,10 @@ export default function ProctorDashboard({ user, onLogout }) {
   const [isMonitoring, setIsMonitoring] = useState(true);
   const [violations, setViolations] = useState([]);
   const [notifications, setNotifications] = useState([]);
-  const [showEnrollment, setShowEnrollment] = useState(false);
 
-  // Check enrollment on mount
-  useEffect(() => {
-    if (!token || !student?.studentId) return;
 
-    fetch(`/api/face/status/${student.studentId}`, {
-      headers: { Authorization: `Bearer ${token}` }
-    })
-      .then((res) => res.json())
-      .then((data) => {
-        if (!data.enrolled) {
-          setShowEnrollment(true);
-        }
-      })
-      .catch((err) => console.error('Face status check failed:', err));
-  }, [student, token]);
+
+
 
   // Socket.IO real-time connection
   useEffect(() => {
@@ -253,15 +240,7 @@ export default function ProctorDashboard({ user, onLogout }) {
         onDismiss={handleDismissNotification}
       />
 
-      {/* Face Enrollment Modal if not enrolled */}
-      {showEnrollment && (
-        <FaceEnrollment
-          studentId={student.studentId}
-          token={token}
-          onEnrolled={() => setShowEnrollment(false)}
-          onSkip={() => setShowEnrollment(false)}
-        />
-      )}
+
     </div>
   );
 }

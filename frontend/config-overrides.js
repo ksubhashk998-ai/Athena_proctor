@@ -3,6 +3,16 @@ const webpack = require('webpack');
 
 module.exports = {
   webpack: function override(config, env) {
+    // Enable Webpack 5 persistent filesystem cache for ultrafast startup
+    if (env === 'development') {
+      config.cache = {
+        type: 'filesystem',
+        buildDependencies: {
+          config: [__filename],
+        },
+      };
+    }
+
     // Add fallbacks for Node.js core modules in Webpack 5
     config.resolve.fallback = {
       ...config.resolve.fallback,

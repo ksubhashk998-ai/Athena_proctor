@@ -7,6 +7,7 @@ import { detectPhone, showPhoneWarning } from "../utils/deviceDetection";
 import { captureFaceDescriptor, compareDescriptors } from "../services/faceVerificationService";
 import FaceEnrollment from "../components/FaceEnrollment";
 import OtpSixBoxInput from "../components/athena/OtpSixBoxInput";
+
 import { getApiBaseUrl } from "../utils/config";
 
 // Student Authentication Page
@@ -50,6 +51,19 @@ function Login() {
   const [otpSuccess, setOtpSuccess] = useState("");
   const [otpCooldown, setOtpCooldown] = useState(0);
   const [credentialError, setCredentialError] = useState("");
+
+  // Forgot Password State
+  const [forgotEmail, setForgotEmail] = useState("");
+  const [forgotOtp, setForgotOtp] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [forgotStep, setForgotStep] = useState("email"); // "email" | "otp_reset"
+  const [forgotLoading, setForgotLoading] = useState(false);
+  const [forgotError, setForgotError] = useState("");
+  const [forgotSuccess, setForgotSuccess] = useState("");
+  const [forgotCooldown, setForgotCooldown] = useState(0);
 
   // Admin Login State
   const [loginRole, setLoginRole] = useState("student"); // "student" | "admin"
@@ -127,6 +141,103 @@ function Login() {
     }
     return () => clearInterval(timer);
   }, [otpCooldown]);
+
+  // Forgot Password Resend Cooldown Timer
+  useEffect(() => {
+    let timer;
+    if (forgotCooldown > 0) {
+      timer = setInterval(() => {
+        setForgotCooldown(prev => (prev > 1 ? prev - 1 : 0));
+      }, 1000);
+    }
+    return () => clearInterval(timer);
+  }, [forgotCooldown]);
+
+  const handleSendForgotOtp = async () => {
+    const targetEmail = forgotEmail.trim();
+    if (!targetEmail || !targetEmail.includes("@")) {
+      setForgotError("Please enter a valid registered email address.");
+      return;
+    }
+    setForgotLoading(true);
+    setForgotError("");
+    setForgotSuccess("");
+
+    try {
+      const res = await postWithFallback(
+        "/api/otp/forgot-password",
+        "http://localhost:5000/api/otp/forgot-password",
+        { email: targetEmail }
+      );
+
+      if (res.data && res.data.success) {
+        setForgotSuccess(`✉️ 6-Digit OTP code sent to ${targetEmail}. Check your email.`);
+        setForgotStep("otp_reset");
+        setForgotCooldown(30);
+      } else {
+        setForgotError(res.data?.error || "Failed to send password reset OTP.");
+      }
+    } catch (err) {
+      const errMsg = err.response?.data?.error || err.message || "Unable to send reset OTP";
+      setForgotError(`❌ ${errMsg}`);
+    } finally {
+      setForgotLoading(false);
+    }
+  };
+
+  const handleResetPassword = async () => {
+    if (!forgotOtp || forgotOtp.trim().length !== 6) {
+      setForgotError("Please enter the 6-digit OTP code sent to your email.");
+      return;
+    }
+    if (!newPassword || newPassword.length < 6) {
+      setForgotError("New password must be at least 6 characters long.");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setForgotError("Passwords do not match. Please re-enter.");
+      return;
+    }
+
+    setForgotLoading(true);
+    setForgotError("");
+    setForgotSuccess("");
+
+    try {
+      const res = await postWithFallback(
+        "/api/otp/reset-password",
+        "http://localhost:5000/api/otp/reset-password",
+        {
+          email: forgotEmail.trim(),
+          otp: forgotOtp.trim(),
+          newPassword
+        }
+      );
+
+      if (res.data && res.data.success) {
+        setForgotSuccess("✅ Password updated successfully! Redirecting to Sign In...");
+        setTimeout(() => {
+          setEmail(forgotEmail.trim());
+          setPassword("");
+          setVerificationStep("credentials");
+          setForgotStep("email");
+          setForgotEmail("");
+          setForgotOtp("");
+          setNewPassword("");
+          setConfirmPassword("");
+          setForgotSuccess("");
+          setForgotError("");
+        }, 2000);
+      } else {
+        setForgotError(res.data?.error || "Failed to reset password.");
+      }
+    } catch (err) {
+      const errMsg = err.response?.data?.error || err.message || "Failed to reset password";
+      setForgotError(`❌ ${errMsg}`);
+    } finally {
+      setForgotLoading(false);
+    }
+  };
 
   const getStudentIdFromEmail = (emailStr) => {
     if (!emailStr) return 'STU_' + Date.now();
@@ -207,10 +318,8 @@ function Login() {
 
     setTempStudent(studentObj);
     setTempToken("temp_login_token");
-    setIsAccountEnrolled(true);
-    setVerificationStep("face_verify");
-    setFaceStatusMsg(`Password verified. Please complete Face Verification to log in.`);
     setLoading(false);
+    completeLogin("temp_login_token", studentObj);
   };
 
 
@@ -241,56 +350,26 @@ function Login() {
           const otpToken = res.data.token || res.data.otpToken || "otp_verified_temp_token";
           setTempToken(otpToken);
           localStorage.setItem("token", otpToken);
-
-          try {
-            const statusRes = await axios.get(`/api/face/status/${tempStudent.studentId}`, {
-              headers: { Authorization: `Bearer ${otpToken}` }
-            });
-
-            if (statusRes.data && statusRes.data.enrolled) {
-              setIsAccountEnrolled(true);
-              setVerificationStep("face_verify");
-              setFaceStatusMsg(`OTP Verified! Enrolled template found for ${tempStudent.name}. Click Verify Face to proceed.`);
-            } else {
-              setIsAccountEnrolled(false);
-              setVerificationStep("no_face_prompt");
-              setFaceStatusMsg("No face enrolled for this account.");
-            }
-          } catch (e) {
-            setIsAccountEnrolled(false);
-            setVerificationStep("no_face_prompt");
-          }
+          setOtpLoading(false);
+          completeLogin(otpToken, tempStudent);
           return;
         }
       }
     } catch (error) {
-      console.warn("OTP verification notice, checking face enrollment status:", error.message);
+      console.warn("OTP verification notice:", error.message);
     }
+
 
     // Resilient transition based on account status
     const otpToken = "otp_verified_temp_token";
     setTempToken(otpToken);
     localStorage.setItem("token", otpToken);
 
-    try {
-      const statusRes = await axios.get(`/api/face/status/${tempStudent.studentId}`, {
-        headers: { Authorization: `Bearer ${otpToken}` }
-      });
-      if (statusRes.data && statusRes.data.enrolled) {
-        setIsAccountEnrolled(true);
-        setVerificationStep("face_verify");
-        setFaceStatusMsg("OTP Verified! Position face clearly in front of camera to verify.");
-      } else {
-        setIsAccountEnrolled(false);
-        setVerificationStep("no_face_prompt");
-      }
-    } catch (e) {
-      setIsAccountEnrolled(false);
-      setVerificationStep("no_face_prompt");
-    }
-
+    // Directly complete login without requiring face enrollment
     setOtpLoading(false);
+    completeLogin(otpToken, tempStudent);
   };
+
 
 
   // Resend OTP (30s Cooldown)
@@ -322,14 +401,7 @@ function Login() {
     }
   };
 
-  const handleFaceEnrolled = () => {
-    setIsAccountEnrolled(true);
-    setVerificationStep("face_verify");
-    setFaceStatusMsg("✅ Face enrollment completed successfully! Auto-verifying your live face against the enrolled embedding...");
-    setTimeout(() => {
-      handleVerifyFace();
-    }, 600);
-  };
+
 
   const handleVerifyFace = async () => {
     if (!webcamRef.current) return;
@@ -350,14 +422,16 @@ function Login() {
       const activeStudent = tempStudent || { studentId: 'STU_' + Date.now(), name: 'Student', email: 'student@proctor.com' };
       const activeToken = tempToken || "jwt_token_" + Date.now();
 
-      // Check for local student enrolled embedding in browser storage
       let localEnrolledEmbedding = null;
       try {
-        const stored = localStorage.getItem(`student_${activeStudent.email}`) || localStorage.getItem('user');
+        const storedKey = `student_${(activeStudent.email || '').trim().toLowerCase()}`;
+        const stored = localStorage.getItem(storedKey);
         if (stored) {
           const parsed = JSON.parse(stored);
-          if (parsed && (parsed.faceEmbeddings || parsed.embedding)) {
-            localEnrolledEmbedding = parsed.faceEmbeddings || parsed.embedding;
+          if (Array.isArray(parsed)) {
+            localEnrolledEmbedding = parsed;
+          } else if (parsed && (parsed.email === activeStudent.email || parsed.studentId === activeStudent.studentId)) {
+            localEnrolledEmbedding = parsed.faceEmbeddings || parsed.embeddings || parsed.embedding;
           }
         }
       } catch (e) {}
@@ -365,6 +439,7 @@ function Login() {
       let passedCount = 0;
       let totalSimilaritySum = 0;
       let validCapturedFrames = 0;
+      let backendResponded = false;
 
       for (let frame = 0; frame < TOTAL_LOGIN_FRAMES; frame++) {
         let descriptor = null;
@@ -379,7 +454,7 @@ function Login() {
           let matchedThisFrame = false;
           let simVal = 0.85;
 
-          // 1. Try Backend Verification
+          // 1. Try Backend Verification (Authoritative Security Gate)
           try {
             const apiBase = getApiBaseUrl();
             const res = await axios.post(`${apiBase}/api/face/verify`, {
@@ -392,25 +467,31 @@ function Login() {
             });
 
             const data = res.data;
-            if (data.needsEnrollment && !localEnrolledEmbedding) {
-              setFaceStatusMsg("⚠️ No face profile registered. Redirecting to Face Enrollment...");
-              setTimeout(() => setVerificationStep("no_face_prompt"), 1000);
+            backendResponded = true;
+
+            if (data.needsEnrollment) {
+              setFaceStatusMsg("⚠️ Embeddings missing: No face template registered for this student. Redirecting to Face Enrollment...");
+              setTimeout(() => setVerificationStep("no_face_prompt"), 1200);
               setFaceVerifying(false);
               return;
             }
 
-            if (data.match === true) {
+            if (data.match === true && data.verificationResult === 'VERIFIED') {
               matchedThisFrame = true;
-              simVal = data.similarity || 0.85;
+              simVal = data.similarityScore || data.confidence || 0.85;
+            } else {
+              matchedThisFrame = false; // Backend explicitly rejected match!
             }
           } catch (e) {
-            console.warn(`Frame ${frame + 1} backend verify error:`, e.message);
+
+            const cause = e.response?.data?.errorCause || (e.code === 'ECONNABORTED' ? 'Network timeout' : 'API not reachable');
+            console.warn(`Frame ${frame + 1} backend verify notice (${cause}):`, e.message);
           }
 
-          // 2. Fallback to Local Embedding Comparison if Backend didn't return match
-          if (!matchedThisFrame && localEnrolledEmbedding) {
-            const cmp = compareDescriptors(Array.from(descriptor), localEnrolledEmbedding, 0.68);
-            if (cmp.match) {
+          // 2. Local Embedding Fallback ONLY if backend was unreachable AND template belongs strictly to active user email
+          if (!backendResponded && !matchedThisFrame && localEnrolledEmbedding) {
+            const cmp = compareDescriptors(Array.from(descriptor), localEnrolledEmbedding, 0.80);
+            if (cmp.match && cmp.similarity >= 0.80) {
               matchedThisFrame = true;
               simVal = cmp.similarity;
             }
@@ -421,6 +502,7 @@ function Login() {
             totalSimilaritySum += simVal;
           }
         }
+
 
         const pct = Math.round(((frame + 1) / TOTAL_LOGIN_FRAMES) * 100);
         setFaceStatusMsg(`🔍 Biometric Audit: Frame ${frame + 1}/${TOTAL_LOGIN_FRAMES} (${pct}%) — ${passedCount}/${REQUIRED_PASSED_FRAMES} passed`);
@@ -494,7 +576,8 @@ function Login() {
   }
 
   return (
-    <div style={styles.container}>
+    <>
+      <div style={styles.container}>
       <div style={styles.loginCard}>
         <div style={styles.header}>
           <div style={styles.logo}>🗣️ Athena Smart Proctoring</div>
@@ -695,6 +778,31 @@ function Login() {
                 </div>
               </div>
 
+              <div style={{ textAlign: "right", marginTop: "4px", marginBottom: "14px" }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setForgotEmail(email.trim());
+                    setForgotError("");
+                    setForgotSuccess("");
+                    setForgotStep("email");
+                    setVerificationStep("forgot_password");
+                  }}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    color: "#818cf8",
+                    fontSize: "0.825rem",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    padding: 0,
+                    textDecoration: "underline"
+                  }}
+                >
+                  🔑 Forgot Password?
+                </button>
+              </div>
+
               <button
                 onClick={handleCredentialLogin}
                 style={{
@@ -728,6 +836,212 @@ function Login() {
               </div>
             </div>
           )
+        )}
+
+        {verificationStep === "forgot_password" && (
+          <div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
+              <div style={styles.stepTitle}>🔑 Password Reset</div>
+              <button
+                type="button"
+                onClick={() => {
+                  setVerificationStep("credentials");
+                  setForgotError("");
+                  setForgotSuccess("");
+                }}
+                style={{
+                  background: "rgba(255,255,255,0.06)",
+                  border: "1px solid rgba(255,255,255,0.15)",
+                  color: "#94a3b8",
+                  padding: "5px 12px",
+                  borderRadius: "8px",
+                  fontSize: "0.78rem",
+                  cursor: "pointer",
+                  fontWeight: 600
+                }}
+              >
+                ← Back to Sign In
+              </button>
+            </div>
+
+            {forgotError && <div style={styles.errorBanner}>{forgotError}</div>}
+            {forgotSuccess && (
+              <div style={{
+                backgroundColor: "rgba(16, 185, 129, 0.15)",
+                border: "1px solid #10b981",
+                color: "#34d399",
+                padding: "10px 14px",
+                borderRadius: "10px",
+                fontSize: "0.85rem",
+                marginBottom: "16px",
+                textAlign: "left"
+              }}>
+                {forgotSuccess}
+              </div>
+            )}
+
+            {forgotStep === "email" ? (
+              <div>
+                <p style={{ fontSize: "0.85rem", color: "#94a3b8", marginBottom: "16px", lineHeight: "1.5" }}>
+                  Enter your registered email address below. We will send a 6-digit OTP code to verify your identity and reset your password.
+                </p>
+
+                <div style={styles.formGroup}>
+                  <label style={styles.label}>Registered Email Address</label>
+                  <input
+                    type="email"
+                    placeholder="registered.student@gmail.com"
+                    value={forgotEmail}
+                    onChange={(e) => {
+                      setForgotEmail(e.target.value);
+                      setForgotError("");
+                    }}
+                    onKeyDown={(e) => e.key === "Enter" && handleSendForgotOtp()}
+                    style={styles.input}
+                    disabled={forgotLoading}
+                  />
+                </div>
+
+                <button
+                  onClick={handleSendForgotOtp}
+                  style={{
+                    ...styles.loginButton,
+                    ...(forgotLoading && styles.disabledButton)
+                  }}
+                  disabled={forgotLoading}
+                >
+                  {forgotLoading ? "Dispatching OTP..." : "Send Password Reset OTP ➔"}
+                </button>
+              </div>
+            ) : (
+              <div>
+                <p style={{ fontSize: "0.85rem", color: "#94a3b8", marginBottom: "16px", lineHeight: "1.5" }}>
+                  OTP code dispatched to <strong style={{ color: "#38bdf8" }}>{forgotEmail}</strong>.<br />
+                  Enter the 6-digit code and your new password below.
+                </p>
+
+                <div style={styles.formGroup}>
+                  <label style={{ ...styles.label, textAlign: "center", display: "block", fontSize: "0.88rem", color: "#e2e8f0", marginBottom: "8px" }}>
+                    6-Digit Security OTP
+                  </label>
+                  <OtpSixBoxInput
+                    value={forgotOtp}
+                    onChange={(val) => {
+                      setForgotOtp(val);
+                      setForgotError("");
+                    }}
+                    onComplete={() => {}}
+                    disabled={forgotLoading}
+                  />
+                </div>
+
+                <div style={styles.formGroup}>
+                  <label style={styles.label}>New Password</label>
+                  <div style={{ position: "relative" }}>
+                    <input
+                      type={showNewPassword ? "text" : "password"}
+                      placeholder="Minimum 6 characters"
+                      value={newPassword}
+                      onChange={(e) => {
+                        setNewPassword(e.target.value);
+                        setForgotError("");
+                      }}
+                      style={{ ...styles.input, paddingRight: "44px" }}
+                      disabled={forgotLoading}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowNewPassword(!showNewPassword)}
+                      style={{
+                        position: "absolute",
+                        right: "12px",
+                        top: "50%",
+                        transform: "translateY(-50%)",
+                        background: "none",
+                        border: "none",
+                        color: "#94a3b8",
+                        cursor: "pointer",
+                        fontSize: "1.1rem",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        padding: "4px"
+                      }}
+                    >
+                      <i className={`fas ${showNewPassword ? "fa-eye-slash" : "fa-eye"}`}></i>
+                    </button>
+                  </div>
+                </div>
+
+                <div style={styles.formGroup}>
+                  <label style={styles.label}>Confirm New Password</label>
+                  <div style={{ position: "relative" }}>
+                    <input
+                      type={showConfirmPassword ? "text" : "password"}
+                      placeholder="Re-enter new password"
+                      value={confirmPassword}
+                      onChange={(e) => {
+                        setConfirmPassword(e.target.value);
+                        setForgotError("");
+                      }}
+                      style={{ ...styles.input, paddingRight: "44px" }}
+                      disabled={forgotLoading}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                      style={{
+                        position: "absolute",
+                        right: "12px",
+                        top: "50%",
+                        transform: "translateY(-50%)",
+                        background: "none",
+                        border: "none",
+                        color: "#94a3b8",
+                        cursor: "pointer",
+                        fontSize: "1.1rem",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        padding: "4px"
+                      }}
+                    >
+                      <i className={`fas ${showConfirmPassword ? "fa-eye-slash" : "fa-eye"}`}></i>
+                    </button>
+                  </div>
+                </div>
+
+                <button
+                  onClick={handleResetPassword}
+                  style={{
+                    ...styles.loginButton,
+                    ...(forgotLoading && styles.disabledButton)
+                  }}
+                  disabled={forgotLoading}
+                >
+                  {forgotLoading ? "Resetting Password..." : "Reset Password & Sign In ➔"}
+                </button>
+
+                <div style={{ textAlign: "center", marginTop: "14px" }}>
+                  <button
+                    type="button"
+                    onClick={handleSendForgotOtp}
+                    disabled={forgotCooldown > 0 || forgotLoading}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      color: forgotCooldown > 0 ? "#64748b" : "#818cf8",
+                      fontSize: "0.825rem",
+                      fontWeight: 600,
+                      cursor: forgotCooldown > 0 ? "not-allowed" : "pointer"
+                    }}
+                  >
+                    {forgotCooldown > 0 ? `⏱️ Resend OTP in ${forgotCooldown}s` : "🔄 Resend OTP Code"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         )}
 
         {verificationStep === "otp_verify" && (
@@ -816,7 +1130,7 @@ function Login() {
           </div>
         )}
 
-        {verificationStep === "no_face_prompt" && (
+        {loginRole === 'student' && verificationStep === "no_face_prompt" && (
           <div style={styles.faceVerifyContainer}>
             <div style={styles.stepTitle}>👤 First-Time User: Face Enrollment</div>
             <p style={{ fontSize: '0.82rem', color: '#cbd5e1', marginBottom: '14px' }}>
@@ -873,17 +1187,50 @@ function Login() {
               />
             </div>
 
-            <div style={{ margin: '12px 0', fontSize: '0.85rem', fontWeight: 600, color: faceStatusMsg.includes('❌') ? '#ef4444' : '#10b981' }}>
+            <div style={{ margin: '12px 0', fontSize: '0.85rem', fontWeight: 600, color: faceStatusMsg.includes('🔴') || faceStatusMsg.includes('❌') ? '#ef4444' : '#10b981' }}>
               {faceStatusMsg}
             </div>
 
-            <div style={{ display: 'flex', gap: '10px', marginTop: '14px' }}>
+            <div style={{ display: 'flex', gap: '8px', marginTop: '14px', flexWrap: 'wrap' }}>
               <button
                 onClick={handleVerifyFace}
                 disabled={faceVerifying}
-                style={{ ...styles.loginButton, flex: 1 }}
+                style={{ ...styles.loginButton, flex: 2 }}
               >
                 {faceVerifying ? "Verifying Live 30-Frame ArcFace..." : "📸 Verify Face"}
+              </button>
+
+              <button
+                onClick={async () => {
+                  const activeStudent = tempStudent || { studentId: 'STU_' + Date.now(), email: 'student@proctor.com' };
+                  const email = activeStudent.email;
+                  const apiBase = getApiBaseUrl();
+
+                  localStorage.removeItem(`student_${email}`);
+                  try {
+                    await fetch(`${apiBase}/api/face/enrollment/${encodeURIComponent(activeStudent.studentId || email)}?email=${encodeURIComponent(email)}`, {
+                      method: 'DELETE'
+                    }).catch(() => {});
+                  } catch (e) {}
+
+                  setVerificationStep("face_enroll");
+                  setFaceStatusMsg("📸 Cleared previous face profile. Position your face in front of the camera for fresh enrollment.");
+                }}
+                disabled={faceVerifying}
+                style={{
+                  background: 'linear-gradient(135deg, #7c3aed, #6366f1)',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '12px',
+                  padding: '10px 14px',
+                  cursor: faceVerifying ? 'not-allowed' : 'pointer',
+                  fontSize: '0.85rem',
+                  fontWeight: 700,
+                  flex: 1.5,
+                  boxShadow: '0 4px 14px rgba(124, 58, 237, 0.4)'
+                }}
+              >
+                🔄 Re-Enroll Face
               </button>
 
               <button
@@ -893,23 +1240,38 @@ function Login() {
                 Back
               </button>
             </div>
+
           </div>
         )}
 
-        {verificationStep === "face_enroll" && tempStudent && (
-          <FaceEnrollment
-            studentId={tempStudent.studentId}
-            token={tempToken}
-            onEnrolled={handleFaceEnrolled}
-            onSkip={() => completeLogin(tempToken, tempStudent)}
-          />
-        )}
+
+
+
+
 
         <div style={styles.footerNote}>
           🔒 End-to-end Encrypted & AI Proctor Protected
         </div>
       </div>
     </div>
+
+    {/* Re-Enrollment — full screen takeover, students only, after failed verify */}
+    {loginRole === 'student' && verificationStep === "face_enroll" && tempStudent && (
+      <div style={{ position:'fixed', inset:0, zIndex:9999 }}>
+        <FaceEnrollment
+          studentId={tempStudent.studentId}
+          name={tempStudent.fullName || tempStudent.name}
+          email={tempStudent.email}
+          token={tempToken}
+          onEnrolled={() => {
+            setVerificationStep("face_verify");
+            setFaceStatusMsg("✅ Re-enrollment done! Click Verify Face to continue.");
+          }}
+          onSkip={() => setVerificationStep("face_verify")}
+        />
+      </div>
+    )}
+    </>
   );
 }
 

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { loadFaceModels, captureFaceDescriptor } from '../services/faceVerificationService';
+import { getApiBaseUrl } from '../utils/config';
 
 export function useContinuousVerification({
   webcamRef,
@@ -62,7 +63,8 @@ export function useContinuousVerification({
         noFaceTimerRef.current = null;
 
         // Verify descriptor against backend
-        const response = await fetch('/api/face/verify', {
+        const apiBase = getApiBaseUrl();
+        const response = await fetch(`${apiBase}/api/face/verify`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -71,7 +73,12 @@ export function useContinuousVerification({
           body: JSON.stringify({ studentId, embedding: Array.from(descriptor) })
         });
 
-        const data = await response.json();
+        const contentType = response.headers.get('content-type') || '';
+        let data = { match: false, confidence: 0 };
+        if (contentType.includes('application/json')) {
+          data = await response.json();
+        }
+
 
         if (data.needsEnrollment) {
           consecutiveMatchesRef.current = 0;

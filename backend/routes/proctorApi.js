@@ -14,11 +14,15 @@ const { sendOtpEmail } = require('../services/emailService');
 const mongoose = require('mongoose');
 try { mongoose.set('bufferCommands', false); } catch(e) {}
 
+const FaceProfile = require('../models/FaceProfile');
+const User = require('../models/User');
 const FaceEmbedding = require('../models/FaceEmbedding');
 const SuspiciousActivity = require('../models/SuspiciousActivity');
 const ScreenshotEvidence = require('../models/ScreenshotEvidence');
 const Student = require('../models/Student');
 const Incident = require('../models/Incident');
+const VerificationLog = require('../models/VerificationLog');
+
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this-in-production';
 const PYTHON_DETECTOR_URL = process.env.PYTHON_DETECTOR_URL || 'http://localhost:8001';
@@ -259,6 +263,8 @@ const handleResendOtp = async (req, res) => {
 };
 
 // Route Registrations with Aliases
+const { forgotPassword, resetPassword } = require('../controllers/otpController');
+
 router.post('/auth/send-otp', handleSendOtp);
 router.post('/send-otp', handleSendOtp);
 router.post('/otp/send', handleSendOtp);
@@ -270,6 +276,14 @@ router.post('/otp/verify', handleVerifyOtp);
 router.post('/auth/resend-otp', handleResendOtp);
 router.post('/resend-otp', handleResendOtp);
 router.post('/otp/resend', handleResendOtp);
+
+router.post('/auth/forgot-password', forgotPassword);
+router.post('/forgot-password', forgotPassword);
+router.post('/otp/forgot-password', forgotPassword);
+
+router.post('/auth/reset-password', resetPassword);
+router.post('/reset-password', resetPassword);
+router.post('/otp/reset-password', resetPassword);
 
 // =========================================================================
 // STUDENT REGISTRATION & AUTHENTICATION ENDPOINTS
@@ -604,212 +618,63 @@ function decryptEmbedding(encryptedStr) {
     }
 }
 
+const faceController = require('../controllers/faceController');
+
+router.post('/face/enroll', faceController.enrollFace);
+router.post('/face/verify', faceController.verifyFace);
+router.post('/verify-face', faceController.verifyFace);
+
 /**
- * POST /api/face/enroll
- * Body: { studentId, embedding: number[128], imageSnapshot?: string }
- * Stores or updates face embedding for the student
+ * DELETE /api/face/enrollment/:studentId
+ * Check 11: Allows deleting/resetting enrollment to enable re-enrollment
  */
-router.post('/face/enroll', authenticateToken, async (req, res) => {
+router.delete('/face/enrollment/:studentId', async (req, res) => {
     try {
-        const { studentId, embedding, imageSnapshot, qualityScore } = req.body;
+        const { studentId } = req.params;
+        const email = req.query.email || studentId;
 
-        if (!studentId) {
-            return res.status(400).json({ error: 'studentId is required for face enrollment' });
-        }
+        // Clear in-memory caches
+        inMemoryEmbeddings.delete(studentId);
+        inMemoryStudents.delete(studentId);
 
-        if (!embedding || !Array.isArray(embedding) || (embedding.length !== 128 && embedding.length !== 512)) {
-            return res.status(400).json({ error: 'Valid face embedding vector is required' });
-        }
+        let deletedFromDb = false;
 
-        const now = Date.now();
-        const lastTime = enrollTimestamps.get(studentId) || 0;
-        const cooldown = 3 * 1000; // 3 seconds cooldown per student
-
-        if (now - lastTime < cooldown) {
-            const retryAfter = Math.ceil((cooldown - (now - lastTime)) / 1000);
-            res.setHeader('Retry-After', retryAfter);
-            return res.status(429).json({
-                error: 'Too Many Requests',
-                retryAfter,
-                message: `Too many enrollment requests. Retry after ${retryAfter} seconds.`
-            });
-        }
-
-        enrollTimestamps.set(studentId, now);
-
-        // Store in high-performance in-memory cache for immediate verification & demo mode
-        inMemoryEmbeddings.set(studentId, {
-            studentId,
-            embedding,
-            imageSnapshot: imageSnapshot || null,
-            enrolledAt: new Date(),
-            qualityScore: qualityScore || 90,
-            isActive: true
-        });
-
-        if (FaceEmbedding && FaceEmbedding.findOneAndUpdate) {
-            try {
-                // Requirement 9: Store encrypted vector in DB
-                const encryptedVec = encryptEmbedding(embedding);
-                await FaceEmbedding.findOneAndUpdate(
-                    { studentId },
-                    {
-                        studentId,
-                        embedding: Array.isArray(embedding) ? embedding : [],
-                        encryptedEmbedding: encryptedVec,
-                        imageSnapshot: imageSnapshot || null,
-                        enrolledAt: new Date(),
-                        isActive: true
-                    },
-                    { upsert: true, new: true }
-                );
-            } catch (e) {
-                console.warn('FaceEmbedding DB store notice (cached in memory):', e.message);
+        if (mongoose.connection.readyState === 1) {
+            if (FaceEmbedding) {
+                await FaceEmbedding.deleteMany({
+                    $or: [{ studentId }, { email }]
+                }).catch(() => {});
+                deletedFromDb = true;
+            }
+            if (Student) {
+                await Student.updateMany(
+                    { $or: [{ studentId }, { email }] },
+                    { $set: { faceEnrolled: false, faceEmbeddings: [], faceEnrolledAt: null } }
+                ).catch(() => {});
             }
         }
 
-        console.log(`✅ Face enrolled successfully for studentId: ${studentId}`);
+        console.log(`🗑️ Enrollment deleted for studentId: ${studentId}`);
         return res.json({
             success: true,
-            message: 'Face enrollment successful',
-            enrolledAt: new Date(),
-            studentId
+            deletedFromDb,
+            message: `Face enrollment successfully deleted for ${studentId}. You may now re-enroll.`
         });
-    } catch (error) {
-        console.error('Face enrollment error:', error);
-        return res.status(500).json({ error: 'Face enrollment failed: ' + error.message });
+    } catch (err) {
+        console.error('Delete enrollment error:', err);
+        return res.status(500).json({ success: false, error: err.message });
     }
 });
 
-
-/**
- * POST /api/face/verify
- * Body: { studentId?: string, email?: string, embedding: number[128], sessionId?: string }
- * Returns: { match: bool, confidence: number, similarityPct, student, message }
- */
-router.post('/face/verify', authenticateToken, async (req, res) => {
-    try {
-        const { studentId, email, embedding, sessionId } = req.body;
-
-        const targetId = studentId || (email ? 'STU_' + email.trim().toLowerCase().replace(/[^a-z0-9]/g, '_') : null);
-
-        if (!targetId && !email) {
-            return res.status(400).json({ success: false, error: 'studentId or email is required for verification' });
-        }
-
-        if (!embedding || !Array.isArray(embedding) || (embedding.length !== 128 && embedding.length !== 512)) {
-            return res.status(400).json({ success: false, error: 'Valid face embedding vector is required' });
-        }
-
-        let storedRecord = inMemoryEmbeddings.get(targetId);
-        let studentRecord = null;
-
-        if (Student) {
-            try {
-                studentRecord = await Student.findOne({ 
-                    $or: [
-                        { studentId: targetId },
-                        { email: (email || '').trim().toLowerCase() }
-                    ] 
-                });
-            } catch (e) {}
-        }
-
-        if (!storedRecord && studentRecord && studentRecord.faceEmbeddings && studentRecord.faceEmbeddings.length >= 128) {
-            storedRecord = { 
-                studentId: studentRecord.studentId, 
-                embedding: studentRecord.faceEmbeddings, 
-                enrolledAt: studentRecord.faceEnrolledAt 
-            };
-            inMemoryEmbeddings.set(studentRecord.studentId, storedRecord);
-        }
-
-        if (!storedRecord && FaceEmbedding) {
-            try {
-                const dbRec = await FaceEmbedding.findOne({ 
-                    $or: [{ studentId: targetId }, { email: (email || '').trim().toLowerCase() }], 
-                    isActive: true 
-                });
-                if (dbRec) {
-                    let vec = dbRec.embedding;
-                    if (dbRec.encryptedEmbedding) {
-                        const decrypted = decryptEmbedding(dbRec.encryptedEmbedding);
-                        if (decrypted) vec = decrypted;
-                    }
-                    storedRecord = { studentId: dbRec.studentId, embedding: vec, enrolledAt: dbRec.enrolledAt };
-                    inMemoryEmbeddings.set(dbRec.studentId, storedRecord);
-                }
-            } catch (e) {}
-        }
-
-        if (!storedRecord || !storedRecord.embedding || storedRecord.embedding.length < 128) {
-            return res.json({
-                match: false,
-                confidence: 0,
-                similarity: 0,
-                similarityPct: 0,
-                distance: 1,
-                message: 'No face registered for this student. Please enroll first.',
-                needsEnrollment: true
-            });
-        }
-
-        // Cosine similarity comparison
-        const sim = cosineSimilarity(embedding, storedRecord.embedding);
-        const dist = euclideanDistance(embedding, storedRecord.embedding);
-        const similarityPct = Math.round(Math.max(0, Math.min(100, sim * 100)));
-
-        // Strict confidence threshold for accurate facial recognition (0.68)
-        const simThreshold = parseFloat(process.env.FACE_MATCH_THRESHOLD) || 0.68;
-        const match = sim >= simThreshold;
-
-        const fullName = studentRecord ? (studentRecord.fullName || studentRecord.name) : (targetId || 'Student');
-
-        if (studentRecord) {
-            studentRecord.lastVerification = new Date();
-            studentRecord.verificationStatus = match ? 'Verified' : 'Failed';
-            await studentRecord.save().catch(() => {});
-        }
-
-        const displayMessage = match
-            ? `Verified Student - ${fullName}`
-            : 'Face does not match the registered student.';
-
-        console.log(`🔒 Face Verification [${targetId}]: CosineSim=${sim.toFixed(4)} (Threshold: ${simThreshold}) => Match=${match}`);
-
-        if (!match) {
-            try {
-                new SuspiciousActivity({
-                    studentId: targetId,
-                    sessionId: sessionId || `verify_${Date.now()}`,
-                    type: 'face_mismatch',
-                    severity: 'high',
-                    description: `Face Mismatch Detected (Similarity: ${similarityPct}%, Threshold: ${Math.round(simThreshold * 100)}%)`,
-                    metadata: { similarity: sim, distance: dist, similarityPct },
-                    timestamp: new Date()
-                }).save().catch(() => {});
-            } catch (e) {}
-        }
-
-        return res.json({
-            match,
-            confidence: parseFloat(sim.toFixed(4)),
-            similarity: parseFloat(sim.toFixed(4)),
-            similarityPct,
-            distance: parseFloat(dist.toFixed(4)),
-            threshold: simThreshold,
-            student: {
-                studentId: targetId,
-                fullName,
-                email: studentRecord ? studentRecord.email : email
-            },
-            message: displayMessage
-        });
-    } catch (error) {
-        console.error('Face verification error:', error);
-        return res.status(500).json({ error: 'Face verification failed: ' + error.message });
+router.delete('/face/enroll', async (req, res) => {
+    const sId = req.body?.studentId || req.query?.studentId;
+    if (sId) {
+        req.params = { studentId: sId };
+        return router.handle(req, res);
     }
+    return res.status(400).json({ error: 'studentId required' });
 });
+
 
 /**
  * POST /api/incidents/log

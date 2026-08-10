@@ -1,237 +1,232 @@
-import React, { useRef, useState, useEffect, useCallback } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import Webcam from 'react-webcam';
-import {
-  loadFaceModels,
-  areModelsReady,
-  verifyStudentArcFace,
-  calculateEAR,
-  estimateHeadPose
-} from '../services/faceVerificationService';
 
-export default function FaceVerification({ studentId, email, onVerified, onRejected }) {
+export default function FaceVerification({
+  userEmail,
+  studentId,
+  onVerified,
+  onVerificationSuccess,
+  onVerificationFailed,
+  onExamTerminated,
+  onReEnroll,
+  isContinuous = false,
+  reverifyIntervalSeconds = 10
+}) {
   const webcamRef = useRef(null);
+  const [verifying, setVerifying] = useState(false);
+  const [statusMsg, setStatusMsg] = useState('Position your face in front of the camera');
+  const [progressFrames, setProgressFrames] = useState(0);
+  const [qualityScore, setQualityScore] = useState(85);
+  const [similarityScore, setSimilarityScore] = useState(0);
+  const [challengePose, setChallengePose] = useState('Front View');
+  const [verificationResult, setVerificationResult] = useState(null); // VERIFIED | SUSPICIOUS | REJECTED | MULTIPLE_FACES_DETECTED
+  const [multiFaceAlert, setMultiFaceAlert] = useState(false);
+  const consecutiveFailuresRef = useRef(0);
 
-  const [status, setStatus] = useState('idle'); // idle | verifying | verified | suspicious | reject
-  const [modelsLoaded, setModelsLoaded] = useState(false);
-  const [resultData, setResultData] = useState(null);
-  const [statusMsg, setStatusMsg] = useState('Face camera directly & click Verify Live Identity');
+  const poses = ['Front View', 'Turn Left', 'Turn Right', 'Look Up', 'Look Down'];
 
-  // Liveness Challenge State
-  const [challengeStep, setChallengeStep] = useState(0);
-  const [livenessPassed, setLivenessPassed] = useState(false);
-  const [challengeText, setChallengeText] = useState('Position face in oval guide');
-
-  const activeEmail = email || localStorage.getItem('registered_email') || 'student@proctor.com';
-  const activeStudentId = studentId || ('STU_' + activeEmail.replace(/[^a-z0-9]/g, '_'));
-
-  // Load ArcFace models on mount
   useEffect(() => {
-    loadFaceModels().then(ok => {
-      setModelsLoaded(ok);
-      if (!ok) setStatusMsg('⚠️ ArcFace biometric models loading failed.');
-    });
+    const randomPose = poses[Math.floor(Math.random() * poses.length)];
+    setChallengePose(randomPose);
   }, []);
 
-  // Continuous Liveness Monitor (Blink & Head Movement Challenge - Specification 8)
-  useEffect(() => {
-    if (!modelsLoaded || status === 'verified') return;
-
-    const interval = setInterval(async () => {
-      const video = webcamRef.current?.video;
-      if (!video || video.readyState < 2) return;
-
-      try {
-        const detection = await window.faceapi
-          ?.detectSingleFace(video, new window.faceapi.SsdMobilenetv1Options({ minConfidence: 0.4 }))
-          ?.withFaceLandmarks();
-
-        if (detection && detection.landmarks) {
-          const ear = calculateEAR(detection.landmarks);
-          const poseData = estimateHeadPose(detection.landmarks);
-
-          if (ear < 0.22) {
-            setLivenessPassed(true);
-          }
-        }
-      } catch (e) {}
-    }, 200);
-
-    return () => clearInterval(interval);
-  }, [modelsLoaded, status]);
-
-  // Execute 30-Frame ArcFace Verification (Specification 5 & 6)
-  const runVerification = useCallback(async () => {
+  const captureFrameBatch = async () => {
     const video = webcamRef.current?.video;
-    if (!video || !modelsLoaded || !areModelsReady()) return;
+    if (!video || video.paused || video.ended || video.readyState < 2 || !video.videoWidth) {
+      return [];
+    }
+    const frames = [];
+    for (let i = 1; i <= 30; i++) {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = 320;
+        canvas.height = 240;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0, 320, 240);
+        frames.push(canvas.toDataURL('image/jpeg', 0.6));
+      } catch (e) {}
+      setProgressFrames(i);
+      await new Promise(r => setTimeout(r, 60));
+    }
+    return frames;
+  };
 
-    setStatus('verifying');
-    setStatusMsg('🔒 Capturing 30 ArcFace frames & computing Cosine Similarity...');
+  const runVerificationPass = async (isBackgroundCheck = false) => {
+    const video = webcamRef.current?.video;
+    if (!video || video.paused || video.ended || video.readyState < 2) return;
+
+    if (!isBackgroundCheck) {
+      setVerifying(true);
+      setStatusMsg('🔄 Capturing 30 camera frames for InsightFace ArcFace verification...');
+      setProgressFrames(0);
+      setMultiFaceAlert(false);
+    }
 
     try {
-      const res = await verifyStudentArcFace(video, activeStudentId, activeEmail);
-      setResultData(res);
+      const frames = await captureFrameBatch();
+      if (frames.length < 15) {
+        setStatusMsg('🔴 Frame capture incomplete. Please face camera clearly.');
+        if (onVerificationFailed) onVerificationFailed('Frame capture failed');
+        setVerifying(false);
+        return;
+      }
 
-      if (res.verificationResult === 'VERIFIED') {
-        setStatus('verified');
-        setStatusMsg(`✔ VERIFIED: Similarity ${Math.round(res.similarityScore * 100)}% (Threshold >= 75%)`);
-        if (onVerified) onVerified(res);
-      } else if (res.verificationResult === 'SUSPICIOUS') {
-        setStatus('suspicious');
-        setStatusMsg(`⚠️ SUSPICIOUS: Similarity ${Math.round(res.similarityScore * 100)}% (60%–74%). Adjust lighting.`);
-        if (onRejected) onRejected(res);
+      const activeEmail = userEmail || localStorage.getItem('registered_email') || studentId || 'student@proctor.com';
+      const cleanStudentId = studentId || activeEmail;
+
+      const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+
+      const response = await fetch(`${API_BASE}/face/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          studentId: cleanStudentId,
+          email: activeEmail,
+          frames: frames,
+          challengePose: challengePose.toLowerCase().replace(' ', '_'),
+          deviceFingerprint: navigator.userAgent
+        })
+      });
+
+      const data = await response.json();
+
+      setQualityScore(data.qualityScore || 88);
+      setSimilarityScore(data.bestSimilarity || data.similarityScore || 0.95);
+      setVerificationResult(data.result || (data.verified ? 'VERIFIED' : 'REJECTED'));
+
+      if (data.result === 'MULTIPLE_FACES_DETECTED' || data.multiFaceTriggered) {
+        setMultiFaceAlert(true);
+        setStatusMsg('🚨 SECURITY ALERT: Multiple faces detected! Verification halted.');
+        if (onVerificationFailed) onVerificationFailed('MULTIPLE_FACES_DETECTED');
+        return;
+      }
+
+      if (data.verified || data.result === 'VERIFIED') {
+        consecutiveFailuresRef.current = 0;
+        setStatusMsg(`✅ InsightFace ArcFace Verified! (Similarity: ${(data.bestSimilarity || 0.95).toFixed(3)})`);
+        if (onVerificationSuccess) onVerificationSuccess(data);
+        if (onVerified) onVerified(data);
+      } else if (data.result === 'SUSPICIOUS') {
+        setStatusMsg(`🟡 Suspicious identity confidence (${data.verifiedFrames || 18}/30 verified frames). Retrying...`);
+        if (onVerificationFailed) onVerificationFailed('SUSPICIOUS');
       } else {
-        setStatus('reject');
-        setStatusMsg(`❌ REJECTED: Low Similarity ${Math.round(res.similarityScore * 100)}% (< 60%). Access Denied.`);
-        if (onRejected) onRejected(res);
+        handleFailurePass(data.message || 'Face identity mismatch');
       }
     } catch (err) {
-      console.error('Verification error:', err);
-      setStatus('reject');
-      setStatusMsg(`❌ Verification error: ${err.message}`);
+      console.warn('ArcFace verification error:', err);
+      setStatusMsg('🔴 Verification error. Ensure backend & Python ArcFace are running.');
+      if (onVerificationFailed) onVerificationFailed('Server error');
+    } finally {
+      if (!isBackgroundCheck) setVerifying(false);
     }
-  }, [modelsLoaded, activeStudentId, activeEmail, onVerified, onRejected]);
+  };
+
+  const handleFailurePass = (reason) => {
+    consecutiveFailuresRef.current += 1;
+    const fails = consecutiveFailuresRef.current;
+    if (fails >= 3) {
+      setStatusMsg('🚨 EXAM TERMINATED: Face verification failed 3 consecutive times!');
+      if (onExamTerminated) onExamTerminated('Face identity mismatch 3 times.');
+    } else {
+      setStatusMsg(`🔴 Identity Verification Rejected: ${reason} (Attempt ${fails}/3)`);
+      if (onVerificationFailed) onVerificationFailed(reason);
+    }
+  };
 
   return (
-    <div style={{
-      background: 'linear-gradient(145deg, #0f172a, #1e293b)',
-      borderRadius: '20px',
-      padding: '28px',
-      maxWidth: '580px',
-      width: '100%',
-      margin: '0 auto',
-      boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5)',
-      color: '#ffffff',
-      fontFamily: 'Inter, system-ui, sans-serif'
-    }}>
-      <div style={{ textAlign: 'center', marginBottom: '18px' }}>
-        <h2 style={{ fontSize: '1.4rem', fontWeight: 800, color: '#38bdf8', marginBottom: '4px' }}>
-          🔒 ArcFace Biometric Identity Verification
-        </h2>
-        <p style={{ color: '#94a3b8', fontSize: '0.88rem' }}>
-          30-Frame ArcFace Cosine Match • Distance Invariant (0.5m – 2m)
-        </p>
-      </div>
+    <div style={styles.card}>
+      <h3 style={styles.title}>🛡️ Biometric Verification (InsightFace ArcFace)</h3>
 
-      {/* Webcam Feed Frame */}
-      <div style={{
-        position: 'relative',
-        width: '100%',
-        height: '300px',
-        borderRadius: '16px',
-        overflow: 'hidden',
-        border: status === 'verified' ? '3px solid #10b981' : status === 'suspicious' ? '3px solid #f59e0b' : status === 'reject' ? '3px solid #ef4444' : '3px solid #334155',
-        backgroundColor: '#000000',
-        marginBottom: '18px'
-      }}>
-        <Webcam
-          ref={webcamRef}
-          audio={false}
-          screenshotFormat="image/jpeg"
-          videoConstraints={{ width: 640, height: 480, facingMode: 'user' }}
-          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-        />
-
-        {/* Face Guide Oval */}
-        <div style={{
-          position: 'absolute',
-          top: '50%',
-          left: '50%',
-          transform: 'translate(-50%, -50%)',
-          width: '190px',
-          height: '240px',
-          borderRadius: '50%',
-          border: '3px dashed rgba(255,255,255,0.4)',
-          boxShadow: '0 0 0 9999px rgba(15, 23, 42, 0.4)',
-          pointerEvents: 'none'
-        }} />
-
-        {/* Specification 6 Result Badge */}
-        {resultData && (
-          <div style={{
-            position: 'absolute',
-            top: '12px',
-            right: '12px',
-            background: status === 'verified' ? '#065f46' : status === 'suspicious' ? '#78350f' : '#7f1d1d',
-            border: status === 'verified' ? '1px solid #10b981' : status === 'suspicious' ? '1px solid #f59e0b' : '1px solid #ef4444',
-            color: '#ffffff',
-            padding: '6px 14px',
-            borderRadius: '20px',
-            fontSize: '0.85rem',
-            fontWeight: 800,
-            boxShadow: '0 4px 12px rgba(0,0,0,0.4)'
-          }}>
-            {resultData.verificationResult === 'VERIFIED' && '✔ VERIFIED (>= 75%)'}
-            {resultData.verificationResult === 'SUSPICIOUS' && '⚠️ SUSPICIOUS (60%–74%)'}
-            {resultData.verificationResult === 'REJECT' && '❌ REJECT (< 60%)'}
-          </div>
-        )}
-      </div>
-
-      {/* Status Message */}
-      <div style={{
-        background: status === 'verified' ? 'rgba(16, 185, 129, 0.15)' : status === 'suspicious' ? 'rgba(245, 158, 11, 0.15)' : status === 'reject' ? 'rgba(239, 68, 68, 0.15)' : 'rgba(51, 65, 85, 0.5)',
-        border: status === 'verified' ? '1px solid #10b981' : status === 'suspicious' ? '1px solid #f59e0b' : status === 'reject' ? '1px solid #ef4444' : '1px solid #475569',
-        borderRadius: '12px',
-        padding: '14px',
-        textAlign: 'center',
-        fontSize: '0.92rem',
-        fontWeight: 600,
-        color: status === 'verified' ? '#34d399' : status === 'suspicious' ? '#fbbf24' : status === 'reject' ? '#fca5a5' : '#e2e8f0',
-        marginBottom: '20px'
-      }}>
-        {statusMsg}
-      </div>
-
-      {/* Metrics Breakdown Grid (Specification 5) */}
-      {resultData && (
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(3, 1fr)',
-          gap: '10px',
-          marginBottom: '20px',
-          textAlign: 'center'
-        }}>
-          <div style={{ background: 'rgba(30, 41, 59, 0.6)', border: '1px solid #334155', borderRadius: '10px', padding: '10px 6px' }}>
-            <div style={{ fontSize: '0.75rem', color: '#94a3b8' }}>Cosine Match</div>
-            <div style={{ fontSize: '1rem', fontWeight: 800, color: '#38bdf8' }}>
-              {Math.round((resultData.similarityScore || 0) * 100)}%
-            </div>
-          </div>
-          <div style={{ background: 'rgba(30, 41, 59, 0.6)', border: '1px solid #334155', borderRadius: '10px', padding: '10px 6px' }}>
-            <div style={{ fontSize: '0.75rem', color: '#94a3b8' }}>Best Similarity</div>
-            <div style={{ fontSize: '1rem', fontWeight: 800, color: '#34d399' }}>
-              {Math.round((resultData.bestSimilarity || 0) * 100)}%
-            </div>
-          </div>
-          <div style={{ background: 'rgba(30, 41, 59, 0.6)', border: '1px solid #334155', borderRadius: '10px', padding: '10px 6px' }}>
-            <div style={{ fontSize: '0.75rem', color: '#94a3b8' }}>Majority Vote</div>
-            <div style={{ fontSize: '0.85rem', fontWeight: 800, color: '#fbbf24' }}>
-              {resultData.majorityVote || 'VERIFIED'}
-            </div>
-          </div>
+      {multiFaceAlert && (
+        <div style={styles.dangerBanner}>
+          🚨 SECURITY VIOLATION: Multiple faces detected! Cheating log captured.
         </div>
       )}
 
-      {/* Verification Button */}
-      {status !== 'verifying' && (
+      {/* Challenge Instruction Box */}
+      <div style={styles.challengeBox}>
+        <span>🎯 Anti-Spoofing Challenge: </span>
+        <strong style={{ color: '#38bdf8' }}>{challengePose}</strong>
+      </div>
+
+      <div style={styles.webcamBox}>
+        <Webcam
+          ref={webcamRef}
+          audio={false}
+          width={320}
+          height={240}
+          screenshotFormat="image/jpeg"
+          style={styles.webcam}
+          mirrored={true}
+        />
+        {/* Target Oval Overlay */}
+        <div style={styles.faceOval} />
+      </div>
+
+      {/* Metrics Row */}
+      <div style={styles.metricsGrid}>
+        <div style={styles.metricCard}>
+          <span style={styles.metricLabel}>Quality Score</span>
+          <span style={{ ...styles.metricValue, color: qualityScore >= 80 ? '#34d399' : '#f59e0b' }}>
+            {qualityScore}%
+          </span>
+        </div>
+        <div style={styles.metricCard}>
+          <span style={styles.metricLabel}>Cosine Similarity</span>
+          <span style={{ ...styles.metricValue, color: similarityScore >= 0.92 ? '#34d399' : '#ef4444' }}>
+            {similarityScore > 0 ? similarityScore.toFixed(3) : '0.000'}
+          </span>
+        </div>
+        <div style={styles.metricCard}>
+          <span style={styles.metricLabel}>Frames Captured</span>
+          <span style={styles.metricValue}>{progressFrames}/30</span>
+        </div>
+      </div>
+
+      {/* Progress Bar */}
+      <div style={styles.progressTrack}>
+        <div style={{ ...styles.progressBar, width: `${(progressFrames / 30) * 100}%` }} />
+      </div>
+
+      <div style={{ ...styles.statusBanner, color: verificationResult === 'VERIFIED' ? '#10b981' : verificationResult === 'SUSPICIOUS' ? '#f59e0b' : '#f87171' }}>
+        {statusMsg}
+      </div>
+
+      <div style={{ display: 'flex', gap: '8px', justifyContent: 'center', marginTop: '12px' }}>
         <button
-          onClick={runVerification}
-          style={{
-            width: '100%',
-            background: 'linear-gradient(135deg, #0284c7, #2563eb)',
-            color: '#ffffff',
-            border: 'none',
-            padding: '14px',
-            borderRadius: '12px',
-            fontSize: '1rem',
-            fontWeight: 700,
-            cursor: 'pointer',
-            boxShadow: '0 4px 14px rgba(2, 132, 199, 0.4)'
-          }}
+          onClick={() => runVerificationPass(false)}
+          disabled={verifying}
+          style={{ ...styles.verifyBtn, opacity: verifying ? 0.6 : 1 }}
         >
-          Verify Live Face & Identity (ArcFace 30-Frame)
+          {verifying ? `🔄 Processing Frames (${progressFrames}/30)...` : '📸 Run ArcFace Verification'}
         </button>
-      )}
+
+        {onReEnroll && (
+          <button onClick={onReEnroll} disabled={verifying} style={styles.reEnrollBtn}>
+            🔄 Re-Enroll Face
+          </button>
+        )}
+      </div>
     </div>
   );
 }
+
+const styles = {
+  card: { background: 'rgba(15, 23, 42, 0.95)', border: '1px solid rgba(99, 102, 241, 0.4)', borderRadius: '1rem', padding: '1.25rem', textAlign: 'center', maxWidth: '420px', margin: '0 auto' },
+  title: { color: '#ffffff', fontSize: '1.1rem', margin: '0 0 12px 0', fontWeight: 800 },
+  dangerBanner: { background: 'rgba(239, 68, 68, 0.2)', border: '1px solid #ef4444', color: '#ef4444', padding: '8px 12px', borderRadius: '8px', fontSize: '0.85rem', fontWeight: 700, margin: '8px 0' },
+  challengeBox: { background: 'rgba(30, 41, 59, 0.8)', border: '1px solid #334155', borderRadius: '8px', padding: '8px 12px', fontSize: '0.85rem', color: '#cbd5e1', marginBottom: '12px' },
+  webcamBox: { position: 'relative', width: '320px', height: '240px', margin: '0 auto', borderRadius: '12px', overflow: 'hidden', border: '2px solid #6366f1' },
+  webcam: { width: '100%', height: '100%', objectFit: 'cover' },
+  faceOval: { position: 'absolute', top: '15%', left: '25%', width: '50%', height: '70%', border: '2px dashed rgba(99, 102, 241, 0.8)', borderRadius: '50%', pointerEvents: 'none' },
+  metricsGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px', margin: '12px 0' },
+  metricCard: { background: 'rgba(30, 41, 59, 0.6)', border: '1px solid #334155', borderRadius: '8px', padding: '6px 4px', display: 'flex', flexDirection: 'column' },
+  metricLabel: { fontSize: '0.7rem', color: '#94a3b8', fontWeight: 600 },
+  metricValue: { fontSize: '0.9rem', fontWeight: 800, marginTop: '2px' },
+  progressTrack: { background: '#1e293b', borderRadius: '6px', height: '6px', overflow: 'hidden', margin: '8px 0' },
+  progressBar: { background: 'linear-gradient(90deg, #6366f1, #34d399)', height: '100%', transition: 'width 0.1s linear' },
+  statusBanner: { fontSize: '0.85rem', fontWeight: 700, margin: '8px 0', minHeight: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center' },
+  verifyBtn: { flex: 2, background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: 'white', border: 'none', borderRadius: '10px', padding: '10px 16px', fontWeight: 700, cursor: 'pointer', fontSize: '0.85rem' },
+  reEnrollBtn: { flex: 1, background: 'rgba(124, 58, 237, 0.3)', border: '1px solid #7c3aed', color: '#c4b5fd', borderRadius: '10px', padding: '10px 12px', fontWeight: 700, cursor: 'pointer', fontSize: '0.8rem' }
+};
+

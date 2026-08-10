@@ -1,6 +1,7 @@
 const net = require('net');
 const { spawn, exec } = require('child_process');
 const path = require('path');
+const fs = require('fs');
 
 const PORT = process.env.PORT || 3000;
 const URL = `http://localhost:${PORT}`;
@@ -8,7 +9,7 @@ const URL = `http://localhost:${PORT}`;
 function isPortInUse(port) {
   return new Promise((resolve) => {
     const client = new net.Socket();
-    client.setTimeout(800);
+    client.setTimeout(400);
     client.once('connect', () => {
       client.destroy();
       resolve(true);
@@ -40,11 +41,11 @@ function forceOpenBrowser(url) {
   }
 }
 
-async function waitForPort(port, maxAttempts = 60) {
+async function waitForPort(port, maxAttempts = 120) {
   for (let i = 0; i < maxAttempts; i++) {
     const inUse = await isPortInUse(port);
     if (inUse) return true;
-    await new Promise((r) => setTimeout(r, 1000));
+    await new Promise((r) => setTimeout(r, 300));
   }
   return false;
 }
@@ -59,14 +60,32 @@ async function main() {
   } else {
     console.log(`🚀 Launching React development server on ${URL}...`);
     
-    const env = { ...process.env, BROWSER: 'none' };
+    const env = { 
+      ...process.env, 
+      BROWSER: 'none',
+      GENERATE_SOURCEMAP: 'false',
+      DISABLE_ESLINT_PLUGIN: 'true',
+      FAST_REFRESH: 'true'
+    };
 
-    const child = spawn('npx', ['react-app-rewired', 'start'], {
-      stdio: 'inherit',
-      shell: true,
-      env: env,
-      cwd: path.resolve(__dirname, '..')
-    });
+    const rewiredScript = path.resolve(__dirname, '../node_modules/react-app-rewired/bin/index.js');
+
+    let child;
+    if (fs.existsSync(rewiredScript)) {
+      child = spawn(process.execPath, [rewiredScript, 'start'], {
+        stdio: 'inherit',
+        shell: false,
+        env: env,
+        cwd: path.resolve(__dirname, '..')
+      });
+    } else {
+      child = spawn('npx', ['react-app-rewired', 'start'], {
+        stdio: 'inherit',
+        shell: true,
+        env: env,
+        cwd: path.resolve(__dirname, '..')
+      });
+    }
 
     let launched = false;
     waitForPort(PORT).then((ready) => {
@@ -74,7 +93,7 @@ async function main() {
         launched = true;
         setTimeout(() => {
           forceOpenBrowser(URL);
-        }, 1000);
+        }, 500);
       }
     });
 

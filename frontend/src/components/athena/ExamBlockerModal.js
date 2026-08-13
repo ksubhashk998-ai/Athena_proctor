@@ -185,7 +185,7 @@ function ExamBlockerModal({ onStartExam }) {
       setVerificationStepMsg('👉 Step 2/6: Performing Real-Time Anti-Spoofing Liveness Check...');
       await new Promise(r => setTimeout(r, 400));
 
-      setVerificationStepMsg('🔒 Step 3-5/6: Comparing live ArcFace 30-frame embeddings against encrypted MongoDB template...');
+      setVerificationStepMsg('🔒 Step 3-5/6: Comparing live ArcFace 10-frame embeddings against encrypted MongoDB template...');
 
       const result = await verifyFaceAgainstBackend(video, studentId, token);
       const isMatch = result && (result.match === true || result.verificationResult === 'VERIFIED');

@@ -9,7 +9,7 @@ const VerificationLog = require('../models/VerificationLog');
 const User = require('../models/User');
 const Student = require('../models/Student');
 
-const PYTHON_SERVICE_URL = process.env.PYTHON_DETECTOR_URL || 'http://127.0.0.1:8001';
+const PYTHON_SERVICE_URL = (process.env.PYTHON_DETECTOR_URL || 'http://127.0.0.1:8001').replace('localhost', '127.0.0.1');
 
 // Helper: Save Base64 JPEG Image to Disk
 function saveImageToDisk(base64Data, prefix, userIdentifier) {
@@ -73,23 +73,41 @@ const enrollFace = async (req, res) => {
     if (!Array.isArray(inputFrames) || inputFrames.length === 0) {
       return res.status(400).json({
         success: false,
-        error: 'At least 25 high-quality face frames are required for ArcFace enrollment.'
+        error: 'At least 20 high-quality face frames are required for ArcFace enrollment.'
       });
     }
 
-    console.log(`🧠 [ArcFace Enrollment] Submitting ${inputFrames.length} frames for student: ${cleanStudentId} to Python ArcFace Engine...`);
+    console.log("[BACKEND] Enrollment request received");
+    console.log("[BACKEND] Submitting 30 frames to Python ArcFace service");
+
+    const payload = {
+      studentId: cleanStudentId,
+      name: studentName,
+      email: cleanEmail,
+      frames: inputFrames.slice(0, 30)
+    };
+
+    console.log("Sending 30 enrollment samples...");
+    console.log("Frames: 30");
+    console.log("Payload size:", (JSON.stringify(payload).length / 1024 / 1024).toFixed(2), "MB");
+    console.log("Sending enrollment request...");
 
     let arcfaceRes = null;
     try {
-      const response = await axios.post(`${PYTHON_SERVICE_URL}/api/arcface/enroll`, {
-        studentId: cleanStudentId,
-        name: studentName,
-        email: cleanEmail,
-        frames: inputFrames.slice(0, 30)
-      }, { timeout: 60000 });
+      const response = await axios.post(`${PYTHON_SERVICE_URL}/api/arcface/enroll`, payload, { timeout: 180000 });
+      console.log("Enrollment response:", response.data);
       arcfaceRes = response.data;
     } catch (pyErr) {
-      console.warn('⚠️ Python ArcFace Microservice notice:', pyErr.message);
+      console.error("=================================");
+      console.error("ENROLLMENT ERROR DETAILS:");
+      console.error("STATUS:", pyErr.response?.status);
+      console.error("DATA:", JSON.stringify(pyErr.response?.data, null, 2));
+      console.error("MESSAGE:", pyErr.message);
+      console.error("=================================");
+      return res.status(pyErr.response?.status || 500).json({
+        success: false,
+        error: pyErr.response?.data?.detail || pyErr.response?.data?.error || pyErr.message || "Python ArcFace enrollment failed"
+      });
     }
 
     let embeddings = [];
@@ -107,19 +125,20 @@ const enrollFace = async (req, res) => {
         details: arcfaceRes
       });
     } else {
-      // Fallback embedding generation
-      embeddings = inputFrames.slice(0, 30).map(() => normalizeVector(Array.from({ length: 512 }, () => (Math.random() - 0.5) * 0.1)));
-      averageEmbedding = embeddings[0];
-    }
-
-    if (embeddings.length < 25) {
-      return res.status(400).json({
+      return res.status(503).json({
         success: false,
-        error: `Enrollment requires at least 25 valid face samples. Only ${embeddings.length} valid samples were generated.`
+        error: 'Python ArcFace microservice unavailable. Please ensure ArcFace detector service is running on port 8001 and retry enrollment.'
       });
     }
 
-    // Verify dimensions (Requirement 3, 4)
+    if (embeddings.length < 20) {
+      return res.status(400).json({
+        success: false,
+        error: `Enrollment requires at least 20 valid face samples. Only ${embeddings.length} valid samples were generated.`
+      });
+    }
+
+    // Verify dimensions (512d)
     for (let i = 0; i < embeddings.length; i++) {
       if (embeddings[i].length !== 512) {
         return res.status(400).json({
@@ -129,7 +148,6 @@ const enrollFace = async (req, res) => {
       }
     }
 
-    // Save saved image screenshots to disk
     let savedImageUrls = inputFrames.slice(0, 5).map((img, idx) => {
       if (typeof img === 'string' && img.startsWith('data:image')) {
         return saveImageToDisk(img, `enroll_arcface_${idx+1}`, cleanStudentId) || img;
@@ -137,113 +155,122 @@ const enrollFace = async (req, res) => {
       return img;
     });
 
-    // Ensure re-enrollment completely deletes old embeddings before saving new ones (Requirement 12)
-    await FaceProfile.deleteMany({ $or: [{ studentId: cleanStudentId }, { email: cleanEmail }] });
+    console.log("[ArcFace Enrollment] Student:", cleanStudentId);
+    console.log("[ArcFace Enrollment] New embeddings:", embeddings.length);
 
-    // Save into Mongoose FaceProfile
-    const savedProfile = new FaceProfile({
-      studentId: cleanStudentId,
-      name: studentName,
-      email: cleanEmail,
-      enrollmentImages: savedImageUrls,
-      embeddings: embeddings, // Stores all 30 512d L2-normalized embeddings
-      averageEmbedding: averageEmbedding, // 512d mean embedding
-      enrollmentDate: new Date(),
-      modelVersion: modelVersion
+    const existingProfile = await FaceProfile.findOne({
+      $or: [{ studentId: cleanStudentId }, { email: cleanEmail }]
     });
-    await savedProfile.save();
 
-    // Sync User and Student models
-    if (User) {
-      await User.findOneAndUpdate(
-        { email: cleanEmail },
-        { faceEmbeddings: embeddings, faceEnrolled: true, enrollmentDate: new Date() }
-      ).catch(() => {});
+    if (existingProfile) {
+      console.log("[ArcFace Enrollment] Existing FaceProfile found");
+      console.log("[ArcFace Enrollment] Updating existing enrollment");
+      console.log("[ArcFace Enrollment] Previous embeddings:", existingProfile.embeddings?.length || 0);
+      console.log("[ArcFace Enrollment] New embeddings:", embeddings.length);
+    } else {
+      console.log("[ArcFace Enrollment] No existing FaceProfile found");
+      console.log("[ArcFace Enrollment] Creating new FaceProfile");
     }
 
-    console.log(`✅ [InsightFace ArcFace] Saved ${embeddings.length} x 512d embeddings to MongoDB FaceProfile for ${cleanStudentId}`);
+    try {
+      const savedProfile = await FaceProfile.findOneAndUpdate(
+        { $or: [{ studentId: cleanStudentId }, { email: cleanEmail }] },
+        {
+          $set: {
+            studentId: cleanStudentId,
+            name: studentName,
+            email: cleanEmail,
+            enrollmentImages: savedImageUrls,
+            embeddings: embeddings,
+            averageEmbedding: averageEmbedding,
+            modelVersion: modelVersion,
+            enrollmentDate: new Date(),
+            updatedAt: new Date()
+          }
+        },
+        {
+          new: true,
+          upsert: true,
+          runValidators: true,
+          setDefaultsOnInsert: true
+        }
+      );
 
-    return res.status(200).json({
-      success: true,
-      message: `InsightFace ArcFace enrollment successful! Registered ${embeddings.length} x 512-dim embeddings.`,
-      studentId: cleanStudentId,
-      name: studentName,
-      email: cleanEmail,
-      validSamples: embeddings.length,
-      profile: savedProfile
-    });
+      if (existingProfile) {
+        console.log("[ArcFace Enrollment] FaceProfile updated successfully");
+      } else {
+        console.log("[ArcFace Enrollment] FaceProfile created successfully");
+      }
+      console.log(`✅ FaceProfile saved successfully for ${cleanStudentId} with ${embeddings.length} embeddings`);
 
-  } catch (error) {
-    console.error('❌ ArcFace Enrollment error:', error);
+      return res.status(200).json({
+        success: true,
+        message: 'InsightFace ArcFace 512-d face profile enrolled successfully.',
+        studentId: cleanStudentId,
+        email: cleanEmail,
+        enrolled: true,
+        samplesCollected: embeddings.length,
+        profile: savedProfile
+      });
+    } catch (dbErr) {
+      console.error("❌ Database save error during face enrollment:", dbErr);
+      if (dbErr.code === 11000) {
+        const retryProfile = await FaceProfile.findOneAndUpdate(
+          { studentId: cleanStudentId },
+          {
+            $set: {
+              name: studentName,
+              email: cleanEmail,
+              enrollmentImages: savedImageUrls,
+              embeddings: embeddings,
+              averageEmbedding: averageEmbedding,
+              modelVersion: modelVersion,
+              updatedAt: new Date()
+            }
+          },
+          { new: true }
+        );
+        if (retryProfile) {
+          console.log("[ArcFace Enrollment] FaceProfile updated successfully via race condition handler");
+          return res.status(200).json({
+            success: true,
+            message: 'InsightFace ArcFace 512-d face profile updated successfully.',
+            studentId: cleanStudentId,
+            email: cleanEmail,
+            enrolled: true,
+            samplesCollected: embeddings.length,
+            profile: retryProfile
+          });
+        }
+      }
+      return res.status(500).json({
+        success: false,
+        error: "Face profile persistence failed. Please retry enrollment."
+      });
+    }
+  } catch (err) {
+    console.error('❌ ArcFace enrollment error:', err);
     return res.status(500).json({
       success: false,
-      error: 'Face enrollment failed: ' + error.message
+      error: err.message || 'Failed to enroll student face profile.'
     });
   }
 };
 
 /**
  * POST /api/face/verify
- * OVERHAULED ARCFACE BIOMETRIC VERIFICATION PIPELINE
+ * INSIGHTFACE ARCFACE BIOMETRIC IDENTITY VERIFICATION
  */
 const verifyFace = async (req, res) => {
   try {
-    const { 
-      studentId, 
-      email, 
-      frames, 
-      liveEmbeddings, 
-      descriptor, 
-      liveDescriptor, 
-      embedding,
-      challengePose, 
-      deviceFingerprint,
-      screenshot 
-    } = req.body;
+    const { studentId, email, frames, liveEmbeddings, descriptor, liveDescriptor, embedding, challengePose } = req.body;
 
     const cleanEmail = (email || '').trim().toLowerCase();
     const cleanStudentId = (studentId || '').trim();
-    const ipAddress = req.ip || req.headers['x-forwarded-for'] || '127.0.0.1';
 
-    // 1. Retrieve enrolled FaceProfile from MongoDB (Requirement 15: Corrupted record / Invalid data check)
     let profile = null;
-    try {
-      if (cleanStudentId || cleanEmail) {
-        profile = await FaceProfile.findOne({
-          $or: [{ studentId: cleanStudentId }, { email: cleanEmail }]
-        });
-      }
-    } catch (dbErr) {
-      console.error('MongoDB error during face verify lookup:', dbErr);
-      return res.status(200).json({
-        verified: false,
-        match: false,
-        result: 'REJECTED',
-        verificationResult: 'REJECTED',
-        reason: 'Corrupted MongoDB record',
-        error: 'Database error retrieving enrollment record.'
-      });
-    }
-
-    console.log("========== FACE PROFILE DEBUG ==========");
-    if (profile) {
-      console.log("Student ID:", profile.studentId);
-      console.log("Email:", profile.email);
-      console.log("Embeddings Count:",
-        profile.embeddings ? profile.embeddings.length : 0
-      );
-      console.log(
-        "First Embedding Length:",
-        profile.embeddings?.[0]?.length
-      );
-      console.log(
-        "Average Embedding Exists:",
-        !!profile.averageEmbedding
-      );
-    } else {
-      console.log("Profile is NULL");
-    }
-    console.log("========================================");
+    if (cleanEmail) profile = await FaceProfile.findOne({ email: cleanEmail });
+    if (!profile && cleanStudentId) profile = await FaceProfile.findOne({ studentId: cleanStudentId });
 
     if (!profile) {
       return res.status(200).json({
@@ -251,13 +278,12 @@ const verifyFace = async (req, res) => {
         match: false,
         result: 'REJECTED',
         verificationResult: 'REJECTED',
-        reason: 'Invalid enrollment data',
+        reason: 'No face profile enrolled',
         needsEnrollment: true,
         error: 'No face profile enrolled for this student. Please complete face enrollment first.'
       });
     }
 
-    // Corrupted MongoDB record check (Requirement 15)
     if (!profile.embeddings || !Array.isArray(profile.embeddings) || profile.embeddings.length === 0) {
       return res.status(200).json({
         verified: false,
@@ -269,44 +295,18 @@ const verifyFace = async (req, res) => {
       });
     }
 
-    // Invalid enrollment data check (Requirement 15)
-    if (profile.embeddings.length < 25) {
-      return res.status(200).json({
-        verified: false,
-        match: false,
-        result: 'REJECTED',
-        verificationResult: 'REJECTED',
-        reason: 'Invalid enrollment data',
-        error: 'Face enrollment contains insufficient samples. Re-enrollment required.'
-      });
-    }
-
-    // Verify enrolled embedding dimensions (Requirement 3, 4)
-    for (let i = 0; i < profile.embeddings.length; i++) {
-      if (!Array.isArray(profile.embeddings[i]) || profile.embeddings[i].length !== 512) {
-        return res.status(200).json({
-          verified: false,
-          match: false,
-          result: 'REJECTED',
-          verificationResult: 'REJECTED',
-          reason: 'Invalid enrollment data',
-          error: 'Face enrollment contains invalid embedding dimensions. Re-enrollment required.'
-        });
-      }
-    }
-
     const enrolledEmbeddings = profile.embeddings.map(normalizeVector);
     const averageEmbedding = normalizeVector(profile.averageEmbedding || profile.embeddings[0]);
 
-    // 2. Prepare live camera input frames (30 frames)
     const inputFrames = frames || (liveEmbeddings ? liveEmbeddings : (descriptor || liveDescriptor || embedding ? [descriptor || liveDescriptor || embedding] : []));
 
-    if (!Array.isArray(inputFrames) || inputFrames.length === 0) {
-      return res.status(200).json({
+    if (!inputFrames || !Array.isArray(inputFrames) || inputFrames.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "No verification frames received",
         verified: false,
         match: false,
         result: 'REJECTED',
-        reason: 'No face detected',
         error: 'No live camera frames provided for ArcFace verification.'
       });
     }
@@ -314,13 +314,9 @@ const verifyFace = async (req, res) => {
     console.log(`🔍 [ArcFace Verification] Verifying ${inputFrames.length} frames for student: ${cleanStudentId || cleanEmail} against ${enrolledEmbeddings.length} enrolled 512d embeddings...`);
 
     let arcfaceRes = null;
-    try {
-      // Send live frames + enrolled embeddings to Python ArcFace Engine
-      const verificationFrames = inputFrames.slice(0, 10);
-      console.log(`[ArcFace] Received ${inputFrames.length} live frames`);
-      console.log(`[ArcFace] Sending ${verificationFrames.length} frames to Python`);
-      const verificationStart = Date.now();
+    const verificationFrames = Array.isArray(inputFrames) ? inputFrames.slice(0, 10) : [];
 
+    try {
       const response = await axios.post(`${PYTHON_SERVICE_URL}/api/arcface/verify`, {
         studentId: profile.studentId,
         email: profile.email,
@@ -328,12 +324,15 @@ const verifyFace = async (req, res) => {
         enrolledEmbeddings: enrolledEmbeddings,
         averageEmbedding: averageEmbedding,
         challengePose: challengePose || null
-      }, { timeout: 120000 });
+      }, { timeout: 90000 });
 
-      console.log(`[ArcFace] Python verification completed in ${Date.now() - verificationStart} ms`);
       arcfaceRes = response.data;
     } catch (pyErr) {
-      console.warn('⚠️ Python ArcFace verification notice:', pyErr.message);
+      console.error("=================================");
+      console.error("PYTHON ERROR STATUS:", pyErr.response?.status);
+      console.error("PYTHON ERROR DATA:", JSON.stringify(pyErr.response?.data, null, 2));
+      console.error("PYTHON ERROR MESSAGE:", pyErr.message);
+      console.error("=================================");
     }
 
     let verifiedFrames = 0;
@@ -342,243 +341,113 @@ const verifyFace = async (req, res) => {
     let bestSimilarity = 0.0;
     let averageSimilarity = 0.0;
     let finalDecision = 'REJECTED';
-    let qualityScore = 85.0;
-    let challengePassed = true;
-    let multiFaceTriggered = false;
     let isVerified = false;
-    let failureReason = null;
-    let frameSims = [];
 
     if (arcfaceRes) {
-      bestSimilarity = arcfaceRes.bestSimilarity || 0.0;
-      averageSimilarity = arcfaceRes.averageSimilarity || 0.0;
-      verifiedFrames = arcfaceRes.verifiedFrames || 0;
-      suspiciousFrames = arcfaceRes.suspiciousFrames || 0;
-      rejectedFrames = arcfaceRes.rejectedFrames || 0;
-      finalDecision = arcfaceRes.result || 'REJECTED';
-      qualityScore = arcfaceRes.qualityScore || 85.0;
-      challengePassed = arcfaceRes.challengePassed !== false;
-      multiFaceTriggered = !!arcfaceRes.multiFaceTriggered;
-      isVerified = finalDecision === 'VERIFIED';
-    } else {
-      // Local fallback Cosine Similarity comparison if Python service is offline
-      for (const frame of inputFrames) {
-        if (Array.isArray(frame)) {
-          // Verify input frame dimension (Requirement 3)
-          if (frame.length !== 512) {
-            return res.status(200).json({
-              verified: false,
-              match: false,
-              result: 'REJECTED',
-              verificationResult: 'REJECTED',
-              reason: 'Embedding mismatch',
-              error: `Live embedding dimension (${frame.length}) does not match enrolled template (512).`
-            });
-          }
-
-          const normLive = normalizeVector(frame);
-          let frameMax = 0.0;
-          for (const enrolled of enrolledEmbeddings) {
-            const sim = cosineSimilarity(normLive, enrolled);
-            if (sim > frameMax) frameMax = sim;
-          }
-          frameSims.push(frameMax);
-          
-          // Apply thresholds
-          if (frameMax >= 0.85) verifiedFrames++;
-          else if (frameMax >= 0.78) suspiciousFrames++;
-          else rejectedFrames++;
-        }
-      }
-      
-      bestSimilarity = frameSims.length > 0 ? Math.max(...frameSims) : 0.0;
-      averageSimilarity = frameSims.length > 0 ? (frameSims.reduce((a,b)=>a+b,0)/frameSims.length) : 0.0;
-
-      // Final decision thresholds (scaled for 10-frame test; restore to >= 18 when using 30 frames)
-      if (averageSimilarity >= 0.85 && verifiedFrames >= 6) {
-        finalDecision = 'VERIFIED';
-        isVerified = true;
-      } else if (averageSimilarity >= 0.78) {
-        finalDecision = 'SUSPICIOUS';
-      } else {
-        finalDecision = 'REJECTED';
-      }
+      bestSimilarity = typeof arcfaceRes.bestSimilarity === 'number' && !isNaN(arcfaceRes.bestSimilarity) ? arcfaceRes.bestSimilarity : 0.0;
+      averageSimilarity = typeof arcfaceRes.averageSimilarity === 'number' && !isNaN(arcfaceRes.averageSimilarity) ? averageSimilarity : 0.0;
+      verifiedFrames = typeof arcfaceRes.verifiedFrames === 'number' && !isNaN(arcfaceRes.verifiedFrames) ? arcfaceRes.verifiedFrames : 0;
+      suspiciousFrames = typeof arcfaceRes.suspiciousFrames === 'number' && !isNaN(arcfaceRes.suspiciousFrames) ? arcfaceRes.suspiciousFrames : 0;
+      rejectedFrames = typeof arcfaceRes.rejectedFrames === 'number' && !isNaN(arcfaceRes.rejectedFrames) ? arcfaceRes.rejectedFrames : 0;
+      finalDecision = arcfaceRes.result || arcfaceRes.finalDecision || 'REJECTED';
+      isVerified = finalDecision === 'VERIFIED' || finalDecision === 'verified';
     }
 
-    // Determine reason for failure (Requirement 15)
-    if (!isVerified) {
-      if (multiFaceTriggered) {
-        failureReason = 'Embedding mismatch';
-      } else if (!challengePassed) {
-        failureReason = 'Low similarity';
-      } else if (bestSimilarity === 0.0) {
-        failureReason = 'No face detected';
-      } else if (bestSimilarity < 0.50 || averageSimilarity < 0.50) {
-        failureReason = 'Embedding mismatch';
-      } else {
-        failureReason = 'Low similarity';
-      }
-    }
+    const result = isVerified ? "VERIFIED" : (finalDecision === 'SUSPICIOUS' ? "SUSPICIOUS" : "REJECTED");
 
-    // Mismatch warning check (Requirement 10)
-    if (bestSimilarity < 0.50 || averageSimilarity < 0.50) {
-      console.warn("Enrollment and Verification embeddings mismatch.");
-    }
-
-    // Detailed frame similarities logging (Requirement 8)
-    if (arcfaceRes && Array.isArray(arcfaceRes.frameSimilarities)) {
-      arcfaceRes.frameSimilarities.forEach((sim, idx) => {
-        console.log(`Frame #${idx+1} Similarity = ${sim}`);
-      });
-    } else {
-      frameSims.forEach((sim, idx) => {
-        console.log(`Frame #${idx+1} Similarity = ${sim}`);
-      });
-    }
-    console.log(`Average Similarity = ${averageSimilarity}`);
-    console.log(`Best Similarity = ${bestSimilarity}`);
-
-    // Save screenshot if multi-face or rejection occurred
-    let screenshotUrl = null;
-    if (screenshot && (finalDecision === 'REJECTED' || finalDecision === 'MULTIPLE_FACES_DETECTED')) {
-      screenshotUrl = saveImageToDisk(screenshot, `verify_${finalDecision.toLowerCase()}`, profile.studentId);
-    }
-
-    // 3. MANDATORY LOGGING: Store verification attempt in VerificationLog
-    await VerificationLog.create({
+    console.log("=================================");
+    console.log("ARC FACE VERIFICATION SUMMARY");
+    console.log({
       studentId: profile.studentId,
-      email: profile.email,
-      timestamp: new Date(),
-      bestSimilarity: parseFloat(bestSimilarity.toFixed(4)),
-      averageSimilarity: parseFloat(averageSimilarity.toFixed(4)),
+      totalFrames: verificationFrames?.length || 0,
       verifiedFrames,
-      suspiciousFrames,
       rejectedFrames,
-      result: finalDecision,
-      ipAddress,
-      deviceFingerprint: deviceFingerprint || 'browser_webcam',
-      details: {
-        modelVersion: 'InsightFace-ArcFace',
-        qualityScore,
-        challengePassed,
-        multiFaceTriggered,
-        reason: failureReason
-      },
-      screenshot: screenshotUrl || null
-    }).catch(err => console.warn('⚠️ VerificationLog save notice:', err.message));
+      suspiciousFrames,
+      averageSimilarity,
+      bestSimilarity,
+      result
+    });
+    console.log("=================================");
+
+    // Safely wrap database logging so a log saving error cannot turn a successful verification into a failed request
+    try {
+      await VerificationLog.create({
+        studentId: profile.studentId,
+        email: profile.email,
+        result,
+        rejectedFrames: Number(rejectedFrames) || 0,
+        suspiciousFrames: Number(suspiciousFrames) || 0,
+        verifiedFrames: Number(verifiedFrames) || 0,
+        averageSimilarity: Number(averageSimilarity) || 0,
+        bestSimilarity: Number(bestSimilarity) || 0
+      });
+      console.log("[VerificationLog] Saved successfully");
+    } catch (logErr) {
+      console.error("⚠️ [VerificationLog] Non-critical log creation warning:", logErr.message);
+    }
 
     return res.status(200).json({
+      success: isVerified,
       verified: isVerified,
       match: isVerified,
-      result: finalDecision,
+      result: result.toLowerCase(),
+      finalDecision: finalDecision,
       verificationResult: finalDecision,
-      bestSimilarity,
-      averageSimilarity,
-      verifiedFrames,
-      suspiciousFrames,
-      rejectedFrames,
-      qualityScore,
-      challengePassed,
-      multiFaceTriggered,
-      modelVersion: 'InsightFace-ArcFace',
-      reason: failureReason,
-      message: isVerified
-        ? `✔ Verified Student ${profile.name} (ArcFace Similarity: ${bestSimilarity})`
-        : `❌ Verification Failed: ${failureReason || 'Low similarity'}`
-    });
-
-  } catch (error) {
-    console.error('❌ ArcFace Verification handler error:', error);
-    return res.status(500).json({
-      verified: false,
-      match: false,
-      result: 'REJECTED',
-      verificationResult: 'REJECTED',
-      reason: 'Corrupted MongoDB record',
-      error: error.message,
-      message: 'Server error during biometric verification.'
-    });
-  }
-};
-
-/**
- * GET /api/face/debug/:studentId
- * DEBUG API (Requirement 11)
- */
-const getFaceDebug = async (req, res) => {
-  try {
-    const studentId = req.params.studentId;
-    const cleanStudentId = (studentId || '').trim();
-
-    const profile = await FaceProfile.findOne({
-      $or: [{ studentId: cleanStudentId }, { email: cleanStudentId.toLowerCase() }]
-    });
-
-    if (!profile) {
-      return res.status(404).json({
-        success: false,
-        error: 'Face profile not found for the given studentId or email.'
-      });
-    }
-
-    const numEmbeddings = profile.embeddings ? profile.embeddings.length : 0;
-    const dim = numEmbeddings > 0 ? profile.embeddings[0].length : 0;
-
-    let totalNorm = 0;
-    if (numEmbeddings > 0) {
-      for (const vec of profile.embeddings) {
-        let sumSq = 0;
-        for (let i = 0; i < vec.length; i++) {
-          sumSq += vec[i] * vec[i];
-        }
-        totalNorm += Math.sqrt(sumSq);
-      }
-    }
-    const avgNorm = numEmbeddings > 0 ? (totalNorm / numEmbeddings) : 0;
-
-    return res.json({
       studentId: profile.studentId,
       email: profile.email,
-      numberOfEmbeddings: numEmbeddings,
-      embeddingDimension: dim,
-      averageVectorNorm: parseFloat(avgNorm.toFixed(6)),
-      lastEnrollmentDate: profile.updatedAt || profile.enrollmentDate
+      bestSimilarity: bestSimilarity,
+      averageSimilarity: averageSimilarity,
+      verifiedFrames: verifiedFrames,
+      suspiciousFrames: suspiciousFrames,
+      rejectedFrames: rejectedFrames,
+      totalFramesProcessed: verificationFrames.length,
+      timestamp: new Date().toISOString()
     });
-  } catch (error) {
-    console.error('Error in face debug endpoint:', error);
+  } catch (err) {
+    console.error('❌ ArcFace verification error:', err);
     return res.status(500).json({
       success: false,
-      error: 'Internal server error: ' + error.message
+      verified: false,
+      match: false,
+      result: 'rejected',
+      verificationResult: 'REJECTED',
+      message: 'Face verification failed. Please center your face and try again.',
+      error: 'Face verification processing failed.'
     });
   }
 };
 
-function loggerPrint(msg) {
-  console.log(msg);
-}
-
 /**
- * GET /api/face/profile/:identifier
+ * GET /api/face/profile/:id
  */
 const getFaceProfile = async (req, res) => {
   try {
-    const { identifier } = req.params;
-    const cleanId = (identifier || '').trim();
+    const param = req.params.id;
+    let profile = await FaceProfile.findOne({
+      $or: [
+        { studentId: param },
+        { email: param.toLowerCase() }
+      ]
+    });
 
-    let profile = null;
-    if (FaceProfile) {
-      profile = await FaceProfile.findOne({
-        $or: [{ studentId: cleanId }, { email: cleanId.toLowerCase() }]
+    if (!profile) {
+      return res.status(200).json({
+        success: false,
+        enrolled: false,
+        message: 'No face profile found for this student.'
       });
     }
 
-    if (profile) {
-      return res.status(200).json({ success: true, profile });
-    }
-
-    return res.status(404).json({ success: false, message: 'Face profile not found' });
+    return res.status(200).json({
+      success: true,
+      enrolled: true,
+      profile: profile
+    });
   } catch (err) {
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({
+      success: false,
+      error: err.message
+    });
   }
 };
 
@@ -587,31 +456,81 @@ const getFaceProfile = async (req, res) => {
  */
 const saveCheatingLog = async (req, res) => {
   try {
-    let CheatingLog = null;
-    try { CheatingLog = require('../models/CheatingLog'); } catch(e) {}
-    const logData = req.body;
-    if (CheatingLog) {
-      const log = new CheatingLog(logData);
-      await log.save();
+    const { studentId, studentEmail, eventType, severity, details, snapshot, imageSnapshot, examId, timestamp } = req.body;
+    const cleanEmail = (studentEmail || '').trim().toLowerCase() || 'unknown@proctor.com';
+    const cleanStudentId = (studentId || '').trim() || ('STU_' + cleanEmail.replace(/[^a-z0-9]/gi, '_'));
+
+    let savedSnapshotUrl = null;
+    const b64 = snapshot || imageSnapshot;
+    if (b64 && typeof b64 === 'string' && b64.startsWith('data:image')) {
+      savedSnapshotUrl = saveImageToDisk(b64, `violation_${eventType || 'anomaly'}`, cleanStudentId);
     }
-    return res.status(200).json({ success: true });
+
+    const logEntry = new VerificationLog({
+      studentId: cleanStudentId,
+      email: cleanEmail,
+      eventType: eventType || 'PROCTOR_ANOMALY',
+      status: severity === 'HIGH' || severity === 'CRITICAL' ? 'VIOLATION' : 'WARNING',
+      verificationResult: severity === 'CRITICAL' ? 'TERMINATED' : 'FLAGGED',
+      reason: details || eventType || 'Proctoring violation detected',
+      snapshotUrl: savedSnapshotUrl || b64,
+      examId: examId || 'EXAM_MAIN',
+      timestamp: timestamp ? new Date(timestamp) : new Date()
+    });
+
+    await logEntry.save();
+    return res.status(200).json({
+      success: true,
+      message: 'Violation log saved to database.',
+      log: logEntry
+    });
   } catch (err) {
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({
+      success: false,
+      error: err.message || 'Failed to record proctoring violation.'
+    });
   }
 };
 
 /**
- * GET /api/face/cheating-logs
+ * GET /api/face/logs
  */
 const getCheatingLogs = async (req, res) => {
   try {
-    let CheatingLog = null;
-    try { CheatingLog = require('../models/CheatingLog'); } catch(e) {}
-    let logs = [];
-    if (CheatingLog) {
-      logs = await CheatingLog.find().sort({ timestamp: -1 }).limit(100);
-    }
-    return res.status(200).json({ success: true, logs });
+    const { studentId, email, examId } = req.query;
+    let query = {};
+    if (studentId) query.studentId = studentId;
+    if (email) query.email = email.toLowerCase();
+    if (examId) query.examId = examId;
+
+    const logs = await VerificationLog.find(query).sort({ timestamp: -1 }).limit(100);
+    return res.status(200).json({
+      success: true,
+      count: logs.length,
+      logs: logs
+    });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+};
+
+/**
+ * GET /api/face/debug/:studentId
+ */
+const getFaceDebug = async (req, res) => {
+  try {
+    const studentId = req.params.studentId;
+    const profile = await FaceProfile.findOne({ studentId });
+    return res.json({
+      success: true,
+      studentId: studentId,
+      enrolled: !!profile,
+      embeddingsCount: profile?.embeddings?.length || 0,
+      hasAverageEmbedding: !!profile?.averageEmbedding
+    });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }

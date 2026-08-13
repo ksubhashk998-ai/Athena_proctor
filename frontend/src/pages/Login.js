@@ -406,12 +406,15 @@ function Login() {
   const handleVerifyFace = async () => {
     if (!webcamRef.current) return;
     // Guard: prevent concurrent verification requests
-    if (faceVerifying) return;
+    if (faceVerifying) {
+      console.warn("[FaceVerify] Verification already running");
+      return;
+    }
     setFaceVerifying(true);
     setFaceStatusMsg("🔄 Initializing Biometric Face Verification...");
 
     const TOTAL_LOGIN_FRAMES = 10;
-    const FRAME_INTERVAL_MS = 175;
+    const FRAME_INTERVAL_MS = 150;
 
     try {
       const video = webcamRef.current.video;
@@ -427,7 +430,7 @@ function Login() {
 
       // === PHASE 1: Capture frames only — ZERO API calls inside this loop ===
       const capturedFrames = [];
-      console.log(`[FaceVerify] Capturing ${TOTAL_LOGIN_FRAMES} frames...`);
+      console.log(`[FaceVerify] Capturing 10 frames...`);
 
       for (let frameIndex = 0; frameIndex < TOTAL_LOGIN_FRAMES; frameIndex++) {
         setFaceStatusMsg(`⚙️ Analyzing biometric data... ${frameIndex + 1}/${TOTAL_LOGIN_FRAMES}`);
@@ -458,7 +461,7 @@ function Login() {
       }
 
       // === PHASE 2: ONE single final verification request ===
-      console.log(`[FaceVerify] Sending ${capturedFrames.length} frames to backend...`);
+      console.log(`[FaceVerify] Sending 10 frames...`);
       setFaceStatusMsg("⚙️ Processing biometric data, please wait...");
 
       const finalRes = await axios.post(`${apiBase}/api/face/verify`, {
@@ -491,9 +494,9 @@ function Login() {
       }
 
     } catch (e) {
-      console.error("Face verification error:", e);
-      if (e.code === 'ECONNABORTED' || e.message?.includes('timeout')) {
-        setFaceStatusMsg("🔴 Face verification timed out. Please try again.");
+      console.error("[FaceVerify] COMPLETE ERROR:", e);
+      if (e.code === 'ECONNABORTED' || e.code === 'ETIMEDOUT' || e.message?.includes('timeout')) {
+        setFaceStatusMsg("❌ Face verification timed out. Check ArcFace service.");
       } else {
         const serverReason = e.response?.data?.reason || e.response?.data?.error || "Server connection error";
         setFaceStatusMsg(`🔴 Verification failed: ${serverReason}. Please retry.`);

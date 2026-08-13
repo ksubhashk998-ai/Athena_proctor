@@ -36,7 +36,7 @@ export default function FaceVerification({
       return [];
     }
     const frames = [];
-    for (let i = 1; i <= 30; i++) {
+    for (let i = 1; i <= 10; i++) {
       try {
         const canvas = document.createElement('canvas');
         canvas.width = 320;
@@ -57,14 +57,14 @@ export default function FaceVerification({
 
     if (!isBackgroundCheck) {
       setVerifying(true);
-      setStatusMsg('🔄 Capturing 30 camera frames for InsightFace ArcFace verification...');
+      setStatusMsg('🔄 Capturing 10 camera frames for InsightFace ArcFace verification...');
       setProgressFrames(0);
       setMultiFaceAlert(false);
     }
 
     try {
       const frames = await captureFrameBatch();
-      if (frames.length < 15) {
+      if (frames.length < 5) {
         setStatusMsg('🔴 Frame capture incomplete. Please face camera clearly.');
         if (onVerificationFailed) onVerificationFailed('Frame capture failed');
         setVerifying(false);
@@ -107,7 +107,7 @@ export default function FaceVerification({
         if (onVerificationSuccess) onVerificationSuccess(data);
         if (onVerified) onVerified(data);
       } else if (data.result === 'SUSPICIOUS') {
-        setStatusMsg(`🟡 Suspicious identity confidence (${data.verifiedFrames || 18}/30 verified frames). Retrying...`);
+        setStatusMsg(`🟡 Suspicious identity confidence (${data.verifiedFrames || 6}/10 verified frames). Retrying...`);
         if (onVerificationFailed) onVerificationFailed('SUSPICIOUS');
       } else {
         handleFailurePass(data.message || 'Face identity mismatch');

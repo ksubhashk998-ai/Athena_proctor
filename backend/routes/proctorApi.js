@@ -25,7 +25,7 @@ const VerificationLog = require('../models/VerificationLog');
 
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this-in-production';
-const PYTHON_DETECTOR_URL = process.env.PYTHON_DETECTOR_URL || 'http://localhost:8001';
+const PYTHON_DETECTOR_URL = (process.env.PYTHON_DETECTOR_URL || 'http://127.0.0.1:8001').replace('localhost', '127.0.0.1');
 
 // In-memory student registry cache
 const inMemoryStudents = new Map();

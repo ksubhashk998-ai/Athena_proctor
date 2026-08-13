@@ -241,7 +241,9 @@ export default function Register() {
         const metrics = evaluateFrameMetrics(v, singleDet);
         setTelemetry(metrics);
 
-        if (count >= TARGET_SAMPLES) {
+const REQUIRED_FRAMES = 30;
+
+        if (count >= REQUIRED_FRAMES) {
           if (captureIntervalRef.current) {
             clearInterval(captureIntervalRef.current);
             captureIntervalRef.current = null;

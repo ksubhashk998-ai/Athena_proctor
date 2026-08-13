@@ -6,11 +6,9 @@ import { getApiBaseUrl } from '../utils/config';
 const TARGET_SAMPLES = 30;
 
 const LIVENESS_ACTIONS = [
-  { id: 'front', label: '🎯 Front Face (1-6)', prompt: 'Look straight at the camera' },
-  { id: 'left', label: '👈 Turn Left (7-12)', prompt: 'Turn head slightly LEFT ◄' },
-  { id: 'right', label: '👉 Turn Right (13-18)', prompt: 'Turn head slightly RIGHT ►' },
-  { id: 'up', label: '👆 Slight Up (19-24)', prompt: 'Tilt head slightly UP ▲' },
-  { id: 'down', label: '👇 Slight Down (25-30)', prompt: 'Tilt head slightly DOWN ▼' },
+  { id: 'front', label: '🎯 Position 1: FRONT Face (1-10)', prompt: 'Look straight at the camera' },
+  { id: 'side', label: '👈 Position 2: SLIGHT LEFT / RIGHT (11-20)', prompt: 'Turn head slightly LEFT or RIGHT' },
+  { id: 'vertical', label: '👇 Position 3: SLIGHT UP / DOWN (21-30)', prompt: 'Tilt head slightly UP or DOWN' },
 ];
 
 export default function FaceEnrollment({ studentId, name, email, token, onEnrolled, onSkip }) {
@@ -18,53 +16,85 @@ export default function FaceEnrollment({ studentId, name, email, token, onEnroll
   const [status, setStatus] = useState('idle'); // idle | capturing | processing | success | error
   const [actionIdx, setActionIdx] = useState(0);
   const [collectedFrames, setCollectedFrames] = useState([]);
-  const [statusMsg, setStatusMsg] = useState('Position your face inside guide oval and click Begin Enrollment');
+  const [statusMsg, setStatusMsg] = useState('Keep your face inside the circle and follow the pose instructions.');
 
   const activeEmail = email || localStorage.getItem('registered_email') || 'student@proctor.com';
   const activeName = name || activeEmail.split('@')[0] || 'Student';
   const activeStudentId = studentId || ('STU_' + activeEmail.replace(/[^a-z0-9]/gi, '_'));
 
   const startEnrollment = useCallback(async () => {
+    console.log("[ENROLL] Button clicked");
+    if (status === 'capturing' || status === 'processing') return;
+
     const video = webcamRef.current?.video;
     if (!video || video.paused || video.ended || video.readyState < 2) {
       setStatusMsg('⚠️ Camera not ready. Ensure camera access is allowed.');
       return;
     }
 
+    console.log("[ENROLL] Capture started");
+    console.log("Enrollment target: 30");
     setStatus('capturing');
     setStatusMsg('🚀 Capturing 30 InsightFace ArcFace Samples — Follow Pose Prompts!');
     setCollectedFrames([]);
 
     const frames = [];
+    let attempts = 0;
+    const maxAttempts = 180;
 
-    for (let i = 1; i <= TARGET_SAMPLES; i++) {
-      if (!webcamRef.current?.video) break;
-      try {
-        const canvas = document.createElement('canvas');
-        canvas.width = 320;
-        canvas.height = 240;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(webcamRef.current.video, 0, 0, 320, 240);
-        const b64 = canvas.toDataURL('image/jpeg', 0.65);
-        frames.push(b64);
-        setCollectedFrames([...frames]);
-      } catch (e) {}
+    while (frames.length < TARGET_SAMPLES && attempts < maxAttempts) {
+      attempts++;
+      const v = webcamRef.current?.video;
+      if (v && v.readyState >= 2) {
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = 640;
+          canvas.height = 480;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(v, 0, 0, 640, 480);
+          const b64 = canvas.toDataURL('image/jpeg', 0.85);
 
-      const poseStep = Math.min(LIVENESS_ACTIONS.length - 1, Math.floor(((i - 1) / TARGET_SAMPLES) * LIVENESS_ACTIONS.length));
+          if (b64 && b64.length > 5000) {
+            frames.push(b64);
+            const count = frames.length;
+            setCollectedFrames([...frames]);
+            console.log(`[ENROLL] Captured frame ${count}/30`);
+            console.log(`Captured frame: ${count}/30`);
+          }
+        } catch (e) {}
+      }
+
+      const sampleCount = frames.length;
+      const poseStep = Math.min(
+        LIVENESS_ACTIONS.length - 1,
+        Math.floor((sampleCount / TARGET_SAMPLES) * LIVENESS_ACTIONS.length)
+      );
       setActionIdx(poseStep);
       const action = LIVENESS_ACTIONS[poseStep];
-      setStatusMsg(`📸 Captured ${i}/30 samples — ${action.label}: ${action.prompt}`);
+      setStatusMsg(`📸 Collecting face samples: ${sampleCount}/30 — ${action.label}: ${action.prompt}`);
 
-      await new Promise(r => setTimeout(r, 120));
+      await new Promise((r) => setTimeout(r, 120));
     }
+
+    if (frames.length < 20) {
+      setStatus('error');
+      setStatusMsg('❌ Not enough valid face samples. Please continue enrollment.');
+      return;
+    }
+
+    console.log("[ENROLL] 30 frames collected");
+    console.log("[ENROLL] Frames being submitted: 30");
+    console.log("[ENROLL] Sending API request");
+    console.log(`Frames: ${frames.length}`);
+    console.log('Sending enrollment request...');
 
     finishEnrollment(frames);
   }, []);
 
   const finishEnrollment = async (frames) => {
-    if (frames.length < 25) {
+    if (frames.length < 20) {
       setStatus('error');
-      setStatusMsg('❌ Failed: Less than 25 valid face samples captured.');
+      setStatusMsg('❌ Not enough valid face samples. Please continue enrollment.');
       return;
     }
 
@@ -73,6 +103,9 @@ export default function FaceEnrollment({ studentId, name, email, token, onEnroll
 
     try {
       const activeToken = token || localStorage.getItem('token') || 'temp_token';
+
+      console.log(`Frames: ${frames.length}`);
+      console.log('Sending enrollment request...');
 
       const response = await fetch(`${getApiBaseUrl()}/api/face/enroll`, {
         method: 'POST',
@@ -84,7 +117,8 @@ export default function FaceEnrollment({ studentId, name, email, token, onEnroll
           email: activeEmail,
           studentId: activeStudentId,
           name: activeName,
-          frames: frames
+          frames: frames,
+          reEnrollment: true
         })
       });
 
@@ -92,7 +126,7 @@ export default function FaceEnrollment({ studentId, name, email, token, onEnroll
 
       if (response.ok && data.success) {
         setStatus('success');
-        setStatusMsg(`✅ InsightFace ArcFace Enrollment Complete! (${data.validSamples || frames.length}/30 samples registered)`);
+        setStatusMsg('✅ Enrollment successful — 30 valid face samples captured.');
         setTimeout(() => {
           if (onEnrolled) onEnrolled(data);
         }, 1200);
@@ -115,7 +149,7 @@ export default function FaceEnrollment({ studentId, name, email, token, onEnroll
         <div style={styles.header}>
           <span style={{ fontSize: '2rem' }}>🛡️</span>
           <h2 style={styles.title}>ArcFace Biometric Enrollment</h2>
-          <p style={styles.subtitle}>Capturing 30 pose samples for InsightFace ArcFace (buffalo_l)</p>
+          <p style={styles.subtitle}>Keep your face inside the circle and follow the pose instructions.</p>
         </div>
 
         <div style={styles.actionBanner}>
@@ -143,8 +177,8 @@ export default function FaceEnrollment({ studentId, name, email, token, onEnroll
         {status === 'capturing' && (
           <div style={{ margin: '14px 0 8px 0' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: '#cbd5e1', fontWeight: 600, marginBottom: '4px' }}>
-              <span>Collecting Samples</span>
-              <span style={{ color: '#34d399' }}>{collectedFrames.length} / {TARGET_SAMPLES} Frames</span>
+              <span>Collecting face samples:</span>
+              <span style={{ color: '#34d399' }}>{collectedFrames.length} / {TARGET_SAMPLES}</span>
             </div>
             <div style={styles.progressBar}>
               <div style={{ ...styles.progressFill, width: `${(collectedFrames.length / TARGET_SAMPLES) * 100}%` }} />

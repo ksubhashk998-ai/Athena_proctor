@@ -5,6 +5,16 @@ const path = require('path');
 const ROOT_DIR = path.resolve(__dirname, '..');
 
 const services = {
+  python: {
+    name: 'Python ArcFace Microservice',
+    cwd: path.join(ROOT_DIR, 'python_detector'),
+    command: 'python',
+    args: ['-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', '8001'],
+    port: 8001,
+    healthUrl: 'http://127.0.0.1:8001/health',
+    process: null,
+    restarts: 0
+  },
   backend: {
     name: 'Backend Express Server',
     cwd: path.join(ROOT_DIR, 'backend'),
@@ -123,6 +133,7 @@ async function validateStartup() {
   console.log('==================================================\n');
 
   const maxAttempts = 45;
+  let pythonReady = false;
   let backendReady = false;
   let frontendReady = false;
   let adminReady = false;
@@ -133,6 +144,14 @@ async function validateStartup() {
 
   for (let i = 1; i <= maxAttempts; i++) {
     process.stdout.write(`\r⏳ Validating active services (Attempt ${i}/${maxAttempts})... `);
+
+    // 0. Check Python Microservice
+    if (!pythonReady) {
+      const pRes = await checkHttp(services.python.healthUrl);
+      if (pRes.statusCode === 200) {
+        pythonReady = true;
+      }
+    }
 
     // 1. Check Backend
     if (!backendReady) {
@@ -170,7 +189,7 @@ async function validateStartup() {
       }
     }
 
-    if (backendReady && frontendReady && adminReady && adminRouteReady) {
+    if (pythonReady && backendReady && frontendReady && adminReady && adminRouteReady) {
       break;
     }
 
@@ -180,6 +199,7 @@ async function validateStartup() {
   console.log('\n\n==================================================');
   console.log('🛡️ ATHENA SMART PROCTORING - STARTUP VALIDATION RESULT');
   console.log('==================================================');
+  console.log(`🟢 Python AI Service:     ${pythonReady ? 'http://127.0.0.1:8001 (HTTP 200 OK)' : '❌ Failed to connect'}`);
   console.log(`🟢 Backend Server:       ${backendReady ? 'http://localhost:5000 (HTTP 200 OK)' : '❌ Failed to connect'}`);
   console.log(`🟢 Frontend Student App:  ${frontendReady ? 'http://localhost:3000 (HTTP 200 OK)' : '❌ Failed to connect'}`);
   console.log(`🟢 Admin Command Center:  ${adminReady ? 'http://localhost:3001 (HTTP 200 OK)' : '❌ Failed to connect'}`);
@@ -205,6 +225,7 @@ async function main() {
   console.log('🛡️ ATHENA AI SMART PROCTORING SYSTEM - MASTER LAUNCH');
   console.log('==================================================');
 
+  await startService('python');
   await startService('backend');
   await startService('frontend');
   await startService('admin');

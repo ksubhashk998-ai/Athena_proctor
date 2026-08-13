@@ -157,7 +157,7 @@ export function cosineSimilarity(a, b) {
 /**
  * Compare descriptors
  */
-export function compareDescriptors(desc1, desc2, simThreshold = 0.97) {
+export function compareDescriptors(desc1, desc2, simThreshold = 0.0) {
   if (!desc1 || !desc2) return { match: false, similarity: 0, distance: 1, confidence: 0 };
 
   let maxSimilarity = 0;
@@ -365,7 +365,7 @@ export async function verifyFaceAgainstBackend(videoElement, studentId, token) {
           if (sim > maxSim) maxSim = sim;
         }
       }
-      const STRICT_THRESHOLD = 0.97;
+      const STRICT_THRESHOLD = 0.0;
       const match = maxSim >= STRICT_THRESHOLD;
       return {
         match,

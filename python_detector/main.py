@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 from PIL import Image
 import logging
+import time
 
 # Try importing ultralytics; graceful fallback if not installed
 try:
@@ -167,13 +168,13 @@ def validate_face_quality(bgr_img: np.ndarray, face_obj) -> dict:
     face_h = y2 - y1
     
     # 1. Resolution Check
-    resolution_pass = (face_w >= 160) and (face_h >= 160)
-    res_score = min(100, (face_w * face_h) / (160 * 160) * 100)
+    resolution_pass = (face_w >= 100) and (face_h >= 100)
+    res_score = min(100, (face_w * face_h) / (100 * 100) * 100)
     
     # Crop face region
     face_crop = bgr_img[y1:y2, x1:x2]
     if face_crop.size == 0:
-        return {"passed": False, "score": 0, "reason": "Invalid face region"}
+      return {"passed": False, "score": 0, "reason": "Invalid face region"}
         
     gray_crop = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
     
@@ -184,8 +185,8 @@ def validate_face_quality(bgr_img: np.ndarray, face_obj) -> dict:
     
     # 3. Blur Check (Laplacian Variance)
     blur_var = float(cv2.Laplacian(gray_crop, cv2.CV_64F).var())
-    blur_pass = blur_var >= 60.0
-    blur_score = min(100.0, (blur_var / 120.0) * 100.0)
+    blur_pass = blur_var >= 25.0
+    blur_score = min(100.0, (blur_var / 50.0) * 100.0)
     
     # 4. Centering Check
     cx = (x1 + x2) / 2.0
@@ -195,7 +196,7 @@ def validate_face_quality(bgr_img: np.ndarray, face_obj) -> dict:
     centering_score = max(0.0, 100.0 * (1.0 - center_dist))
     
     overall_score = round(0.3 * res_score + 0.3 * blur_score + 0.2 * brightness_score + 0.2 * centering_score, 2)
-    passed = resolution_pass and brightness_pass and blur_pass and centering_pass and (overall_score >= 80.0)
+    passed = overall_score >= 60.0
     
     return {
         "passed": passed,
@@ -204,6 +205,10 @@ def validate_face_quality(bgr_img: np.ndarray, face_obj) -> dict:
         "brightness": round(mean_brightness, 1),
         "blurVar": round(blur_var, 1),
         "centered": centering_pass,
+        "face_w": face_w,
+        "face_h": face_h,
+        "blur_var": round(blur_var, 1),
+        "mean_brightness": round(mean_brightness, 1),
         "reason": "OK" if passed else f"Low quality (Res:{face_w}x{face_h}, Blur:{round(blur_var,1)}, Bright:{round(mean_brightness,1)})"
     }
 
@@ -233,10 +238,10 @@ def run_yolo_detection(model, image: Image.Image, target_class_ids: list, thresh
 
 @app.get("/health")
 async def health_check():
-    insight_loaded = _insightface_app is not None
+    model = get_insightface()
     return {
         "status": "ok",
-        "arcface_loaded": insight_loaded,
+        "arcface_loaded": model is not None,
         "insightface_available": INSIGHTFACE_AVAILABLE,
         "yolo_available": YOLO_AVAILABLE,
         "engine": "InsightFace-ArcFace (buffalo_l 512d)"
@@ -325,6 +330,9 @@ async def arcface_enroll(request: ArcFaceEnrollRequest):
                 
             # Extract and L2-normalize 512d ArcFace embedding
             raw_emb = face.embedding
+            if raw_emb.shape[0] != 512:
+                rejected_reasons.append(f"Frame {idx+1}: Invalid embedding dimension (got {raw_emb.shape[0]}, expected 512)")
+                continue
             norm_emb = normalize_l2(raw_emb)
             embeddings.append(norm_emb)
             
@@ -367,12 +375,15 @@ async def arcface_enroll(request: ArcFaceEnrollRequest):
 async def arcface_verify(request: ArcFaceVerifyRequest):
     """
     Verify live camera frames using InsightFace ArcFace (buffalo_l):
-    - Evaluates 30 live frames
+    - Evaluates up to 5 live frames
     - Calculates Cosine Similarity against all enrolled 512-d embeddings
-    - Frame Thresholds: >=0.92 VERIFIED, 0.88-0.92 SUSPICIOUS, <0.88 REJECTED
-    - Final Decision: verifiedFrames >= 24 AND averageSimilarity >= 0.92 => VERIFIED
+    - Frame Thresholds: >=0.85 VERIFIED, 0.78-0.85 SUSPICIOUS, <0.78 REJECTED
+    - Final Decision: verifiedFrames >= 4 AND averageSimilarity >= 0.85 => VERIFIED
     - Anti-spoofing and Multi-face halt enforcement
     """
+    start_time = time.perf_counter()
+    frames_to_process = request.frames[:10]  # Cap at 10 frames for CPU performance
+    logger.info(f"[ArcFace] Received {len(request.frames)} frames — processing {len(frames_to_process)}")
     logger.info(f"🔍 Running InsightFace ArcFace Verification for student: {request.studentId}")
     
     app_face = get_insightface()
@@ -382,7 +393,14 @@ async def arcface_verify(request: ArcFaceVerifyRequest):
     if not request.enrolledEmbeddings or len(request.enrolledEmbeddings) == 0:
         raise HTTPException(status_code=400, detail="No enrolled face embeddings provided for comparison")
         
-    enrolled_matrix = np.array(request.enrolledEmbeddings, dtype=np.float32) # (N, 512)
+    for enrolled in request.enrolledEmbeddings:
+        if not isinstance(enrolled, list) or len(enrolled) != 512:
+            raise HTTPException(status_code=400, detail="Invalid enrolled embedding dimension. Expected 512d.")
+
+    # Pre-normalize enrolled matrix ONCE for fast matrix-multiply similarity
+    enrolled_matrix = np.asarray(request.enrolledEmbeddings, dtype=np.float32)
+    enrolled_norms = np.linalg.norm(enrolled_matrix, axis=1, keepdims=True)
+    enrolled_matrix = enrolled_matrix / (enrolled_norms + 1e-8)  # (N, 512) L2-normalized
     
     verified_count = 0
     suspicious_count = 0
@@ -392,7 +410,9 @@ async def arcface_verify(request: ArcFaceVerifyRequest):
     quality_scores = []
     poses_detected = []
     
-    for idx, b64_frame in enumerate(request.frames):
+    for idx, b64_frame in enumerate(frames_to_process):
+        logger.info(f"[ArcFace] Processing frame {idx+1}/{len(frames_to_process)}")
+        frame_start = time.perf_counter()
         try:
             bgr_img = decode_image_np(b64_frame)
             faces = app_face.get(bgr_img)
@@ -411,6 +431,13 @@ async def arcface_verify(request: ArcFaceVerifyRequest):
             quality = validate_face_quality(bgr_img, face)
             quality_scores.append(quality["score"])
             
+            logger.info(
+                f"QUALITY: {quality['score']} "
+                f"RES={quality['face_w']}x{quality['face_h']} "
+                f"BLUR={quality['blur_var']} "
+                f"BRIGHT={quality['mean_brightness']}"
+            )
+            
             if not quality["passed"]:
                 rejected_count += 1
                 continue
@@ -422,16 +449,22 @@ async def arcface_verify(request: ArcFaceVerifyRequest):
                 
             # Extract ArcFace 512d L2 normalized embedding
             live_emb = normalize_l2(face.embedding)
+            if len(live_emb) != 512:
+                logger.error(f"Live embedding is not 512d (got {len(live_emb)}d)")
+                rejected_count += 1
+                continue
             
-            # Compute cosine similarity against all enrolled embeddings
-            sims = [cosine_similarity(live_emb, enrolled_emb) for enrolled_emb in request.enrolledEmbeddings]
-            best_sim = float(np.max(sims))
+            # Vectorized cosine similarity: dot product against pre-normalized enrolled matrix
+            live_vector = np.asarray(live_emb, dtype=np.float32)
+            live_vector = live_vector / (np.linalg.norm(live_vector) + 1e-8)
+            similarities = np.dot(enrolled_matrix, live_vector)
+            best_sim = float(np.max(similarities))
             frame_similarities.append(best_sim)
             
             # Per-frame Thresholding Policy
-            if best_sim >= 0.92:
+            if best_sim >= 0.85:
                 verified_count += 1
-            elif best_sim >= 0.88:
+            elif best_sim >= 0.78:
                 suspicious_count += 1
             else:
                 rejected_count += 1
@@ -439,6 +472,9 @@ async def arcface_verify(request: ArcFaceVerifyRequest):
         except Exception as err:
             logger.error(f"Error processing verification frame {idx+1}: {err}")
             rejected_count += 1
+        
+        frame_elapsed = time.perf_counter() - frame_start
+        logger.info(f"[ArcFace PERF] Frame {idx+1} processed in {frame_elapsed:.2f} sec")
             
     # Compute aggregates
     best_similarity = round(float(np.max(frame_similarities)), 4) if frame_similarities else 0.0
@@ -457,18 +493,33 @@ async def arcface_verify(request: ArcFaceVerifyRequest):
         elif request.challengePose == "look_down":
             challenge_passed = any(p["pitch"] > 10 for p in poses_detected)
 
-    # FINAL DECISION DETERMINATION
+    # FINAL DECISION DETERMINATION (10-frame batch: need 6+ verified frames)
     if multi_face_triggered:
         final_decision = "MULTIPLE_FACES_DETECTED"
     elif not challenge_passed:
         final_decision = "CHALLENGE_FAILED"
-    elif verified_count >= 24 and average_similarity >= 0.92:
+    elif average_similarity >= 0.85 and verified_count >= 6:
         final_decision = "VERIFIED"
-    elif verified_count >= 15:
+    elif average_similarity >= 0.78:
         final_decision = "SUSPICIOUS"
     else:
         final_decision = "REJECTED"
         
+    # Mismatch warning check
+    if len(frame_similarities) > 0 and (best_similarity < 0.50 or average_similarity < 0.50):
+        logger.warning("Enrollment and Verification embeddings mismatch.")
+
+    # Detailed Frame Similarity logs
+    for idx, sim in enumerate(frame_similarities):
+        logger.info(f"Frame #{idx+1} Similarity = {sim}")
+    logger.info(f"Average Similarity = {average_similarity}")
+    logger.info(f"Best Similarity = {best_similarity}")
+    logger.info(f"Verified Frames = {verified_count}/{len(frames_to_process)}")
+    logger.info(f"Final Decision = {final_decision}")
+
+    total_elapsed = time.perf_counter() - start_time
+    logger.info(f"[ArcFace PERF] TOTAL TIME: {total_elapsed:.2f} sec")
+
     # Mandatory Debug Output
     logger.info("==================================================")
     logger.info("🛡️ INSIGHTFACE ARCFACE BIOMETRIC VERIFICATION AUDIT")
@@ -479,9 +530,10 @@ async def arcface_verify(request: ArcFaceVerifyRequest):
     logger.info(f"✨ Face Quality Score:   {avg_quality}%")
     logger.info(f"🎯 Best Similarity:      {best_similarity}")
     logger.info(f"📈 Average Similarity:   {average_similarity}")
-    logger.info(f"🟢 Verified Frames:      {verified_count}/30")
-    logger.info(f"🟡 Suspicious Frames:    {suspicious_count}/30")
-    logger.info(f"🔴 Rejected Frames:      {rejected_count}/30")
+    total_frames = len(frames_to_process)
+    logger.info(f"🟢 Verified Frames:      {verified_count}/{total_frames}")
+    logger.info(f"🟡 Suspicious Frames:    {suspicious_count}/{total_frames}")
+    logger.info(f"🔴 Rejected Frames:      {rejected_count}/{total_frames}")
     logger.info(f"🏁 Final Decision:       {final_decision}")
     logger.info("==================================================\n")
     

@@ -197,7 +197,7 @@ export default function Diagnostics() {
           <div style={{ background: 'rgba(30, 41, 59, 0.6)', border: '1px solid #334155', borderRadius: '16px', padding: '20px' }}>
             <div style={{ color: '#94a3b8', fontSize: '0.85rem', marginBottom: '4px' }}>6. ArcFace Model Status</div>
             <div style={{ color: '#34d399', fontWeight: 800, fontSize: '1.1rem' }}>
-              🟢 Loaded & Active (128-d Vector)
+              🟢 Loaded & Active (512-d Vector)
             </div>
           </div>
 

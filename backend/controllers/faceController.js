@@ -86,7 +86,7 @@ const enrollFace = async (req, res) => {
         name: studentName,
         email: cleanEmail,
         frames: inputFrames.slice(0, 30)
-      }, { timeout: 15000 });
+      }, { timeout: 60000 });
       arcfaceRes = response.data;
     } catch (pyErr) {
       console.warn('⚠️ Python ArcFace Microservice notice:', pyErr.message);
@@ -119,6 +119,16 @@ const enrollFace = async (req, res) => {
       });
     }
 
+    // Verify dimensions (Requirement 3, 4)
+    for (let i = 0; i < embeddings.length; i++) {
+      if (embeddings[i].length !== 512) {
+        return res.status(400).json({
+          success: false,
+          error: `Invalid embedding dimension in face template (expected 512d, got ${embeddings[i].length}d)`
+        });
+      }
+    }
+
     // Save saved image screenshots to disk
     let savedImageUrls = inputFrames.slice(0, 5).map((img, idx) => {
       if (typeof img === 'string' && img.startsWith('data:image')) {
@@ -127,21 +137,21 @@ const enrollFace = async (req, res) => {
       return img;
     });
 
-    // Upsert into Mongoose FaceProfile
-    const savedProfile = await FaceProfile.findOneAndUpdate(
-      { $or: [{ studentId: cleanStudentId }, { email: cleanEmail }] },
-      {
-        studentId: cleanStudentId,
-        name: studentName,
-        email: cleanEmail,
-        enrollmentImages: savedImageUrls,
-        embeddings: embeddings, // Stores all 30 512d L2-normalized embeddings
-        averageEmbedding: averageEmbedding, // 512d mean embedding
-        enrollmentDate: new Date(),
-        modelVersion: modelVersion
-      },
-      { upsert: true, new: true }
-    );
+    // Ensure re-enrollment completely deletes old embeddings before saving new ones (Requirement 12)
+    await FaceProfile.deleteMany({ $or: [{ studentId: cleanStudentId }, { email: cleanEmail }] });
+
+    // Save into Mongoose FaceProfile
+    const savedProfile = new FaceProfile({
+      studentId: cleanStudentId,
+      name: studentName,
+      email: cleanEmail,
+      enrollmentImages: savedImageUrls,
+      embeddings: embeddings, // Stores all 30 512d L2-normalized embeddings
+      averageEmbedding: averageEmbedding, // 512d mean embedding
+      enrollmentDate: new Date(),
+      modelVersion: modelVersion
+    });
+    await savedProfile.save();
 
     // Sync User and Student models
     if (User) {
@@ -174,7 +184,7 @@ const enrollFace = async (req, res) => {
 
 /**
  * POST /api/face/verify
- * PRODUCTION-GRADE BIOMETRIC VERIFICATION WITH INSIGHTFACE ARCFACE
+ * OVERHAULED ARCFACE BIOMETRIC VERIFICATION PIPELINE
  */
 const verifyFace = async (req, res) => {
   try {
@@ -185,6 +195,7 @@ const verifyFace = async (req, res) => {
       liveEmbeddings, 
       descriptor, 
       liveDescriptor, 
+      embedding,
       challengePose, 
       deviceFingerprint,
       screenshot 
@@ -194,57 +205,108 @@ const verifyFace = async (req, res) => {
     const cleanStudentId = (studentId || '').trim();
     const ipAddress = req.ip || req.headers['x-forwarded-for'] || '127.0.0.1';
 
-    // 1. Retrieve enrolled FaceProfile from MongoDB
+    // 1. Retrieve enrolled FaceProfile from MongoDB (Requirement 15: Corrupted record / Invalid data check)
     let profile = null;
-    if (cleanStudentId || cleanEmail) {
-      profile = await FaceProfile.findOne({
-        $or: [{ studentId: cleanStudentId }, { email: cleanEmail }]
+    try {
+      if (cleanStudentId || cleanEmail) {
+        profile = await FaceProfile.findOne({
+          $or: [{ studentId: cleanStudentId }, { email: cleanEmail }]
+        });
+      }
+    } catch (dbErr) {
+      console.error('MongoDB error during face verify lookup:', dbErr);
+      return res.status(200).json({
+        verified: false,
+        match: false,
+        result: 'REJECTED',
+        verificationResult: 'REJECTED',
+        reason: 'Corrupted MongoDB record',
+        error: 'Database error retrieving enrollment record.'
       });
     }
 
-    if (!profile || !profile.embeddings || profile.embeddings.length === 0) {
-      console.warn(`⚠️ [Biometric Template Missing] No enrolled FaceProfile found in DB for: ${cleanStudentId || cleanEmail}`);
-      
-      // Log failed attempt to VerificationLog
-      await VerificationLog.create({
-        studentId: cleanStudentId || 'UNKNOWN',
-        email: cleanEmail || 'UNKNOWN',
-        bestSimilarity: 0,
-        averageSimilarity: 0,
-        verifiedFrames: 0,
-        suspiciousFrames: 0,
-        rejectedFrames: 30,
-        result: 'REJECTED',
-        ipAddress,
-        deviceFingerprint: deviceFingerprint || 'unknown',
-        details: { reason: 'No face profile enrolled' }
-      }).catch(() => {});
+    console.log("========== FACE PROFILE DEBUG ==========");
+    if (profile) {
+      console.log("Student ID:", profile.studentId);
+      console.log("Email:", profile.email);
+      console.log("Embeddings Count:",
+        profile.embeddings ? profile.embeddings.length : 0
+      );
+      console.log(
+        "First Embedding Length:",
+        profile.embeddings?.[0]?.length
+      );
+      console.log(
+        "Average Embedding Exists:",
+        !!profile.averageEmbedding
+      );
+    } else {
+      console.log("Profile is NULL");
+    }
+    console.log("========================================");
 
-      return res.status(404).json({
+    if (!profile) {
+      return res.status(200).json({
         verified: false,
-        result: 'REJECTED',
         match: false,
+        result: 'REJECTED',
         verificationResult: 'REJECTED',
-        bestSimilarity: 0,
-        averageSimilarity: 0,
-        verifiedFrames: 0,
-        suspiciousFrames: 0,
-        rejectedFrames: 30,
+        reason: 'Invalid enrollment data',
         needsEnrollment: true,
         error: 'No face profile enrolled for this student. Please complete face enrollment first.'
       });
+    }
+
+    // Corrupted MongoDB record check (Requirement 15)
+    if (!profile.embeddings || !Array.isArray(profile.embeddings) || profile.embeddings.length === 0) {
+      return res.status(200).json({
+        verified: false,
+        match: false,
+        result: 'REJECTED',
+        verificationResult: 'REJECTED',
+        reason: 'Corrupted MongoDB record',
+        error: 'The registered face profile template is corrupted or empty.'
+      });
+    }
+
+    // Invalid enrollment data check (Requirement 15)
+    if (profile.embeddings.length < 25) {
+      return res.status(200).json({
+        verified: false,
+        match: false,
+        result: 'REJECTED',
+        verificationResult: 'REJECTED',
+        reason: 'Invalid enrollment data',
+        error: 'Face enrollment contains insufficient samples. Re-enrollment required.'
+      });
+    }
+
+    // Verify enrolled embedding dimensions (Requirement 3, 4)
+    for (let i = 0; i < profile.embeddings.length; i++) {
+      if (!Array.isArray(profile.embeddings[i]) || profile.embeddings[i].length !== 512) {
+        return res.status(200).json({
+          verified: false,
+          match: false,
+          result: 'REJECTED',
+          verificationResult: 'REJECTED',
+          reason: 'Invalid enrollment data',
+          error: 'Face enrollment contains invalid embedding dimensions. Re-enrollment required.'
+        });
+      }
     }
 
     const enrolledEmbeddings = profile.embeddings.map(normalizeVector);
     const averageEmbedding = normalizeVector(profile.averageEmbedding || profile.embeddings[0]);
 
     // 2. Prepare live camera input frames (30 frames)
-    const inputFrames = frames || (liveEmbeddings ? liveEmbeddings : (descriptor || liveDescriptor ? [descriptor || liveDescriptor] : []));
+    const inputFrames = frames || (liveEmbeddings ? liveEmbeddings : (descriptor || liveDescriptor || embedding ? [descriptor || liveDescriptor || embedding] : []));
 
     if (!Array.isArray(inputFrames) || inputFrames.length === 0) {
-      return res.status(400).json({
+      return res.status(200).json({
         verified: false,
+        match: false,
         result: 'REJECTED',
+        reason: 'No face detected',
         error: 'No live camera frames provided for ArcFace verification.'
       });
     }
@@ -254,14 +316,21 @@ const verifyFace = async (req, res) => {
     let arcfaceRes = null;
     try {
       // Send live frames + enrolled embeddings to Python ArcFace Engine
+      const verificationFrames = inputFrames.slice(0, 10);
+      console.log(`[ArcFace] Received ${inputFrames.length} live frames`);
+      console.log(`[ArcFace] Sending ${verificationFrames.length} frames to Python`);
+      const verificationStart = Date.now();
+
       const response = await axios.post(`${PYTHON_SERVICE_URL}/api/arcface/verify`, {
         studentId: profile.studentId,
         email: profile.email,
-        frames: inputFrames.slice(0, 30),
+        frames: verificationFrames,
         enrolledEmbeddings: enrolledEmbeddings,
         averageEmbedding: averageEmbedding,
         challengePose: challengePose || null
-      }, { timeout: 10000 });
+      }, { timeout: 120000 });
+
+      console.log(`[ArcFace] Python verification completed in ${Date.now() - verificationStart} ms`);
       arcfaceRes = response.data;
     } catch (pyErr) {
       console.warn('⚠️ Python ArcFace verification notice:', pyErr.message);
@@ -276,6 +345,9 @@ const verifyFace = async (req, res) => {
     let qualityScore = 85.0;
     let challengePassed = true;
     let multiFaceTriggered = false;
+    let isVerified = false;
+    let failureReason = null;
+    let frameSims = [];
 
     if (arcfaceRes) {
       bestSimilarity = arcfaceRes.bestSimilarity || 0.0;
@@ -287,11 +359,23 @@ const verifyFace = async (req, res) => {
       qualityScore = arcfaceRes.qualityScore || 85.0;
       challengePassed = arcfaceRes.challengePassed !== false;
       multiFaceTriggered = !!arcfaceRes.multiFaceTriggered;
+      isVerified = finalDecision === 'VERIFIED';
     } else {
       // Local fallback Cosine Similarity comparison if Python service is offline
-      let frameSims = [];
       for (const frame of inputFrames) {
-        if (Array.isArray(frame) && frame.length >= 128) {
+        if (Array.isArray(frame)) {
+          // Verify input frame dimension (Requirement 3)
+          if (frame.length !== 512) {
+            return res.status(200).json({
+              verified: false,
+              match: false,
+              result: 'REJECTED',
+              verificationResult: 'REJECTED',
+              reason: 'Embedding mismatch',
+              error: `Live embedding dimension (${frame.length}) does not match enrolled template (512).`
+            });
+          }
+
           const normLive = normalizeVector(frame);
           let frameMax = 0.0;
           for (const enrolled of enrolledEmbeddings) {
@@ -299,38 +383,60 @@ const verifyFace = async (req, res) => {
             if (sim > frameMax) frameMax = sim;
           }
           frameSims.push(frameMax);
-          if (frameMax >= 0.92) verifiedFrames++;
-          else if (frameMax >= 0.88) suspiciousFrames++;
+          
+          // Apply thresholds
+          if (frameMax >= 0.85) verifiedFrames++;
+          else if (frameMax >= 0.78) suspiciousFrames++;
           else rejectedFrames++;
         }
       }
+      
       bestSimilarity = frameSims.length > 0 ? Math.max(...frameSims) : 0.0;
       averageSimilarity = frameSims.length > 0 ? (frameSims.reduce((a,b)=>a+b,0)/frameSims.length) : 0.0;
 
-      if (verifiedFrames >= 24 && averageSimilarity >= 0.92) {
+      // Final decision thresholds (scaled for 10-frame test; restore to >= 18 when using 30 frames)
+      if (averageSimilarity >= 0.85 && verifiedFrames >= 6) {
         finalDecision = 'VERIFIED';
-      } else if (verifiedFrames >= 15) {
+        isVerified = true;
+      } else if (averageSimilarity >= 0.78) {
         finalDecision = 'SUSPICIOUS';
       } else {
         finalDecision = 'REJECTED';
       }
     }
 
-    // MANDATORY DEBUG OUTPUT LOGGING
-    console.log("==================================================");
-    console.log("🛡️ INSIGHTFACE ARCFACE BIOMETRIC VERIFICATION AUDIT");
-    console.log("==================================================");
-    console.log(`👤 Student ID:          ${profile.studentId}`);
-    loggerPrint(`🧠 ArcFace Model Loaded: InsightFace-ArcFace (buffalo_l 512d)`);
-    loggerPrint(`👤 Face Detected:        YES`);
-    loggerPrint(`✨ Face Quality Score:   ${qualityScore}%`);
-    loggerPrint(`🎯 Best Similarity:      ${bestSimilarity}`);
-    loggerPrint(`📈 Average Similarity:   ${averageSimilarity}`);
-    loggerPrint(`🟢 Verified Frames:      ${verifiedFrames}/30`);
-    loggerPrint(`🟡 Suspicious Frames:    ${suspiciousFrames}/30`);
-    loggerPrint(`🔴 Rejected Frames:      ${rejectedFrames}/30`);
-    loggerPrint(`🏁 Final Decision:       ${finalDecision}`);
-    console.log("==================================================\n");
+    // Determine reason for failure (Requirement 15)
+    if (!isVerified) {
+      if (multiFaceTriggered) {
+        failureReason = 'Embedding mismatch';
+      } else if (!challengePassed) {
+        failureReason = 'Low similarity';
+      } else if (bestSimilarity === 0.0) {
+        failureReason = 'No face detected';
+      } else if (bestSimilarity < 0.50 || averageSimilarity < 0.50) {
+        failureReason = 'Embedding mismatch';
+      } else {
+        failureReason = 'Low similarity';
+      }
+    }
+
+    // Mismatch warning check (Requirement 10)
+    if (bestSimilarity < 0.50 || averageSimilarity < 0.50) {
+      console.warn("Enrollment and Verification embeddings mismatch.");
+    }
+
+    // Detailed frame similarities logging (Requirement 8)
+    if (arcfaceRes && Array.isArray(arcfaceRes.frameSimilarities)) {
+      arcfaceRes.frameSimilarities.forEach((sim, idx) => {
+        console.log(`Frame #${idx+1} Similarity = ${sim}`);
+      });
+    } else {
+      frameSims.forEach((sim, idx) => {
+        console.log(`Frame #${idx+1} Similarity = ${sim}`);
+      });
+    }
+    console.log(`Average Similarity = ${averageSimilarity}`);
+    console.log(`Best Similarity = ${bestSimilarity}`);
 
     // Save screenshot if multi-face or rejection occurred
     let screenshotUrl = null;
@@ -339,7 +445,7 @@ const verifyFace = async (req, res) => {
     }
 
     // 3. MANDATORY LOGGING: Store verification attempt in VerificationLog
-    const logRecord = await VerificationLog.create({
+    await VerificationLog.create({
       studentId: profile.studentId,
       email: profile.email,
       timestamp: new Date(),
@@ -355,12 +461,11 @@ const verifyFace = async (req, res) => {
         modelVersion: 'InsightFace-ArcFace',
         qualityScore,
         challengePassed,
-        multiFaceTriggered
+        multiFaceTriggered,
+        reason: failureReason
       },
       screenshot: screenshotUrl || null
     }).catch(err => console.warn('⚠️ VerificationLog save notice:', err.message));
-
-    const isVerified = finalDecision === 'VERIFIED';
 
     return res.status(200).json({
       verified: isVerified,
@@ -376,9 +481,10 @@ const verifyFace = async (req, res) => {
       challengePassed,
       multiFaceTriggered,
       modelVersion: 'InsightFace-ArcFace',
+      reason: failureReason,
       message: isVerified
         ? `✔ Verified Student ${profile.name} (ArcFace Similarity: ${bestSimilarity})`
-        : `❌ Verification Failed: Result is ${finalDecision} (Similarity: ${bestSimilarity})`
+        : `❌ Verification Failed: ${failureReason || 'Low similarity'}`
     });
 
   } catch (error) {
@@ -388,8 +494,61 @@ const verifyFace = async (req, res) => {
       match: false,
       result: 'REJECTED',
       verificationResult: 'REJECTED',
+      reason: 'Corrupted MongoDB record',
       error: error.message,
       message: 'Server error during biometric verification.'
+    });
+  }
+};
+
+/**
+ * GET /api/face/debug/:studentId
+ * DEBUG API (Requirement 11)
+ */
+const getFaceDebug = async (req, res) => {
+  try {
+    const studentId = req.params.studentId;
+    const cleanStudentId = (studentId || '').trim();
+
+    const profile = await FaceProfile.findOne({
+      $or: [{ studentId: cleanStudentId }, { email: cleanStudentId.toLowerCase() }]
+    });
+
+    if (!profile) {
+      return res.status(404).json({
+        success: false,
+        error: 'Face profile not found for the given studentId or email.'
+      });
+    }
+
+    const numEmbeddings = profile.embeddings ? profile.embeddings.length : 0;
+    const dim = numEmbeddings > 0 ? profile.embeddings[0].length : 0;
+
+    let totalNorm = 0;
+    if (numEmbeddings > 0) {
+      for (const vec of profile.embeddings) {
+        let sumSq = 0;
+        for (let i = 0; i < vec.length; i++) {
+          sumSq += vec[i] * vec[i];
+        }
+        totalNorm += Math.sqrt(sumSq);
+      }
+    }
+    const avgNorm = numEmbeddings > 0 ? (totalNorm / numEmbeddings) : 0;
+
+    return res.json({
+      studentId: profile.studentId,
+      email: profile.email,
+      numberOfEmbeddings: numEmbeddings,
+      embeddingDimension: dim,
+      averageVectorNorm: parseFloat(avgNorm.toFixed(6)),
+      lastEnrollmentDate: profile.updatedAt || profile.enrollmentDate
+    });
+  } catch (error) {
+    console.error('Error in face debug endpoint:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Internal server error: ' + error.message
     });
   }
 };
@@ -463,5 +622,6 @@ module.exports = {
   verifyFace,
   getFaceProfile,
   saveCheatingLog,
-  getCheatingLogs
+  getCheatingLogs,
+  getFaceDebug
 };

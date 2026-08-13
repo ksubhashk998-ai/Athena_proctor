@@ -5,7 +5,8 @@ const {
   verifyFace, 
   getFaceProfile, 
   saveCheatingLog, 
-  getCheatingLogs 
+  getCheatingLogs,
+  getFaceDebug 
 } = require('../controllers/faceController');
 
 
@@ -22,6 +23,10 @@ router.post('/face/verify', verifyFace);
 // GET /api/face/profile/:id
 router.get('/profile/:id', getFaceProfile);
 router.get('/face/profile/:id', getFaceProfile);
+
+// GET /api/face/debug/:studentId
+router.get('/debug/:studentId', getFaceDebug);
+router.get('/face/debug/:studentId', getFaceDebug);
 
 // GET /api/face/logs
 router.get('/logs', getCheatingLogs);

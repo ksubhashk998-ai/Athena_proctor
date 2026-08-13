@@ -11,7 +11,7 @@ import {
 } from '../services/faceVerificationService';
 import { getApiBaseUrl } from '../utils/config';
 
-const TARGET_SAMPLES = 25; // 20-30 face samples
+const TARGET_SAMPLES = 30;
 
 export default function Register() {
   const navigate = useNavigate();
@@ -205,14 +205,10 @@ export default function Register() {
         const detections = [{ detection: validBoxes[0], landmarks, descriptor }];
 
 
-        // Requirement 2 & 9: Exactly one face visible
-
-        console.log('Face detected');
         const singleDet = detections[0];
-        const embedding = Array.from(singleDet.descriptor); // Requirement 5: Float32Array[128]
-        console.log('Embedding generated');
+        const embedding = Array.from(singleDet.descriptor);
+        console.log('Embedding generated for duplicate checking');
 
-        // Requirement 4: Duplicate Prevention (500ms elapsed & similarity check)
         const now = Date.now();
         if (now - lastCaptureTimeRef.current < 400) {
           return;
@@ -221,13 +217,19 @@ export default function Register() {
         if (lastEmbeddingRef.current) {
           const sim = cosineSimilarity(embedding, lastEmbeddingRef.current);
           if (sim > 0.998) {
-            // Frame is identical static clone, skip duplicate
             return;
           }
         }
 
-        // Requirement 3, 5, & 9: Save sample & log progress
-        samplesRef.current.push(embedding);
+        // Draw webcam frame to canvas and get base64 representation
+        const canvas = document.createElement('canvas');
+        canvas.width = 320;
+        canvas.height = 240;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(v, 0, 0, 320, 240);
+        const b64 = canvas.toDataURL('image/jpeg', 0.65);
+
+        samplesRef.current.push(b64);
         lastEmbeddingRef.current = embedding;
         lastCaptureTimeRef.current = now;
 
@@ -239,7 +241,6 @@ export default function Register() {
         const metrics = evaluateFrameMetrics(v, singleDet);
         setTelemetry(metrics);
 
-        // Requirement 6 & 9: Completion after 25 samples
         if (count >= TARGET_SAMPLES) {
           if (captureIntervalRef.current) {
             clearInterval(captureIntervalRef.current);
@@ -254,38 +255,39 @@ export default function Register() {
     }, 500);
   };
 
-  // Requirement 6: Finalize Enrollment & Enable Register Button
-  const finalizeEnrollment = (samples) => {
-    setStatusMsg('⚙️ Averaging embeddings into master profile...');
-    const avgVec = computeAverageEmbedding(samples);
+  const finalizeEnrollment = async (frames) => {
+    setStatusMsg('⚙️ Processing InsightFace ArcFace 512d Enrollment in Backend...');
+    try {
+      const apiBase = getApiBaseUrl();
+      const response = await fetch(`${apiBase}/api/face/enroll`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: formData.email,
+          studentId: 'STU_' + formData.email.trim().toLowerCase().replace(/[^a-z0-9]/g, '_'),
+          name: `${formData.firstName} ${formData.lastName}`,
+          frames: frames
+        })
+      });
 
-    if (!avgVec || avgVec.length !== 128) {
+      const data = await response.json();
+
+      if (response.ok && data.success && data.averageEmbedding) {
+        setEnrolledEmbedding(data.averageEmbedding);
+        setEnrolledSnapshot(frames[0]);
+        setEnrollStatus('success');
+        setStatusMsg('Face Enrollment Successful');
+        setStep(3);
+      } else {
+        setEnrollStatus('error');
+        setStatusMsg(`❌ Enrollment Rejected: ${data.error || 'Biometric validation failed.'}`);
+      }
+    } catch (err) {
+      console.error('ArcFace Enrollment error:', err);
       setEnrollStatus('error');
-      setStatusMsg('❌ Failed to calculate master face embedding profile. Please retry.');
-      return;
+      setStatusMsg('❌ Server connection error during ArcFace enrollment.');
     }
-
-    // Capture base64 snapshot image for admin reference
-    const video = webcamRef.current?.video;
-    let snapshot = null;
-    if (video) {
-      try {
-        const canvas = document.createElement('canvas');
-        canvas.width = video.videoWidth || 640;
-        canvas.height = video.videoHeight || 480;
-        canvas.getContext('2d').drawImage(video, 0, 0);
-        snapshot = canvas.toDataURL('image/jpeg', 0.5);
-      } catch (e) {}
-    }
-
-    setEnrolledEmbedding(avgVec);
-    setEnrolledSnapshot(snapshot);
-    setEnrollStatus('success');
-    setStatusMsg('Face Enrollment Successful');
-    setStep(3); // Advances to Step 3 and enables Register button!
   };
-
-  // Requirement 8: Handle MongoDB Registration Submit
   const handleRegisterSubmit = async (e) => {
     if (e && e.preventDefault) e.preventDefault();
 
@@ -532,7 +534,7 @@ export default function Register() {
               <div>
                 <h3 style={{ margin: 0, color: '#10b981' }}>Face Enrolled Successfully!</h3>
                 <p style={{ margin: '4px 0 0 0', fontSize: '13px', color: '#94a3b8' }}>
-                  Biometric 128-d face embedding computed & verified.
+                  Biometric ArcFace 512-d face embedding computed & verified.
                 </p>
               </div>
             </div>

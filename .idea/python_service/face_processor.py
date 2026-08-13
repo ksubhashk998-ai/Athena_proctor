@@ -2,7 +2,6 @@ import cv2
 import numpy as np
 import base64
 from deepface import DeepFace
-from deepface.basemodels import ArcFace
 import tempfile
 import os
 from datetime import datetime

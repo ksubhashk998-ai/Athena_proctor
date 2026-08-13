@@ -623,6 +623,7 @@ const faceController = require('../controllers/faceController');
 router.post('/face/enroll', faceController.enrollFace);
 router.post('/face/verify', faceController.verifyFace);
 router.post('/verify-face', faceController.verifyFace);
+router.get('/face/debug/:studentId', faceController.getFaceDebug);
 
 /**
  * DELETE /api/face/enrollment/:studentId

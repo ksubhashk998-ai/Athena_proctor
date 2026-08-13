@@ -405,11 +405,13 @@ function Login() {
 
   const handleVerifyFace = async () => {
     if (!webcamRef.current) return;
+    // Guard: prevent concurrent verification requests
+    if (faceVerifying) return;
     setFaceVerifying(true);
     setFaceStatusMsg("🔄 Initializing Biometric Face Verification...");
 
-    const TOTAL_LOGIN_FRAMES = 20;
-    const REQUIRED_PASSED_FRAMES = 8;
+    const TOTAL_LOGIN_FRAMES = 10;
+    const FRAME_INTERVAL_MS = 175;
 
     try {
       const video = webcamRef.current.video;
@@ -421,111 +423,81 @@ function Login() {
 
       const activeStudent = tempStudent || { studentId: 'STU_' + Date.now(), name: 'Student', email: 'student@proctor.com' };
       const activeToken = tempToken || "jwt_token_" + Date.now();
+      const apiBase = getApiBaseUrl();
 
-      let localEnrolledEmbedding = null;
-      try {
-        const storedKey = `student_${(activeStudent.email || '').trim().toLowerCase()}`;
-        const stored = localStorage.getItem(storedKey);
-        if (stored) {
-          const parsed = JSON.parse(stored);
-          if (Array.isArray(parsed)) {
-            localEnrolledEmbedding = parsed;
-          } else if (parsed && (parsed.email === activeStudent.email || parsed.studentId === activeStudent.studentId)) {
-            localEnrolledEmbedding = parsed.faceEmbeddings || parsed.embeddings || parsed.embedding;
-          }
-        }
-      } catch (e) {}
+      // === PHASE 1: Capture frames only — ZERO API calls inside this loop ===
+      const capturedFrames = [];
+      console.log(`[FaceVerify] Capturing ${TOTAL_LOGIN_FRAMES} frames...`);
 
-      let passedCount = 0;
-      let totalSimilaritySum = 0;
-      let validCapturedFrames = 0;
-      let backendResponded = false;
+      for (let frameIndex = 0; frameIndex < TOTAL_LOGIN_FRAMES; frameIndex++) {
+        setFaceStatusMsg(`⚙️ Analyzing biometric data... ${frameIndex + 1}/${TOTAL_LOGIN_FRAMES}`);
 
-      for (let frame = 0; frame < TOTAL_LOGIN_FRAMES; frame++) {
-        let descriptor = null;
+        let b64Frame = null;
         try {
-          descriptor = await captureFaceDescriptor(video);
+          const canvas = document.createElement('canvas');
+          canvas.width = 640;
+          canvas.height = 480;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(video, 0, 0, 640, 480);
+          b64Frame = canvas.toDataURL('image/jpeg', 0.7);
         } catch (err) {
           console.warn("Frame capture error:", err);
         }
 
-        if (descriptor) {
-          validCapturedFrames++;
-          let matchedThisFrame = false;
-          let simVal = 0.85;
-
-          // 1. Try Backend Verification (Authoritative Security Gate)
-          try {
-            const apiBase = getApiBaseUrl();
-            const res = await axios.post(`${apiBase}/api/face/verify`, {
-              studentId: activeStudent.studentId,
-              email: activeStudent.email,
-              embedding: Array.from(descriptor)
-            }, {
-              headers: { Authorization: `Bearer ${activeToken}` },
-              timeout: 3000
-            });
-
-            const data = res.data;
-            backendResponded = true;
-
-            if (data.needsEnrollment) {
-              setFaceStatusMsg("⚠️ Embeddings missing: No face template registered for this student. Redirecting to Face Enrollment...");
-              setTimeout(() => setVerificationStep("no_face_prompt"), 1200);
-              setFaceVerifying(false);
-              return;
-            }
-
-            if (data.match === true && data.verificationResult === 'VERIFIED') {
-              matchedThisFrame = true;
-              simVal = data.similarityScore || data.confidence || 0.85;
-            } else {
-              matchedThisFrame = false; // Backend explicitly rejected match!
-            }
-          } catch (e) {
-
-            const cause = e.response?.data?.errorCause || (e.code === 'ECONNABORTED' ? 'Network timeout' : 'API not reachable');
-            console.warn(`Frame ${frame + 1} backend verify notice (${cause}):`, e.message);
-          }
-
-          // 2. Local Embedding Fallback ONLY if backend was unreachable AND template belongs strictly to active user email
-          if (!backendResponded && !matchedThisFrame && localEnrolledEmbedding) {
-            const cmp = compareDescriptors(Array.from(descriptor), localEnrolledEmbedding, 0.80);
-            if (cmp.match && cmp.similarity >= 0.80) {
-              matchedThisFrame = true;
-              simVal = cmp.similarity;
-            }
-          }
-
-          if (matchedThisFrame) {
-            passedCount++;
-            totalSimilaritySum += simVal;
-          }
+        if (b64Frame) {
+          capturedFrames.push(b64Frame);
         }
 
-
-        const pct = Math.round(((frame + 1) / TOTAL_LOGIN_FRAMES) * 100);
-        setFaceStatusMsg(`🔍 Biometric Audit: Frame ${frame + 1}/${TOTAL_LOGIN_FRAMES} (${pct}%) — ${passedCount}/${REQUIRED_PASSED_FRAMES} passed`);
-        await new Promise(r => setTimeout(r, 90));
+        await new Promise(r => setTimeout(r, FRAME_INTERVAL_MS));
       }
 
-      const averageSimilarityPct = validCapturedFrames > 0
-        ? Math.round((totalSimilaritySum / Math.max(1, passedCount)) * 100)
-        : 0;
+      if (capturedFrames.length < 5) {
+        setFaceStatusMsg("🔴 Verification failed: Insufficient face frames captured. Please ensure good lighting.");
+        setFaceVerifying(false);
+        return;
+      }
 
-      console.log(`🔐 Login Verification Result: ${passedCount}/${TOTAL_LOGIN_FRAMES} frames passed (Required: ${REQUIRED_PASSED_FRAMES}), Valid Frames: ${validCapturedFrames}, Avg Sim: ${averageSimilarityPct}%`);
+      // === PHASE 2: ONE single final verification request ===
+      console.log(`[FaceVerify] Sending ${capturedFrames.length} frames to backend...`);
+      setFaceStatusMsg("⚙️ Processing biometric data, please wait...");
 
-      if (passedCount >= REQUIRED_PASSED_FRAMES) {
+      const finalRes = await axios.post(`${apiBase}/api/face/verify`, {
+        studentId: activeStudent.studentId,
+        email: activeStudent.email,
+        frames: capturedFrames
+      }, {
+        headers: { Authorization: `Bearer ${activeToken}` },
+        timeout: 90000  // 90 seconds max — timeout with clear user message
+      });
+
+      console.log('[FaceVerify] Backend response received');
+      const data = finalRes.data;
+
+      if (data.needsEnrollment) {
+        setFaceStatusMsg("⚠️ Biometric template missing: Redirecting to Face Enrollment...");
+        setTimeout(() => setVerificationStep("no_face_prompt"), 1200);
+        setFaceVerifying(false);
+        return;
+      }
+
+      if (data.verified) {
         setFaceStatusMsg(`✅ Verified Student - ${activeStudent.fullName || activeStudent.name || 'Student'}`);
         setTimeout(() => {
           completeLogin(activeToken, activeStudent);
         }, 1000);
       } else {
-        setFaceStatusMsg("🔴 Face does not match the registered student. Position face clearly in camera.");
+        const reason = data.reason || 'Low similarity';
+        setFaceStatusMsg(`🔴 Face verification failed: ${reason}. Please position face clearly and retry.`);
       }
+
     } catch (e) {
       console.error("Face verification error:", e);
-      setFaceStatusMsg("🔴 Verification error. Please face camera clearly and retry.");
+      if (e.code === 'ECONNABORTED' || e.message?.includes('timeout')) {
+        setFaceStatusMsg("🔴 Face verification timed out. Please try again.");
+      } else {
+        const serverReason = e.response?.data?.reason || e.response?.data?.error || "Server connection error";
+        setFaceStatusMsg(`🔴 Verification failed: ${serverReason}. Please retry.`);
+      }
     } finally {
       setFaceVerifying(false);
     }
@@ -1197,7 +1169,7 @@ function Login() {
                 disabled={faceVerifying}
                 style={{ ...styles.loginButton, flex: 2 }}
               >
-                {faceVerifying ? "Verifying Live 30-Frame ArcFace..." : "📸 Verify Face"}
+                {faceVerifying ? "Verifying 10-Frame ArcFace..." : "📸 Verify Face"}
               </button>
 
               <button

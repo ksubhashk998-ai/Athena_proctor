@@ -139,6 +139,7 @@ function ExamBlockerModal({ onStartExam }) {
       const similarityPct = result ? Math.round((result.similarityScore || result.similarity || 0.88) * 100) : 88;
 
       if (isMatch) {
+        localStorage.setItem("faceVerified", "true");
         setVerificationStepMsg('✅ Step 6/6: Identity Verification Complete!');
         setFaceVerifyState({
           status: 'verified',
@@ -211,8 +212,17 @@ function ExamBlockerModal({ onStartExam }) {
     }
   };
 
-  // Requirement 5: Final Verification on "Start Exam" Click
+  // Fix 4 & Requirement 6 & 7: Do Not Verify Again When Starting Exam
   const handleStartExamClick = async () => {
+    const alreadyVerified = localStorage.getItem("faceVerified") === "true" || faceVerifyState.status === 'verified';
+    if (alreadyVerified) {
+      console.log("Face already verified");
+      console.log("Verification skipped");
+      console.log("Navigating directly to exam");
+      if (onStartExam) onStartExam();
+      return;
+    }
+
     const video = videoRef.current;
     if (!video) {
       if (onStartExam) onStartExam();
@@ -224,7 +234,10 @@ function ExamBlockerModal({ onStartExam }) {
     const { studentId, token } = getAuthDetails();
 
     try {
-      await verifyFaceAgainstBackend(video, studentId, token).catch(() => {});
+      const res = await verifyFaceAgainstBackend(video, studentId, token).catch(() => {});
+      if (res && (res.match || res.verificationResult === 'VERIFIED')) {
+        localStorage.setItem("faceVerified", "true");
+      }
       setIsFinalVerifying(false);
       if (onStartExam) onStartExam();
     } catch (e) {

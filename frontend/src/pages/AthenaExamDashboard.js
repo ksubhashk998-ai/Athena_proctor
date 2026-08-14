@@ -226,7 +226,7 @@ function AthenaExamDashboard() {
             });
 
             if (nextFailures > 3) {
-              handleAutoTermination(video, studentId, fullName, email, 'Face Mismatch - Candidate Absent / No Face Detected');
+              recordViolation(`⚠️ WARNING: Candidate Absent / No Face Detected for ${nextFailures} checks`);
             }
             return nextFailures;
           });
@@ -283,32 +283,30 @@ function AthenaExamDashboard() {
           // Mismatch detected!
           setConsecutiveIdentityFailures(prev => {
             const nextFailures = prev + 1;
-            console.warn(`🔴 Face Verification Mismatch (${data.similarityPct}% match). Consecutive failures: ${nextFailures}/3`);
+            console.warn(`🔴 Face Verification Mismatch (${data.similarityPct}% match). Consecutive failures: ${nextFailures}`);
 
             setIdentityVerification({
               isVerified: false,
-              studentName: '', // Student name disappears while mismatched!
+              studentName: '⚠️ Face Mismatch Warning',
               confidence: data.similarityPct || 0,
-              status: 'Unknown Person Detected'
+              status: '⚠️ Warning: Face Mismatch'
             });
 
             const socket = getSocket();
             if (socket) {
               socket.emit('telemetry-update', {
                 studentId,
-                studentName: 'Unknown Person Detected',
+                studentName: 'Warning: Face Mismatch',
                 email,
-                identityStatus: 'Identity Failed',
+                identityStatus: 'Identity Mismatch Warning',
                 confidence: data.similarityPct || 0,
-                examStatus: 'Identity Failed',
+                examStatus: 'Warning',
                 faceDetected: false
               });
             }
 
-            // Requirement 7: If match fails for > 3 consecutive checks (4 failures), auto terminate
-            if (nextFailures > 3) {
-              handleAutoTermination(video, studentId, fullName, email, 'Face Mismatch - Live face does not match registered student');
-            }
+            // Issue proctoring warning log instead of terminating exam
+            recordViolation(`⚠️ WARNING: Face Verification Mismatch (${data.similarityPct}% match - Warning #${nextFailures})`);
             return nextFailures;
           });
         }

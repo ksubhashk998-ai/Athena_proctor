@@ -125,6 +125,7 @@ export default function FaceEnrollment({ studentId, name, email, token, onEnroll
       const data = await response.json();
 
       if (response.ok && data.success) {
+        localStorage.setItem("faceVerified", "true");
         setStatus('success');
         setStatusMsg('✅ Enrollment successful — 30 valid face samples captured.');
         setTimeout(() => {

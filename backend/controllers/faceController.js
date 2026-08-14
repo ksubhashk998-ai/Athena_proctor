@@ -131,10 +131,10 @@ const enrollFace = async (req, res) => {
       });
     }
 
-    if (embeddings.length < 10) {
+    if (embeddings.length < 20) {
       return res.status(400).json({
         success: false,
-        error: `Enrollment requires at least 10 high-quality valid face samples. Only ${embeddings.length} valid samples were generated.`
+        error: `Enrollment requires at least 20 valid high-quality face samples. Only ${embeddings.length} valid samples were generated.`
       });
     }
 
@@ -314,7 +314,7 @@ const verifyFace = async (req, res) => {
     console.log(`🔍 [ArcFace Verification] Verifying ${inputFrames.length} frames for student: ${cleanStudentId || cleanEmail} against ${enrolledEmbeddings.length} enrolled 512d embeddings...`);
 
     let arcfaceRes = null;
-    const verificationFrames = Array.isArray(inputFrames) ? inputFrames.slice(0, 10) : [];
+    const verificationFrames = Array.isArray(inputFrames) ? inputFrames.slice(0, 25) : [];
 
     try {
       const response = await axios.post(`${PYTHON_SERVICE_URL}/api/arcface/verify`, {
@@ -345,12 +345,12 @@ const verifyFace = async (req, res) => {
 
     if (arcfaceRes) {
       bestSimilarity = typeof arcfaceRes.bestSimilarity === 'number' && !isNaN(arcfaceRes.bestSimilarity) ? arcfaceRes.bestSimilarity : 0.0;
-      averageSimilarity = typeof arcfaceRes.averageSimilarity === 'number' && !isNaN(arcfaceRes.averageSimilarity) ? averageSimilarity : 0.0;
+      averageSimilarity = typeof arcfaceRes.averageSimilarity === 'number' && !isNaN(arcfaceRes.averageSimilarity) ? arcfaceRes.averageSimilarity : 0.0;
       verifiedFrames = typeof arcfaceRes.verifiedFrames === 'number' && !isNaN(arcfaceRes.verifiedFrames) ? arcfaceRes.verifiedFrames : 0;
       suspiciousFrames = typeof arcfaceRes.suspiciousFrames === 'number' && !isNaN(arcfaceRes.suspiciousFrames) ? arcfaceRes.suspiciousFrames : 0;
       rejectedFrames = typeof arcfaceRes.rejectedFrames === 'number' && !isNaN(arcfaceRes.rejectedFrames) ? arcfaceRes.rejectedFrames : 0;
-      finalDecision = arcfaceRes.result || arcfaceRes.finalDecision || 'REJECTED';
-      isVerified = finalDecision === 'VERIFIED' || finalDecision === 'verified';
+      finalDecision = (arcfaceRes.finalDecision || arcfaceRes.result || 'REJECTED').toUpperCase();
+      isVerified = finalDecision === 'VERIFIED';
     }
 
     const result = isVerified ? "VERIFIED" : (finalDecision === 'SUSPICIOUS' ? "SUSPICIOUS" : "REJECTED");

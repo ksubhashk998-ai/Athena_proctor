@@ -3,14 +3,10 @@ const webpack = require('webpack');
 
 module.exports = {
   webpack: function override(config, env) {
-    // Enable Webpack 5 persistent filesystem cache for ultrafast startup
+    // Optimize Webpack compilation speed in development (avoid OneDrive file locks)
     if (env === 'development') {
-      config.cache = {
-        type: 'filesystem',
-        buildDependencies: {
-          config: [__filename],
-        },
-      };
+      config.cache = { type: 'memory' };
+      config.devtool = 'eval-cheap-module-source-map';
     }
 
     // Add fallbacks for Node.js core modules in Webpack 5

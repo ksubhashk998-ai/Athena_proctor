@@ -131,10 +131,10 @@ const enrollFace = async (req, res) => {
       });
     }
 
-    if (embeddings.length < 20) {
+    if (embeddings.length < 10) {
       return res.status(400).json({
         success: false,
-        error: `Enrollment requires at least 20 valid face samples. Only ${embeddings.length} valid samples were generated.`
+        error: `Enrollment requires at least 10 high-quality valid face samples. Only ${embeddings.length} valid samples were generated.`
       });
     }
 

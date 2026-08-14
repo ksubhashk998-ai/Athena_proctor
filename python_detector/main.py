@@ -294,11 +294,11 @@ def startup_event():
 def arcface_enroll(request: ArcFaceEnrollRequest):
     """
     Enroll student with InsightFace ArcFace (buffalo_l):
-    - Processes 30 pose frames
-    - Validates quality score (>=60%), blur, brightness, resolution (>=160x160), single face
-    - Extracts 512-dimensional L2-normalized embeddings
-    - Computes average embedding vector
-    - Requires at least 20 valid samples to complete enrollment
+    - Receives submitted frames (up to 30 frames)
+    - Performs cheap pre-checks (single face, blur, brightness, resolution, centering)
+    - Ranks frames by quality score and selects top 15-20 highest-quality face samples
+    - Extracts 512-dimensional L2-normalized embeddings on selected top frames
+    - Computes average 512d embedding vector
     """
     print("[PYTHON] Enrollment request received")
     print(f"[PYTHON] Received frames: {len(request.frames)}")
@@ -308,23 +308,22 @@ def arcface_enroll(request: ArcFaceEnrollRequest):
     if app_face is None:
         raise HTTPException(status_code=503, detail="InsightFace ArcFace (buffalo_l) engine not available.")
     
-    print("[PYTHON] ArcFace model ready")
     start = time.time()
-    embeddings = []
-    quality_scores = []
+    candidates = []
     rejected_reasons = []
     
-    # Fast CPU Optimization: Sample 10 representative key pose frames from the 30 submitted
-    frames_to_process = request.frames[::3][:10] if len(request.frames) >= 20 else request.frames[:10]
-    logger.info(f"⚡ Fast-track processing {len(frames_to_process)} key pose frames for student: {request.studentId}")
-
-    for idx, b64_frame in enumerate(frames_to_process):
-        print(f"[PYTHON] Fast-processing key frame {idx+1}/{len(frames_to_process)}")
+    # Process frames and evaluate quality scores first
+    for idx, b64_frame in enumerate(request.frames):
         try:
             bgr_img = decode_image_np(b64_frame)
-            if bgr_img is not None and bgr_img.shape[1] > 240:
-                scale = 240 / bgr_img.shape[1]
-                new_size = (240, int(bgr_img.shape[0] * scale))
+            if bgr_img is None or bgr_img.size == 0:
+                rejected_reasons.append(f"Frame {idx+1}: Empty frame")
+                continue
+                
+            # Resize image to standard 320px width for fast detection and quality evaluation
+            if bgr_img.shape[1] > 320:
+                scale = 320 / bgr_img.shape[1]
+                new_size = (320, int(bgr_img.shape[0] * scale))
                 bgr_img = cv2.resize(bgr_img, new_size, interpolation=cv2.INTER_AREA)
 
             faces = app_face.get(bgr_img)
@@ -338,40 +337,49 @@ def arcface_enroll(request: ArcFaceEnrollRequest):
                 
             face = faces[0]
             quality = validate_face_quality(bgr_img, face)
-            quality_scores.append(quality["score"])
             
             if not quality["passed"]:
                 rejected_reasons.append(f"Frame {idx+1}: {quality['reason']}")
                 continue
-                
-            # Extract and L2-normalize 512d ArcFace embedding
+
             raw_emb = face.embedding
-            if raw_emb.shape[0] != 512:
-                rejected_reasons.append(f"Frame {idx+1}: Invalid embedding dimension (got {raw_emb.shape[0]}, expected 512)")
+            if raw_emb is None or raw_emb.shape[0] != 512:
+                rejected_reasons.append(f"Frame {idx+1}: Invalid embedding dimension (expected 512)")
                 continue
-            norm_emb = normalize_l2(raw_emb)
-            embeddings.append(norm_emb)
+
+            candidates.append({
+                "score": quality["score"],
+                "embedding": raw_emb,
+                "frame_idx": idx + 1
+            })
             
         except Exception as err:
             rejected_reasons.append(f"Frame {idx+1}: Processing error {str(err)}")
-            
+
+    # Sort candidates by quality score descending and select the 15 best frames
+    candidates.sort(key=lambda x: x["score"], reverse=True)
+    top_candidates = candidates[:15]  # Select exactly 15 best high-quality frames
+    
+    embeddings = [normalize_l2(c["embedding"]) for c in top_candidates]
+    quality_scores = [c["score"] for c in top_candidates]
     valid_count = len(embeddings)
     elapsed = time.time() - start
-    print(f"[PYTHON] Valid key embeddings: {valid_count}")
-    print(f"[PYTHON] Ultra-fast enrollment completed in {elapsed:.2f}s")
-    logger.info(f"📊 ArcFace Enrollment result for {request.studentId}: {valid_count}/{len(frames_to_process)} valid key samples collected in {elapsed:.2f}s.")
     
-    MIN_SAMPLES = 6
+    print(f"[PYTHON] Valid top quality key embeddings: {valid_count}/{len(request.frames)}")
+    print(f"[PYTHON] Optimized enrollment completed in {elapsed:.2f}s")
+    logger.info(f"📊 ArcFace Enrollment result for {request.studentId}: {valid_count} best valid samples selected in {elapsed:.2f}s.")
+    
+    MIN_SAMPLES = 10
     if valid_count < MIN_SAMPLES:
         return {
             "success": False,
-            "error": f"Only {valid_count}/{len(frames_to_process)} valid face key samples detected. Please keep your face centered and retry.",
+            "error": f"Only {valid_count}/{len(request.frames)} valid high-quality face samples detected. Minimum {MIN_SAMPLES} required. Please center your face in good lighting and retry.",
             "validSamples": valid_count,
             "totalSubmitted": len(request.frames),
             "rejectedReasons": rejected_reasons[:10]
         }
         
-    # Compute 512d average normalized embedding
+    # Compute 512d average normalized embedding vector
     emb_matrix = np.array(embeddings, dtype=np.float32)
     mean_vec = np.mean(emb_matrix, axis=0)
     average_embedding = normalize_l2(mean_vec)

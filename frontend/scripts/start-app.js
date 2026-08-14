@@ -65,7 +65,8 @@ async function main() {
       BROWSER: 'none',
       GENERATE_SOURCEMAP: 'false',
       DISABLE_ESLINT_PLUGIN: 'true',
-      FAST_REFRESH: 'true'
+      FAST_REFRESH: 'true',
+      NODE_OPTIONS: '--max-old-space-size=4096'
     };
 
     const rewiredScript = path.resolve(__dirname, '../node_modules/react-app-rewired/bin/index.js');

@@ -314,7 +314,7 @@ const verifyFace = async (req, res) => {
     console.log(`🔍 [ArcFace Verification] Verifying ${inputFrames.length} frames for student: ${cleanStudentId || cleanEmail} against ${enrolledEmbeddings.length} enrolled 512d embeddings...`);
 
     let arcfaceRes = null;
-    const verificationFrames = Array.isArray(inputFrames) ? inputFrames.slice(0, 25) : [];
+    const verificationFrames = Array.isArray(inputFrames) ? inputFrames.slice(0, 10) : [];
 
     try {
       const response = await axios.post(`${PYTHON_SERVICE_URL}/api/arcface/verify`, {
@@ -346,14 +346,22 @@ const verifyFace = async (req, res) => {
     if (arcfaceRes) {
       bestSimilarity = typeof arcfaceRes.bestSimilarity === 'number' && !isNaN(arcfaceRes.bestSimilarity) ? arcfaceRes.bestSimilarity : 0.0;
       averageSimilarity = typeof arcfaceRes.averageSimilarity === 'number' && !isNaN(arcfaceRes.averageSimilarity) ? arcfaceRes.averageSimilarity : 0.0;
-      verifiedFrames = typeof arcfaceRes.verifiedFrames === 'number' && !isNaN(arcfaceRes.verifiedFrames) ? arcfaceRes.verifiedFrames : 0;
+      verifiedFrames = typeof arcfaceRes.validFrames === 'number' ? arcfaceRes.validFrames : (typeof arcfaceRes.verifiedFrames === 'number' ? arcfaceRes.verifiedFrames : 0);
       suspiciousFrames = typeof arcfaceRes.suspiciousFrames === 'number' && !isNaN(arcfaceRes.suspiciousFrames) ? arcfaceRes.suspiciousFrames : 0;
       rejectedFrames = typeof arcfaceRes.rejectedFrames === 'number' && !isNaN(arcfaceRes.rejectedFrames) ? arcfaceRes.rejectedFrames : 0;
-      finalDecision = (arcfaceRes.finalDecision || arcfaceRes.result || 'REJECTED').toUpperCase();
-      isVerified = finalDecision === 'VERIFIED';
+      finalDecision = (arcfaceRes.decision || arcfaceRes.finalDecision || arcfaceRes.result || 'SUSPICIOUS').toUpperCase();
+      isVerified = arcfaceRes.verified === true || finalDecision === 'VERIFIED';
+    } else {
+      if (averageSimilarity >= 0.78) {
+        finalDecision = 'VERIFIED';
+        isVerified = true;
+      } else {
+        finalDecision = 'SUSPICIOUS';
+        isVerified = false;
+      }
     }
 
-    const result = isVerified ? "VERIFIED" : (finalDecision === 'SUSPICIOUS' ? "SUSPICIOUS" : "REJECTED");
+    const result = finalDecision;
 
     console.log("=================================");
     console.log("ARC FACE VERIFICATION SUMMARY");
@@ -365,7 +373,8 @@ const verifyFace = async (req, res) => {
       suspiciousFrames,
       averageSimilarity,
       bestSimilarity,
-      result
+      decision: finalDecision,
+      verified: isVerified
     });
     console.log("=================================");
 
@@ -386,21 +395,37 @@ const verifyFace = async (req, res) => {
       console.error("⚠️ [VerificationLog] Non-critical log creation warning:", logErr.message);
     }
 
+    let defaultMsg = "Face verified successfully.";
+    if (!isVerified) {
+      if (finalDecision === 'INSUFFICIENT_SAMPLES') {
+        defaultMsg = "Not enough valid face samples";
+      } else {
+        defaultMsg = "Face verification failed: Face mismatch";
+      }
+    }
+
+    const confidencePct = Math.round(averageSimilarity * 100);
+
     return res.status(200).json({
-      success: isVerified,
+      success: true,
+      matched: isVerified,
       verified: isVerified,
       match: isVerified,
+      decision: finalDecision,
       result: result.toLowerCase(),
       finalDecision: finalDecision,
       verificationResult: finalDecision,
       studentId: profile.studentId,
       email: profile.email,
-      bestSimilarity: bestSimilarity,
+      similarity: averageSimilarity,
       averageSimilarity: averageSimilarity,
-      verifiedFrames: verifiedFrames,
-      suspiciousFrames: suspiciousFrames,
-      rejectedFrames: rejectedFrames,
+      bestSimilarity: bestSimilarity,
+      confidence: confidencePct,
+      threshold: 0.78,
+      validFrames: verifiedFrames,
+      totalFrames: verificationFrames.length,
       totalFramesProcessed: verificationFrames.length,
+      message: arcfaceRes?.message || defaultMsg,
       timestamp: new Date().toISOString()
     });
   } catch (err) {

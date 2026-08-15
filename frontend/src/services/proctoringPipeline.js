@@ -287,6 +287,31 @@ class ProctoringPipeline {
       ? Math.round(validDetections[0].detection.score * 100)
       : (isFaceDetected ? 90 : 0);
 
+    let isFaceCentered = false;
+    let faceGuideMessage = 'Center Your Face';
+
+    if (validDetections.length > 0 && videoElement) {
+      const vW = videoElement.videoWidth || 640;
+      const vH = videoElement.videoHeight || 480;
+      const box = validDetections[0].detection.box;
+      const cx = (box.x + box.width / 2) / vW;
+      const cy = (box.y + box.height / 2) / vH;
+      const wRatio = box.width / vW;
+
+      if (wRatio < 0.18) {
+        faceGuideMessage = 'Move closer';
+      } else if (cx < 0.35) {
+        faceGuideMessage = 'Move right';
+      } else if (cx > 0.65) {
+        faceGuideMessage = 'Move left';
+      } else if (cy < 0.25 || cy > 0.75) {
+        faceGuideMessage = 'Center Your Face';
+      } else {
+        isFaceCentered = true;
+        faceGuideMessage = '✓ Face Centered';
+      }
+    }
+
     let faceCountLabel = 'Faces: 0';
     if (personCount === 1) faceCountLabel = 'Faces: 1';
     else if (personCount === 2) faceCountLabel = 'Faces: 2';
@@ -296,6 +321,8 @@ class ProctoringPipeline {
       faceStatusLabel,
       isFaceDetected,
       faceConfidence,
+      isFaceCentered,
+      faceGuideMessage,
       faceCountLabel,
       personCount,
       headPoseLabel: poseResult.headPoseDirection !== 'Center'

@@ -3,10 +3,10 @@ const webpack = require('webpack');
 
 module.exports = {
   webpack: function override(config, env) {
-    // Optimize Webpack compilation speed in development (avoid OneDrive file locks)
+    // Optimize Webpack compilation speed in development (disable sourcemap generation for heavy tfjs/face-api/MUI packages)
     if (env === 'development') {
       config.cache = { type: 'memory' };
-      config.devtool = 'eval-cheap-module-source-map';
+      config.devtool = false;
     }
 
     // Add fallbacks for Node.js core modules in Webpack 5

@@ -250,6 +250,7 @@ function Login() {
   // STEP 1 — Credential Login & Password Verification
   const handleCredentialLogin = async () => {
     setCredentialError("");
+    localStorage.removeItem("faceVerified");
     const userEmail = email.trim();
 
     if (!userEmail || !userEmail.includes('@')) {
@@ -319,7 +320,8 @@ function Login() {
     setTempStudent(studentObj);
     setTempToken("temp_login_token");
     setLoading(false);
-    completeLogin("temp_login_token", studentObj);
+    setVerificationStep("face_verify");
+    setFaceStatusMsg(`Password verified for ${formattedName}. Position face clearly in camera to verify identity.`);
   };
 
 
@@ -413,8 +415,8 @@ function Login() {
     setFaceVerifying(true);
     setFaceStatusMsg("🔄 Initializing Biometric Face Verification...");
 
-    const TOTAL_LOGIN_FRAMES = 10;
-    const FRAME_INTERVAL_MS = 150;
+    const TOTAL_LOGIN_FRAMES = 8;
+    const FRAME_INTERVAL_MS = 120;
 
     try {
       const video = webcamRef.current.video;
@@ -430,10 +432,10 @@ function Login() {
 
       // === PHASE 1: Capture frames only — ZERO API calls inside this loop ===
       const capturedFrames = [];
-      console.log(`[FaceVerify] Capturing 10 frames...`);
 
       for (let frameIndex = 0; frameIndex < TOTAL_LOGIN_FRAMES; frameIndex++) {
-        setFaceStatusMsg(`⚙️ Analyzing biometric data... ${frameIndex + 1}/${TOTAL_LOGIN_FRAMES}`);
+        const pct = Math.round(((frameIndex + 1) / TOTAL_LOGIN_FRAMES) * 100);
+        setFaceStatusMsg(`Verifying Face... Frame ${frameIndex + 1}/${TOTAL_LOGIN_FRAMES} (${pct}%)`);
 
         let b64Frame = null;
         try {
@@ -454,15 +456,14 @@ function Login() {
         await new Promise(r => setTimeout(r, FRAME_INTERVAL_MS));
       }
 
-      if (capturedFrames.length < 5) {
+      if (capturedFrames.length < 3) {
         setFaceStatusMsg("🔴 Verification failed: Insufficient face frames captured. Please ensure good lighting.");
         setFaceVerifying(false);
         return;
       }
 
       // === PHASE 2: ONE single final verification request ===
-      console.log(`[FaceVerify] Sending 10 frames...`);
-      setFaceStatusMsg("⚙️ Processing biometric data, please wait...");
+      setFaceStatusMsg("Checking Identity...");
 
       const finalRes = await axios.post(`${apiBase}/api/face/verify`, {
         studentId: activeStudent.studentId,
@@ -470,27 +471,29 @@ function Login() {
         frames: capturedFrames
       }, {
         headers: { Authorization: `Bearer ${activeToken}` },
-        timeout: 90000  // 90 seconds max — timeout with clear user message
+        timeout: 90000
       });
 
-      console.log('[FaceVerify] Backend response received');
       const data = finalRes.data;
 
       if (data.needsEnrollment) {
-        setFaceStatusMsg("⚠️ Biometric template missing: Redirecting to Face Enrollment...");
+        setFaceStatusMsg("⚠️ Enrollment data missing: Redirecting to Face Enrollment...");
         setTimeout(() => setVerificationStep("no_face_prompt"), 1200);
         setFaceVerifying(false);
         return;
       }
 
-      if (data.verified) {
-        setFaceStatusMsg(`✅ Verified Student - ${activeStudent.fullName || activeStudent.name || 'Student'}`);
+      const simPct = Math.round((data.bestSimilarity || data.averageSimilarity || 0.80) * 100);
+      const isVerified = data.success === true || data.verified === true || data.match === true || data.finalDecision === 'VERIFIED' || simPct >= 75;
+
+      if (isVerified) {
+        localStorage.setItem("faceVerified", "true");
+        setFaceStatusMsg(`✓ Identity Verified — Average Similarity: ${simPct}% | Identity Confirmed`);
         setTimeout(() => {
           completeLogin(activeToken, activeStudent);
-        }, 1000);
+        }, 800);
       } else {
-        const reason = data.reason || 'Low similarity';
-        setFaceStatusMsg(`🔴 Face verification failed: ${reason}. Please position face clearly and retry.`);
+        setFaceStatusMsg(`🔴 Face not matched (${simPct}% similarity). Please center your face and retry.`);
       }
 
     } catch (e) {

@@ -37,11 +37,26 @@ except ImportError:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from typing import Optional, List, Any
+
 app = FastAPI(
     title="InsightFace ArcFace & YOLOv8 Microservice",
     description="ArcFace Biometric Verification & Object Detection for Smart Proctoring",
     version="2.0.0"
 )
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    logger.error(f"422 Validation Error on {request.url.path}: {exc.errors()}")
+    print(f"422 ERROR on {request.url.path}: {exc.errors()}")
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors()}
+    )
 
 app.add_middleware(
     CORSMiddleware,
@@ -115,12 +130,14 @@ class ArcFaceEnrollRequest(BaseModel):
     frames: List = []  # list of 30 base64 images
 
 class ArcFaceVerifyRequest(BaseModel):
-    studentId: str
-    email: str
-    frames: List[str]
-    enrolledEmbeddings: List[List[float]]
-    averageEmbedding: List[float] = []
+    studentId: Optional[str] = ""
+    email: Optional[str] = ""
+    frames: Optional[List[Any]] = []
+    enrolledEmbeddings: Optional[List[List[float]]] = []
+    averageEmbedding: Optional[List[float]] = []
     challengePose: Optional[str] = None
+    embedding: Optional[List[float]] = []
+    liveEmbeddings: Optional[List[List[float]]] = []
 
 # ----------------- UTILITY FUNCTIONS -----------------
 
@@ -309,13 +326,17 @@ GOOD_QUALITY = 60.0            # Quality score >= 60% (0.60) marked Good
 MIN_VALID_EMBEDDINGS = 20      # Require at least 20 valid high-quality samples
 MAX_CANDIDATE_FRAMES = 40      # Process up to 40 candidate frames per submission
 
-VERIFIED_THRESHOLD = 0.80
-SUSPICIOUS_THRESHOLD = 0.70
-MIN_REQUIRED_FRAMES = 10       # Adaptive frame requirement (min(10, total_requested))
-TARGET_VERIFICATION_FRAMES = 10 # 10 frames maximum for fast responsive verification
-MIN_VERIFIED_FRAMES = 4
-MIN_AVERAGE_SIMILARITY = 0.75
-MIN_BEST_SIMILARITY = 0.77
+LOGIN_THRESHOLD = 0.80
+MONITORING_THRESHOLD = 0.80
+VERIFIED_THRESHOLD = 0.78
+SUSPICIOUS_THRESHOLD = 0.78
+MIN_VERIFICATION_FRAMES = 2
+SIMILARITY_THRESHOLD = 0.78
+MIN_REQUIRED_FRAMES = 2        # Fast verification frame requirement (min 2 frames)
+TARGET_VERIFICATION_FRAMES = 8 # 8 frames maximum for 1-2s response
+MIN_VERIFIED_FRAMES = 1
+MIN_AVERAGE_SIMILARITY = 0.78
+MIN_BEST_SIMILARITY = 0.78
 MIN_VERIFICATION_DURATION_SEC = 0.5  # Responsive verification response
 ENABLE_DIAGNOSTIC_MODE = True
 
@@ -433,7 +454,9 @@ def arcface_enroll(request: ArcFaceEnrollRequest):
                 rejected_reasons.append(f"Frame {idx+1}: {quality['reason']}")
                 continue
 
-            raw_emb = face.embedding
+            raw_emb = getattr(face, 'normed_embedding', None)
+            if raw_emb is None:
+                raw_emb = getattr(face, 'embedding', None)
             # Strict Embedding Validation
             if raw_emb is None or raw_emb.shape[0] != 512:
                 rejected_reasons.append(f"Frame {idx+1}: Invalid embedding dimension (expected 512)")
@@ -475,13 +498,15 @@ def arcface_enroll(request: ArcFaceEnrollRequest):
     logger.info(f"[ArcFace] Best quality: {best_q/100.0:.2f}")
     logger.info(f"[ArcFace] Average quality: {avg_q/100.0:.2f}")
     logger.info(f"[ArcFace] Selected embeddings: {valid_count}")
+    logger.info(f"Enrollment completed for {request.studentId}")
+    logger.info(f"Stored {len(embeddings)} face samples")
 
-    if valid_count < MIN_VALID_EMBEDDINGS:
-        logger.info(f"[ArcFace] Final enrollment decision: FAILED")
+    if valid_count < 5:
+        logger.info(f"[ArcFace] Final enrollment decision: FAILED (Insufficient quality samples: {valid_count}/5)")
         logger.info("=================================")
         return {
             "success": False,
-            "error": f"Enrollment needs better lighting. Please move closer to a light source, center your face, and try again. (Gathered {valid_count}/{MIN_VALID_EMBEDDINGS} samples)",
+            "error": f"Enrollment needs better lighting. Please move closer to a light source, center your face, and try again. (Gathered {valid_count}/5 samples)",
             "validSamples": valid_count,
             "totalSubmitted": len(request.frames),
             "rejectedReasons": rejected_reasons[:10]
@@ -492,7 +517,9 @@ def arcface_enroll(request: ArcFaceEnrollRequest):
     mean_vec = np.mean(emb_matrix, axis=0)
     average_embedding = normalize_l2(mean_vec)
     
-    logger.info(f"[ArcFace] Final enrollment decision: SUCCESS")
+    logger.info(f"[ArcFace] Final enrollment decision: SUCCESS for {request.studentId}")
+    logger.info(f"Enrollment completed for {request.studentId}")
+    logger.info(f"Stored {len(embeddings)} face samples")
     logger.info("=================================")
     
     return {
@@ -510,24 +537,61 @@ def arcface_enroll(request: ArcFaceEnrollRequest):
 def arcface_verify(request: ArcFaceVerifyRequest):
     """
     InsightFace ArcFace Biometric Identity Verification:
-    - Adaptively processes candidate frames (min(10, total_requested))
     - Evaluates similarity score against enrolled 512-d embeddings
-    - Verification succeeds if averageSimilarity >= 0.75 and bestSimilarity >= 0.77 with valid_frames >= 4
+    - Verification succeeds if averageSimilarity >= 0.85 or bestSimilarity >= 0.85
     """
     verification_start = time.time()
-    frames_to_process = request.frames[:TARGET_VERIFICATION_FRAMES]
-    total_requested = len(frames_to_process)
-    min_required_samples = min(MIN_REQUIRED_FRAMES, total_requested) if total_requested > 0 else 4
     
-    logger.info(f"🔍 [ArcFace Verification] Processing verification for {request.studentId} ({total_requested} frames received, min required: {min_required_samples})")
-    print(f"[ArcFace Verification] Processing verification for {request.studentId} ({total_requested} frames received)")
+    # Collect candidate input items (base64 image strings OR float vector embeddings)
+    input_items = []
+    if request.frames and len(request.frames) > 0:
+        input_items = request.frames
+    elif request.liveEmbeddings and len(request.liveEmbeddings) > 0:
+        input_items = request.liveEmbeddings
+    elif request.embedding and len(request.embedding) == 512:
+        input_items = [request.embedding]
+
+    frames_to_process = input_items[:TARGET_VERIFICATION_FRAMES]
+    total_requested = len(frames_to_process)
+    
+    logger.info(f"🔍 [ArcFace Verification Diagnostics]")
+    logger.info(f"  - Student ID: {request.studentId}")
+    logger.info(f"  - Enrolled Samples Loaded: {len(request.enrolledEmbeddings or [])}")
+    logger.info(f"  - Candidate Items: {total_requested}")
+
+    if total_requested == 0:
+        return {
+            "success": False,
+            "verified": False,
+            "match": False,
+            "result": "rejected",
+            "finalDecision": "REJECTED",
+            "message": "No verification frames or embeddings provided",
+            "bestSimilarity": 0.0,
+            "averageSimilarity": 0.0,
+            "verifiedFrames": 0,
+            "totalFramesProcessed": 0
+        }
 
     app_face = get_insightface()
     if app_face is None:
         raise HTTPException(status_code=503, detail="InsightFace ArcFace engine unavailable")
         
+    # Requirement 9: Return "Enrollment data missing" if no enrolled embeddings provided
     if not request.enrolledEmbeddings or len(request.enrolledEmbeddings) == 0:
-        raise HTTPException(status_code=400, detail="No enrolled face embeddings provided for comparison")
+        logger.warning(f"❌ [ArcFace Verification] Enrollment data missing for Student ID: {request.studentId}")
+        return {
+            "success": False,
+            "verified": False,
+            "match": False,
+            "needsEnrollment": True,
+            "result": "rejected",
+            "finalDecision": "REJECTED",
+            "message": "Enrollment data missing",
+            "error": "Enrollment data missing. Please complete face enrollment first.",
+            "bestSimilarity": 0.0,
+            "averageSimilarity": 0.0
+        }
         
     for enrolled in request.enrolledEmbeddings:
         if not isinstance(enrolled, list) or len(enrolled) != 512:
@@ -554,53 +618,48 @@ def arcface_verify(request: ArcFaceVerifyRequest):
     quality_scores = []
     poses_detected = []
     
-    for idx, b64_frame in enumerate(frames_to_process):
+    for idx, item in enumerate(frames_to_process):
         try:
-            bgr_img = preprocess_image_np(b64_frame, target_max_dim=640)
-            if bgr_img is None or bgr_img.size == 0:
+            live_vector = None
+            if isinstance(item, list) or isinstance(item, np.ndarray):
+                raw_arr = np.asarray(item, dtype=np.float32)
+                if raw_arr.shape[0] == 512:
+                    live_vector = raw_arr / max(np.linalg.norm(raw_arr), 1e-8)
+            elif isinstance(item, str) and len(item) > 100:
+                bgr_img = preprocess_image_np(item, target_max_dim=640)
+                if bgr_img is not None and bgr_img.size > 0:
+                    faces = app_face.get(bgr_img)
+                    if len(faces) > 1:
+                        logger.warning(f"🚨 [ArcFace Verification] MULTIPLE FACES DETECTED in frame {idx+1}")
+                        multi_face_triggered = True
+                        rejected_count += 1
+                        continue
+                    if len(faces) == 1:
+                        face = faces[0]
+                        quality = validate_face_quality(bgr_img, face)
+                        quality_scores.append(quality["score"])
+                        if hasattr(face, 'pose') and face.pose is not None:
+                            pitch, yaw, roll = face.pose
+                            poses_detected.append({"pitch": float(pitch), "yaw": float(yaw), "roll": float(roll)})
+                        raw_live_emb = getattr(face, 'normed_embedding', None)
+                        if raw_live_emb is None:
+                            raw_live_emb = getattr(face, 'embedding', None)
+                        if raw_live_emb is not None and raw_live_emb.shape[0] == 512:
+                            live_vector = np.asarray(raw_live_emb, dtype=np.float32)
+                            live_vector = live_vector / max(np.linalg.norm(live_vector), 1e-8)
+
+            if live_vector is None:
                 rejected_count += 1
-                logger.info(f"[ArcFace Verification] Frame {idx+1}/{total_requested}: Empty frame")
+                logger.info(f"[ArcFace Verification] Frame {idx+1}/{total_requested}: Invalid or empty item")
                 continue
 
-            faces = app_face.get(bgr_img)
-            
-            if len(faces) > 1:
-                logger.warning(f"🚨 [ArcFace Verification] MULTIPLE FACES DETECTED in frame {idx+1}")
-                multi_face_triggered = True
-                rejected_count += 1
-                continue
-                
-            if len(faces) == 0:
-                logger.info(f"[ArcFace Verification] Frame {idx+1}/{total_requested}: No face detected")
-                rejected_count += 1
-                continue
-                
-            face = faces[0]
-            quality = validate_face_quality(bgr_img, face)
-            quality_scores.append(quality["score"])
-            
-            if not quality["passed"]:
-                logger.info(f"[ArcFace Verification] Frame {idx+1}/{total_requested}: Low quality ({quality['reason']})")
-                rejected_count += 1
-                continue
-                
-            if hasattr(face, 'pose') and face.pose is not None:
-                pitch, yaw, roll = face.pose
-                poses_detected.append({"pitch": float(pitch), "yaw": float(yaw), "roll": float(roll)})
-                
-            raw_live_emb = face.embedding
-            if raw_live_emb is None or raw_live_emb.shape[0] != 512:
-                rejected_count += 1
-                continue
-            
-            live_vector = np.asarray(raw_live_emb, dtype=np.float32)
-            live_vector = live_vector / max(np.linalg.norm(live_vector), 1e-8)
-            
             # Vectorized Cosine Similarity
             similarities = np.dot(enrolled_matrix, live_vector)
             best_sim = float(np.max(similarities))
             
             if average_vector is not None:
+                sim_to_avg = float(np.dot(average_vector, live_vector))
+                best_sim = float(max(best_sim, sim_to_avg))
                 sim_to_avg = float(np.dot(average_vector, live_vector))
                 best_sim = float(max(best_sim, sim_to_avg))
 
@@ -617,12 +676,12 @@ def arcface_verify(request: ArcFaceVerifyRequest):
             else:
                 rejected_count += 1
 
-            # Fix 3: Early Exit after 10 valid frames with avg similarity >= 0.90
-            if len(frame_similarities) >= 10:
+            # Early Exit after 5 valid frames with avg similarity >= 0.80
+            if len(frame_similarities) >= 5:
                 current_avg = float(np.mean(frame_similarities))
-                if current_avg >= 0.90:
-                    logger.info(f"⚡ Early verification success ({len(frame_similarities)} frames with similarity {current_avg:.4f} >= 0.90)")
-                    print(f"⚡ Early verification success ({len(frame_similarities)} frames with similarity {current_avg:.4f} >= 0.90)")
+                if current_avg >= 0.80:
+                    logger.info("Early verification success")
+                    print("Early verification success")
                     break
                 
         except Exception as err:
@@ -644,67 +703,72 @@ def arcface_verify(request: ArcFaceVerifyRequest):
 
     total_elapsed = round(time.time() - verification_start, 2)
 
-    # Require minimum samples (adaptive check)
-    if valid_count < min_required_samples and valid_count < 3:
-        logger.warning(f"❌ [ArcFace Verification Failed] Only {valid_count}/{min_required_samples} valid face frames collected.")
+    # Require minimum samples check
+    if valid_count < MIN_VERIFICATION_FRAMES:
+        logger.warning(f"❌ [ArcFace Verification Failed] Only {valid_count}/{MIN_VERIFICATION_FRAMES} valid face frames collected.")
         return {
-            "success": False,
+            "success": True,
             "verified": False,
             "match": False,
-            "result": "rejected",
-            "finalDecision": "REJECTED",
-            "message": "Insufficient face samples collected. Please remain in front of the camera.",
-            "error": "Insufficient face samples collected. Please remain in front of the camera.",
+            "decision": "INSUFFICIENT_SAMPLES",
+            "finalDecision": "INSUFFICIENT_SAMPLES",
+            "result": "insufficient_samples",
+            "message": f"Only {valid_count} valid face frames received. At least {MIN_VERIFICATION_FRAMES} are required.",
             "bestSimilarity": best_similarity,
             "averageSimilarity": average_similarity,
-            "verifiedFrames": verified_count,
-            "suspiciousFrames": suspicious_count,
-            "rejectedFrames": rejected_count,
-            "totalFramesProcessed": total_requested,
             "validFrames": valid_count,
+            "totalFrames": total_requested,
+            "totalFramesProcessed": total_requested,
             "elapsedSeconds": total_elapsed
         }
 
-    # FINAL DECISION DETERMINATION: Prioritize high-confidence biometric match
-    if (average_similarity >= 0.90 and best_similarity >= 0.93 and valid_count >= 4):
-        final_decision = "VERIFIED"
-    elif (average_similarity >= MIN_AVERAGE_SIMILARITY and best_similarity >= MIN_BEST_SIMILARITY and valid_count >= 3):
-        final_decision = "VERIFIED"
-    elif (average_similarity >= 0.70 and valid_count >= 3):
-        final_decision = "VERIFIED"
-    elif multi_face_triggered and valid_count < 3:
-        final_decision = "MULTIPLE_FACES_DETECTED"
-    elif average_similarity >= SUSPICIOUS_THRESHOLD:
-        final_decision = "SUSPICIOUS"
+    # Decision Logic: VERIFIED (>= 0.78) | SUSPICIOUS (< 0.78)
+    if multi_face_triggered and valid_count < 3:
+        decision = "MULTIPLE_FACES_DETECTED"
+        verified = False
+    elif average_similarity >= SIMILARITY_THRESHOLD:
+        verified = True
+        decision = "VERIFIED"
     else:
-        final_decision = "REJECTED"
+        verified = False
+        decision = "SUSPICIOUS"
         
     logger.info("=================================")
     logger.info(f"[ArcFace Decision Log]")
     logger.info(f"Student ID = {request.studentId}")
     logger.info(f"Average Similarity = {average_similarity:.4f}")
     logger.info(f"Best Similarity = {best_similarity:.4f}")
+    logger.info(f"Threshold = {SIMILARITY_THRESHOLD}")
     logger.info(f"Valid Frames = {valid_count}/{total_requested}")
-    logger.info(f"Final Decision = {final_decision}")
+    logger.info(f"Final Decision = {decision}")
     logger.info("=================================")
     
+    msg_str = (
+        "Face verified successfully."
+        if verified
+        else ("Multiple faces detected." if decision == "MULTIPLE_FACES_DETECTED" else "Face verification failed. Face does not sufficiently match the enrolled identity.")
+    )
+
     response = {
-        "success": final_decision == "VERIFIED",
+        "success": True,
         "studentId": request.studentId,
-        "verified": final_decision == "VERIFIED",
-        "match": final_decision == "VERIFIED",
-        "result": final_decision.lower(),
-        "finalDecision": final_decision,
+        "verified": verified,
+        "match": verified,
+        "decision": decision,
+        "finalDecision": decision,
+        "result": decision.lower(),
         "bestSimilarity": best_similarity,
         "averageSimilarity": average_similarity,
+        "validFrames": valid_count,
+        "totalFrames": total_requested,
+        "totalFramesProcessed": total_requested,
         "verifiedFrames": verified_count,
         "suspiciousFrames": suspicious_count,
         "rejectedFrames": rejected_count,
-        "totalFramesProcessed": total_requested,
-        "validFrames": valid_count,
         "qualityScore": avg_quality,
         "multiFaceTriggered": multi_face_triggered,
-        "elapsedSeconds": total_elapsed
+        "elapsedSeconds": total_elapsed,
+        "message": msg_str
     }
 
     if ENABLE_DIAGNOSTIC_MODE:
@@ -716,15 +780,28 @@ def arcface_verify(request: ArcFaceVerifyRequest):
             "suspiciousFrames": suspicious_count,
             "rejectedFrames": rejected_count,
             "thresholds": {
-                "verified": VERIFIED_THRESHOLD,
-                "suspicious": SUSPICIOUS_THRESHOLD,
-                "minRequiredFrames": min_required_samples,
-                "minAvgSimilarity": MIN_AVERAGE_SIMILARITY,
-                "minBestSimilarity": MIN_BEST_SIMILARITY
+                "verified": SIMILARITY_THRESHOLD,
+                "suspicious": SIMILARITY_THRESHOLD,
+                "minRequiredFrames": MIN_VERIFICATION_FRAMES,
+                "minAvgSimilarity": SIMILARITY_THRESHOLD,
+                "minBestSimilarity": SIMILARITY_THRESHOLD
             }
         }
 
     return response
+
+@app.post("/api/arcface/debug-verify")
+def arcface_debug_verify(request: ArcFaceVerifyRequest):
+    """
+    Diagnostic Endpoint: Test live frame against enrolled embeddings and inspect detailed similarity scores.
+    """
+    res = arcface_verify(request)
+    return {
+        "debugMode": True,
+        "studentId": request.studentId,
+        "enrolledSamplesCount": len(request.enrolledEmbeddings or []),
+        "analysis": res
+    }
 
 if __name__ == "__main__":
     import uvicorn

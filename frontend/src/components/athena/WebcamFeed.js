@@ -11,6 +11,8 @@ function WebcamFeed({ isProctoringActive, onDetectionUpdate, onViolationTriggere
   const lastFrameTimeRef = useRef(Date.now());
   const [personCount, setPersonCount] = useState(1);
   const [faceConfidence, setFaceConfidence] = useState(98);
+  const [isFaceCentered, setIsFaceCentered] = useState(true);
+  const [faceGuideMsg, setFaceGuideMsg] = useState('✓ Face Centered');
 
   // Active student profile from MongoDB / Auth
   const activeStudent = (() => {
@@ -114,6 +116,8 @@ function WebcamFeed({ isProctoringActive, onDetectionUpdate, onViolationTriggere
       if (t) {
         setPersonCount(t.personCount || 0);
         if (t.faceConfidence) setFaceConfidence(t.faceConfidence);
+        setIsFaceCentered(t.isFaceCentered || false);
+        setFaceGuideMsg(t.faceGuideMessage || (t.isFaceCentered ? '✓ Face Centered' : 'Center Your Face'));
       }
 
       // Violations
@@ -276,6 +280,41 @@ function WebcamFeed({ isProctoringActive, onDetectionUpdate, onViolationTriggere
           pointerEvents: 'none'
         }}
       />
+
+      {/* Fix 6: Green Face Guide Overlay */}
+      <div className="face-guide" style={{
+        position: 'absolute',
+        width: '130px',
+        height: '160px',
+        border: `2.5px dashed ${isFaceCentered ? '#00ff66' : '#f59e0b'}`,
+        borderRadius: '50%',
+        left: '50%',
+        top: '50%',
+        transform: 'translate(-50%, -50%)',
+        pointerEvents: 'none',
+        zIndex: 15,
+        boxShadow: isFaceCentered ? '0 0 14px rgba(0, 255, 102, 0.45)' : 'none',
+        transition: 'all 0.2s ease'
+      }} />
+
+      {/* Face Centering Status Indicator */}
+      <div style={{
+        position: 'absolute',
+        bottom: '36px',
+        left: '50%',
+        transform: 'translateX(-50%)',
+        zIndex: 20,
+        background: isFaceCentered ? 'rgba(0, 255, 102, 0.18)' : 'rgba(245, 158, 11, 0.18)',
+        border: `1px solid ${isFaceCentered ? '#00ff66' : '#f59e0b'}`,
+        borderRadius: '12px',
+        padding: '2px 10px',
+        fontSize: '0.72rem',
+        fontWeight: 800,
+        color: isFaceCentered ? '#00ff66' : '#fbbf24',
+        boxShadow: '0 4px 10px rgba(0,0,0,0.5)'
+      }}>
+        {faceGuideMsg}
+      </div>
 
       {/* TOP LEFT: LIVE Indicator */}
       <div style={{

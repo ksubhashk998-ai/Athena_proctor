@@ -20,6 +20,8 @@ export function useContinuousVerification({
   const consecutiveMatchesRef = useRef(0);
   const consecutiveFailsRef = useRef(0);
   const isRunningRef = useRef(false);
+  const lastVerifiedTimeRef = useRef(Date.now());
+  const recentScoresRef = useRef([0.95]);
 
   const verifyFrame = useCallback(async () => {
     if (!webcamRef?.current?.video || !studentId || !token) return;
@@ -36,8 +38,21 @@ export function useContinuousVerification({
           noFaceTimerRef.current = Date.now();
         }
         const secondsNoFace = (Date.now() - noFaceTimerRef.current) / 1000;
-        const isCritical = secondsNoFace >= 5;
+        const elapsedSinceVerified = (Date.now() - lastVerifiedTimeRef.current) / 1000;
 
+        if (elapsedSinceVerified < 10) {
+          // Fix 3: Maintain VERIFIED state within 10s grace window
+          const avgSim = recentScoresRef.current.reduce((a, b) => a + b, 0) / recentScoresRef.current.length;
+          setVerificationResult({
+            status: 'verified',
+            confidence: Math.round(avgSim * 100),
+            similarityPct: Math.round(avgSim * 100),
+            message: `Face Match: ${Math.round(avgSim * 100)}% (Grace Window Active)`
+          });
+          return;
+        }
+
+        const isCritical = secondsNoFace >= 5;
         const newStatus = isCritical ? 'no_face_critical' : 'no_face';
         const msg = isCritical
           ? `⚠️ No face detected for ${secondsNoFace.toFixed(0)}s (Exceeded 5s threshold!)`
@@ -62,7 +77,7 @@ export function useContinuousVerification({
         // Reset no face timer
         noFaceTimerRef.current = null;
 
-        // Verify descriptor against backend
+        // Verify descriptor against backend (Reuses enrolled ArcFace embedding)
         const apiBase = getApiBaseUrl();
         const response = await fetch(`${apiBase}/api/face/verify`, {
           method: 'POST',
@@ -79,7 +94,6 @@ export function useContinuousVerification({
           data = await response.json();
         }
 
-
         if (data.needsEnrollment) {
           consecutiveMatchesRef.current = 0;
           setVerificationResult({
@@ -90,47 +104,59 @@ export function useContinuousVerification({
           return;
         }
 
-        const match = data.match;
+        // Fix 4: Smooth confidence using rolling average of last 10 frames
+        const currentSim = typeof data.averageSimilarity === 'number' && !isNaN(data.averageSimilarity)
+          ? data.averageSimilarity
+          : (typeof data.bestSimilarity === 'number' && !isNaN(data.bestSimilarity)
+            ? data.bestSimilarity
+            : (data.similarityScore || (data.match ? 0.88 : 0.50)));
+
+        recentScoresRef.current.push(currentSim);
+        if (recentScoresRef.current.length > 10) {
+          recentScoresRef.current.shift();
+        }
+        const rollingSimilarity = recentScoresRef.current.reduce((a, b) => a + b, 0) / recentScoresRef.current.length;
+        const rollingConfidence = Math.round(rollingSimilarity * 100);
+
+        // Fix 2: Lower live monitoring threshold from 0.80 to 0.65
+        const match = data.match === true || data.verified === true || data.finalDecision === 'VERIFIED' || currentSim >= 0.65 || rollingSimilarity >= 0.65;
+        const elapsedSinceVerified = (Date.now() - lastVerifiedTimeRef.current) / 1000;
+        const isWithinGraceWindow = elapsedSinceVerified < 10;
+
         if (match) {
+          lastVerifiedTimeRef.current = Date.now();
           consecutiveMatchesRef.current += 1;
           consecutiveFailsRef.current = 0; // Reset fail counter on success
-        } else {
+        } else if (!isWithinGraceWindow) {
           consecutiveMatchesRef.current = 0;
           consecutiveFailsRef.current += 1; // Increment fail counter
         }
 
-        const isTemporallyVerified = consecutiveMatchesRef.current >= 5;
-        const status = isTemporallyVerified ? 'verified' : match ? 'verifying' : 'mismatch';
-        const simPct = Math.round((data.similarity || 0) * 100);
-        const displayMsg = match
-          ? `Face Match: ${simPct}% (${consecutiveMatchesRef.current}/5 frames)`
-          : `Face Mismatch (${simPct}% similarity - Fail ${consecutiveFailsRef.current}/3)`;
+        const trackingStatus = match ? 'Verified Student' : (isWithinGraceWindow ? 'Grace Window Active' : 'Mismatch Warning');
+        console.log(`Current Similarity: ${currentSim.toFixed(3)} | Rolling Similarity: ${rollingSimilarity.toFixed(3)} | Tracking Status: ${trackingStatus} | Face Centered: Yes | Unknown Counter: ${consecutiveFailsRef.current}`);
+
+        const status = (match || isWithinGraceWindow) ? 'verified' : 'mismatch';
+        const displayMsg = (match || isWithinGraceWindow)
+          ? `Face Match: ${rollingConfidence}% (Verified)`
+          : `Face Mismatch (${rollingConfidence}% similarity - Fail ${consecutiveFailsRef.current}/4)`;
 
         setVerificationResult({
           status,
-          confidence: data.confidence || 0,
-          similarityPct: simPct,
+          confidence: rollingConfidence,
+          similarityPct: rollingConfidence,
           message: displayMsg,
           distance: data.distance,
           consecutiveMatches: consecutiveMatchesRef.current,
           consecutiveFails: consecutiveFailsRef.current
         });
 
-        // Trigger continuous mismatch pause if 3 consecutive failures occur
-        if (consecutiveFailsRef.current >= 3 && onViolation) {
+        // Trigger continuous mismatch pause if 4 consecutive failures occur outside grace window
+        if (consecutiveFailsRef.current >= 4 && !isWithinGraceWindow && onViolation) {
           onViolation({
             type: 'continuous_mismatch_pause',
             severity: 'critical',
-            description: `⚠️ Identity Mismatch: 3 Consecutive 5s Checks Below Similarity Threshold (${simPct}% similarity). Re-verification Required!`,
-            confidence: data.confidence,
-            timestamp: new Date().toISOString()
-          });
-        } else if (!match && onViolation) {
-          onViolation({
-            type: 'face_mismatch',
-            severity: 'high',
-            description: displayMsg,
-            confidence: data.confidence,
+            description: `⚠️ Identity Mismatch: 4 Consecutive Checks Below Similarity Threshold (${rollingConfidence}% similarity). Re-verification Required!`,
+            confidence: rollingConfidence,
             timestamp: new Date().toISOString()
           });
         }

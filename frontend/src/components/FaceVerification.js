@@ -35,7 +35,7 @@ export default function FaceVerification({
     if (!video || video.paused || video.ended || video.readyState < 2 || !video.videoWidth) {
       return [];
     }
-    const FRAME_COUNT = 10;
+    const FRAME_COUNT = 8;
     const frames = [];
     const startTime = Date.now();
     const canvas = document.createElement('canvas');
@@ -43,13 +43,13 @@ export default function FaceVerification({
     canvas.height = 480;
     const ctx = canvas.getContext('2d');
 
-    while (Date.now() - startTime < 3000 && frames.length < FRAME_COUNT) {
+    while (Date.now() - startTime < 2000 && frames.length < FRAME_COUNT) {
       try {
         ctx.drawImage(video, 0, 0, 640, 480);
         frames.push(canvas.toDataURL('image/jpeg', 0.85));
       } catch (e) {}
       setProgressFrames(frames.length);
-      await new Promise(resolve => setTimeout(resolve, 150));
+      await new Promise(resolve => setTimeout(resolve, 120));
     }
     return frames;
   };
@@ -116,22 +116,27 @@ export default function FaceVerification({
         return;
       }
 
-      if (data.verified || data.result === 'VERIFIED') {
+      const dec = (data.decision || data.finalDecision || (data.verified ? 'VERIFIED' : 'SUSPICIOUS')).toUpperCase();
+
+      if (dec === 'VERIFIED' || data.verified === true) {
         localStorage.setItem("faceVerified", "true");
         consecutiveFailuresRef.current = 0;
-        setStatusMsg(`✅ InsightFace ArcFace Verified! (Similarity: ${(data.bestSimilarity || 0.95).toFixed(3)})`);
+        setStatusMsg("Face verified successfully");
         if (onVerificationSuccess) onVerificationSuccess(data);
         if (onVerified) onVerified(data);
-      } else if (data.result === 'SUSPICIOUS') {
-        setStatusMsg(`🟡 Suspicious identity confidence (${data.verifiedFrames || 6}/10 verified frames). Retrying...`);
-        if (onVerificationFailed) onVerificationFailed('SUSPICIOUS');
+      } else if (dec === 'SUSPICIOUS') {
+        setStatusMsg("Face verification failed: Face mismatch");
+        if (onVerificationFailed) onVerificationFailed('Face verification failed: Face mismatch');
+      } else if (dec === 'INSUFFICIENT_SAMPLES') {
+        setStatusMsg("Not enough valid face samples");
+        if (onVerificationFailed) onVerificationFailed('Not enough valid face samples');
       } else {
-        handleFailurePass(data.message || 'Face identity mismatch');
+        handleFailurePass(data.message || 'Face verification failed: Face mismatch');
       }
     } catch (err) {
       console.warn('ArcFace verification error:', err);
-      setStatusMsg('🔴 Verification error. Ensure backend & Python ArcFace are running.');
-      if (onVerificationFailed) onVerificationFailed('Server error');
+      setStatusMsg("Server connection error");
+      if (onVerificationFailed) onVerificationFailed('Server connection error');
     } finally {
       if (!isBackgroundCheck) setVerifying(false);
     }

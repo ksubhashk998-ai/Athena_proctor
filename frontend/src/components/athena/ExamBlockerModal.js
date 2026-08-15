@@ -27,15 +27,16 @@ function ExamBlockerModal({ onStartExam }) {
     message: 'Initializing AI Face Quality Analyzer...'
   });
 
-  // 3. Face Verification States (Requirement 3)
+  // 3. Face Verification States
+  const [secondFaceVerified, setSecondFaceVerified] = useState(false);
+  const [isSecondVerifying, setIsSecondVerifying] = useState(false);
   const [faceVerifyState, setFaceVerifyState] = useState({
     status: 'unverified', // unverified | verifying | verified | mismatch
     similarityPct: 0,
-    message: 'Face Verification Required before exam launch'
+    message: 'Second face verification required'
   });
 
   const [verificationStepMsg, setVerificationStepMsg] = useState('');
-  const [isFinalVerifying, setIsFinalVerifying] = useState(false);
 
   // Active Student & Token Credentials
   const getAuthDetails = useCallback(() => {
@@ -82,7 +83,7 @@ function ExamBlockerModal({ onStartExam }) {
     }
   }, []);
 
-  // Request Real Hardware Media Stream Permissions (Requirement 1 & 2)
+  // Request Real Hardware Media Stream Permissions
   const requestHardwareAccess = useCallback(async () => {
     // 1. Request Webcam Permission
     try {
@@ -117,72 +118,131 @@ function ExamBlockerModal({ onStartExam }) {
       });
   }, []);
 
-  // Execute 6-Step ArcFace Biometric Verification
-  const runLiveFaceVerification = useCallback(async () => {
-    const video = videoRef.current;
-    if (!video) {
-      setFaceVerifyState({ status: 'mismatch', similarityPct: 0, message: '⚠️ Webcam stream not active. Please grant camera permission.' });
-      return;
-    }
-
-    setFaceVerifyState({ status: 'verifying', similarityPct: 0, message: '🔄 Step 1/6: Initializing ArcFace AI Models...' });
-    const { studentId, token } = getAuthDetails();
-
-    try {
-      setVerificationStepMsg('👉 Step 2/6: Performing Real-Time Anti-Spoofing Liveness Check...');
-      await new Promise(r => setTimeout(r, 400));
-
-      setVerificationStepMsg('🔒 Step 3-5/6: Comparing live ArcFace 10-frame embeddings against encrypted MongoDB template...');
-
-      const result = await verifyFaceAgainstBackend(video, studentId, token);
-      const isMatch = result && (result.match === true || result.verificationResult === 'VERIFIED');
-      const similarityPct = result ? Math.round((result.similarityScore || result.similarity || 0.88) * 100) : 88;
-
-      if (isMatch) {
-        localStorage.setItem("faceVerified", "true");
-        setVerificationStepMsg('✅ Step 6/6: Identity Verification Complete!');
-        setFaceVerifyState({
-          status: 'verified',
-          similarityPct: similarityPct > 0 ? similarityPct : 88,
-          message: `Face Match: ${similarityPct > 0 ? similarityPct : 88}% — ✓ Identity Verified`
-        });
-      } else {
-        const cause = result?.errorCause || 'Face Mismatch';
-        const errMsg = result?.message || 'Face does not match registered student template. Access denied.';
-        setVerificationStepMsg(`❌ Verification Failed (${cause}): ${errMsg}`);
-        setFaceVerifyState({
-          status: 'mismatch',
-          similarityPct: similarityPct,
-          message: `❌ ${errMsg}`
-        });
-      }
-
-    } catch (err) {
-      console.warn('Verification notice:', err.message);
-      setVerificationStepMsg('✅ Step 6/6: Identity Verified (Live Biometric Audit)');
-      setFaceVerifyState({
-        status: 'verified',
-        similarityPct: 88,
-        message: 'Face Match: 88% — ✓ Identity Verified'
-      });
-    }
-  }, [getAuthDetails]);
-
   // Load AI face models and automatically request hardware access on mount
   useEffect(() => {
     loadFaceModels();
     requestHardwareAccess();
   }, [requestHardwareAccess]);
 
-  // Auto-trigger live face verification as soon as webcam connects
-  useEffect(() => {
-    if (webcamState.status === 'connected' && faceVerifyState.status === 'unverified') {
-      const timer = setTimeout(() => {
-        runLiveFaceVerification();
-      }, 500);
-      return () => clearTimeout(timer);
+  // Dedicated Second ArcFace Face Verification Handler (Captures 8-frame batch sequentially)
+  const handleSecondFaceVerification = async () => {
+    const video = videoRef.current;
+    if (!video || video.readyState < 2) {
+      alert("❌ Camera video feed unavailable. Please ensure camera is connected.");
+      return;
     }
-  }, [webcamState.status, faceVerifyState.status, runLiveFaceVerification]);
+
+    setIsSecondVerifying(true);
+    setSecondFaceVerified(false);
+
+    const REQUIRED_VERIFICATION_FRAMES = 8;
+    const verificationFrames = [];
+    const canvas = document.createElement('canvas');
+    canvas.width = 640;
+    canvas.height = 480;
+    const ctx = canvas.getContext('2d');
+
+    // Sequentially capture 8 frames from webcam video feed with a 200ms delay between captures
+    for (let i = 0; i < REQUIRED_VERIFICATION_FRAMES; i++) {
+      const stepText = `Capturing face samples... ${i + 1}/${REQUIRED_VERIFICATION_FRAMES}`;
+      setVerificationStepMsg(stepText);
+      setFaceVerifyState({
+        status: 'verifying',
+        similarityPct: Math.round(((i + 1) / REQUIRED_VERIFICATION_FRAMES) * 100),
+        message: stepText
+      });
+
+      try {
+        if (video && video.readyState >= 2) {
+          ctx.drawImage(video, 0, 0, 640, 480);
+          const frameB64 = canvas.toDataURL('image/jpeg', 0.85);
+          if (frameB64 && typeof frameB64 === 'string') {
+            verificationFrames.push(frameB64);
+          }
+        }
+      } catch (e) {}
+
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+
+    if (verificationFrames.length < 2) {
+      setIsSecondVerifying(false);
+      setSecondFaceVerified(false);
+      const errMsg = "Unable to capture enough face samples. Please keep your face centered and try again.";
+      setVerificationStepMsg(errMsg);
+      setFaceVerifyState({
+        status: 'mismatch',
+        similarityPct: 0,
+        message: errMsg
+      });
+      return;
+    }
+
+    setVerificationStepMsg("Verifying identity...");
+    setFaceVerifyState(prev => ({
+      ...prev,
+      status: 'verifying',
+      message: "Verifying identity..."
+    }));
+
+    const { studentId, token } = getAuthDetails();
+    const activeEmail = localStorage.getItem('registered_email') || studentId;
+    const apiBase = getApiBaseUrl();
+
+    try {
+      console.log(`📤 Sending single batch request containing ${verificationFrames.length} frames for second ArcFace identity verification...`);
+
+      const response = await fetch(`${apiBase}/api/face/verify`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: token ? `Bearer ${token}` : ''
+        },
+        body: JSON.stringify({
+          studentId: studentId,
+          email: activeEmail,
+          frames: verificationFrames
+        })
+      });
+
+      const data = await response.json();
+      const dec = (data.decision || data.finalDecision || (data.verified ? 'VERIFIED' : 'SUSPICIOUS')).toUpperCase();
+      const isMatch = data.verified === true || data.matched === true || dec === 'VERIFIED';
+      const avgSim = typeof data.averageSimilarity === 'number' ? data.averageSimilarity : (data.similarity || data.bestSimilarity || 0.0);
+      const similarityPct = Math.round(avgSim * 100);
+
+      if (isMatch) {
+        setSecondFaceVerified(true);
+        localStorage.setItem("faceVerified", "true");
+        setVerificationStepMsg('✓ Second Identity Verification Complete');
+        setFaceVerifyState({
+          status: 'verified',
+          similarityPct: similarityPct,
+          message: `Face Match: ${similarityPct}% — Identity Verified`
+        });
+      } else {
+        setSecondFaceVerified(false);
+        const errMsg = data.message || 'Face verification failed: Face mismatch';
+        setVerificationStepMsg(`❌ ${errMsg}`);
+        setFaceVerifyState({
+          status: 'mismatch',
+          similarityPct: similarityPct,
+          message: `Face verification failed: Face mismatch (${similarityPct}% similarity)`
+        });
+      }
+    } catch (e) {
+      console.error("Second face verification network error:", e);
+      setSecondFaceVerified(false);
+      setVerificationStepMsg('Server connection error');
+      setFaceVerifyState({
+        status: 'mismatch',
+        similarityPct: 0,
+        message: 'Server connection error'
+      });
+    } finally {
+      setIsSecondVerifying(false);
+    }
+  };
 
   const handleDeleteAndReEnroll = async () => {
     const { studentId } = getAuthDetails();
@@ -212,51 +272,20 @@ function ExamBlockerModal({ onStartExam }) {
     }
   };
 
-  // Fix 4 & Requirement 6 & 7: Do Not Verify Again When Starting Exam
-  const handleStartExamClick = async () => {
-    const alreadyVerified = localStorage.getItem("faceVerified") === "true" || faceVerifyState.status === 'verified';
-    if (alreadyVerified) {
-      console.log("Face already verified");
-      console.log("Verification skipped");
-      console.log("Navigating directly to exam");
-      if (onStartExam) onStartExam();
+  // Requirement 15: Start Exam Button Handler (Contains NO ArcFace verification logic)
+  const handleStartExamClick = () => {
+    if (!secondFaceVerified) {
       return;
     }
-
-    const video = videoRef.current;
-    if (!video) {
-      if (onStartExam) onStartExam();
-      return;
-    }
-
-    setIsFinalVerifying(true);
-    setVerificationStepMsg('🔒 Running Final Biometric Security Audit before launch...');
-    const { studentId, token } = getAuthDetails();
-
-    try {
-      const res = await verifyFaceAgainstBackend(video, studentId, token).catch(() => {});
-      if (res && (res.match || res.verificationResult === 'VERIFIED')) {
-        localStorage.setItem("faceVerified", "true");
-      }
-      setIsFinalVerifying(false);
-      if (onStartExam) onStartExam();
-    } catch (e) {
-      setIsFinalVerifying(false);
-      if (onStartExam) onStartExam();
-    }
+    if (onStartExam) onStartExam();
   };
-
-
 
   // Requirement 4 Checklist Evaluator: ALL CHECKS MUST PASS TO ENABLE START EXAM
   const isWebcamOk = webcamState.status === 'connected';
   const isMicOk = micState.status === 'connected';
-  const isFaceVerified = faceVerifyState.status === 'verified';
-  const isSingleFaceOk = telemetry.singleFaceOk || isFaceVerified;
-  const isLightingOk = telemetry.lightingOk || isFaceVerified;
+  const isSingleFaceOk = telemetry.singleFaceOk || secondFaceVerified;
+  const isLightingOk = telemetry.lightingOk || secondFaceVerified;
   const isInternetOk = internetState.status === 'connected';
-
-  const allChecksPassed = isWebcamOk && isFaceVerified && (isMicOk || true);
 
   return (
     <div className="athena-blocker-overlay" style={styles.overlay}>
@@ -289,7 +318,7 @@ function ExamBlockerModal({ onStartExam }) {
           </div>
         </div>
 
-        {/* Requirement 7: Live Verification Cards Grid */}
+        {/* System Check Cards Grid */}
         <div style={styles.grid}>
 
           {/* 1. Webcam Card */}
@@ -315,13 +344,13 @@ function ExamBlockerModal({ onStartExam }) {
           </div>
 
           {/* 3. Face Verification Card */}
-          <div style={{ ...styles.cardItem, border: `1px solid ${isFaceVerified ? '#10b981' : '#f59e0b'}` }}>
+          <div style={{ ...styles.cardItem, border: `1px solid ${secondFaceVerified ? '#10b981' : '#f59e0b'}` }}>
             <div style={styles.cardHeader}>
-              <i className="fas fa-user-shield" style={{ color: isFaceVerified ? '#10b981' : '#f59e0b' }}></i>
+              <i className="fas fa-user-shield" style={{ color: secondFaceVerified ? '#10b981' : '#f59e0b' }}></i>
               <strong>Face Verification</strong>
             </div>
-            <span style={{ ...styles.chip, color: isFaceVerified ? '#34d399' : '#fcd34d', background: isFaceVerified ? 'rgba(16,185,129,0.2)' : 'rgba(245,158,11,0.2)' }}>
-              {isFaceVerified ? `✓ Match ${faceVerifyState.similarityPct}%` : 'Pending'}
+            <span style={{ ...styles.chip, color: secondFaceVerified ? '#34d399' : '#fcd34d', background: secondFaceVerified ? 'rgba(16,185,129,0.2)' : 'rgba(245,158,11,0.2)' }}>
+              {secondFaceVerified ? `✓ Match ${faceVerifyState.similarityPct}%` : 'Pending'}
             </span>
           </div>
 
@@ -359,14 +388,14 @@ function ExamBlockerModal({ onStartExam }) {
           </div>
         </div>
 
-        {/* Face Verification Status Banner (Requirement 3) */}
+        {/* Requirement 20: Face Verification Status Banner */}
         <div style={{
           ...styles.banner,
-          background: isFaceVerified ? 'rgba(16, 185, 129, 0.15)' : faceVerifyState.status === 'mismatch' ? 'rgba(239, 68, 68, 0.15)' : 'rgba(99, 102, 241, 0.15)',
-          border: `1px solid ${isFaceVerified ? '#10b981' : faceVerifyState.status === 'mismatch' ? '#ef4444' : '#6366f1'}`
+          background: secondFaceVerified ? 'rgba(16, 185, 129, 0.15)' : faceVerifyState.status === 'mismatch' ? 'rgba(239, 68, 68, 0.15)' : 'rgba(99, 102, 241, 0.15)',
+          border: `1px solid ${secondFaceVerified ? '#10b981' : faceVerifyState.status === 'mismatch' ? '#ef4444' : '#6366f1'}`
         }}>
-          <div style={{ fontWeight: 700, fontSize: '0.92rem', color: isFaceVerified ? '#34d399' : faceVerifyState.status === 'mismatch' ? '#fca5a5' : '#818cf8' }}>
-            {faceVerifyState.message}
+          <div style={{ fontWeight: 700, fontSize: '0.92rem', color: secondFaceVerified ? '#34d399' : faceVerifyState.status === 'mismatch' ? '#fca5a5' : '#818cf8' }}>
+            {secondFaceVerified ? faceVerifyState.message : (faceVerifyState.message || 'Second face verification required')}
           </div>
           {verificationStepMsg && (
             <div style={{ fontSize: '0.8rem', color: '#cbd5e1', marginTop: '4px' }}>
@@ -377,66 +406,84 @@ function ExamBlockerModal({ onStartExam }) {
 
         {/* Action Controls */}
         <div style={styles.actionRow}>
-          {/* Permission Request / Face Verify Button */}
+          {/* Permission Request Button */}
           {(!isWebcamOk || !isMicOk) ? (
             <button onClick={requestHardwareAccess} style={styles.permBtn}>
               <i className="fas fa-camera"></i>
               <span>Grant Webcam & Mic Permissions</span>
             </button>
-          ) : !isFaceVerified ? (
-            <div style={{ display: 'flex', gap: '10px', width: '100%' }}>
+          ) : (
+            <>
+              {/* Dedicated Second Face Verification Button */}
               <button
-                onClick={runLiveFaceVerification}
-                disabled={faceVerifyState.status === 'verifying'}
+                onClick={handleSecondFaceVerification}
+                disabled={isSecondVerifying}
                 style={{
                   ...styles.verifyBtn,
-                  flex: 1,
-                  opacity: faceVerifyState.status === 'verifying' ? 0.7 : 1
+                  background: secondFaceVerified
+                    ? 'linear-gradient(135deg, #059669, #10b981)'
+                    : 'linear-gradient(135deg, #7c3aed, #6366f1)',
+                  opacity: isSecondVerifying ? 0.6 : 1,
+                  cursor: isSecondVerifying ? 'not-allowed' : 'pointer'
                 }}
               >
-                <i className="fas fa-user-check"></i>
+                <i className={`fas ${secondFaceVerified ? 'fa-check-circle' : 'fa-camera'}`}></i>
                 <span>
-                  {faceVerifyState.status === 'verifying' ? 'Verifying Live ArcFace Embedding...' : 'Verify Live Face & Identity'}
+                  {isSecondVerifying
+                    ? 'Verifying Live ArcFace Embedding...'
+                    : secondFaceVerified
+                    ? '✓ Second Identity Verification Complete'
+                    : faceVerifyState.status === 'mismatch'
+                    ? '📷 Retry Second Face Verification'
+                    : '📷 Start Second Face Verification'}
                 </span>
               </button>
 
+              {/* Requirement 15 & 21: Start Exam Button (DISABLED UNTIL secondFaceVerified === true) */}
               <button
-                onClick={handleDeleteAndReEnroll}
-                disabled={faceVerifyState.status === 'verifying'}
+                onClick={handleStartExamClick}
+                disabled={!secondFaceVerified || isSecondVerifying}
                 style={{
-                  padding: '12px 18px',
-                  borderRadius: '12px',
-                  border: 'none',
-                  background: 'linear-gradient(135deg, #7c3aed, #6366f1)',
-                  color: 'white',
-                  fontWeight: 700,
-                  cursor: faceVerifyState.status === 'verifying' ? 'not-allowed' : 'pointer',
-                  fontSize: '0.88rem',
-                  boxShadow: '0 4px 14px rgba(124, 58, 237, 0.4)'
+                  ...styles.startBtn,
+                  background: (secondFaceVerified && !isSecondVerifying)
+                    ? 'linear-gradient(135deg, #10b981, #059669)'
+                    : '#334155',
+                  cursor: (secondFaceVerified && !isSecondVerifying) ? 'pointer' : 'not-allowed',
+                  opacity: (secondFaceVerified && !isSecondVerifying) ? 1 : 0.65,
+                  boxShadow: (secondFaceVerified && !isSecondVerifying) ? '0 10px 20px -5px rgba(16, 185, 129, 0.5)' : 'none'
                 }}
               >
-                🔄 Re-Enroll Face
+                <i className="fas fa-play"></i>
+                <span>
+                  {isSecondVerifying
+                    ? 'Verification in Progress...'
+                    : secondFaceVerified
+                    ? '▶ Start Exam & Begin Proctoring'
+                    : 'Complete Second Verification to Enable Exam'}
+                </span>
               </button>
-            </div>
-          ) : null}
 
-          {/* Requirement 4: Start Exam Button (DISABLED UNTIL ALL CHECKS PASS) */}
-          <button
-            onClick={handleStartExamClick}
-            disabled={!allChecksPassed || isFinalVerifying}
-            style={{
-              ...styles.startBtn,
-              background: allChecksPassed ? 'linear-gradient(135deg, #10b981, #059669)' : '#334155',
-              cursor: (allChecksPassed && !isFinalVerifying) ? 'pointer' : 'not-allowed',
-              opacity: (allChecksPassed && !isFinalVerifying) ? 1 : 0.65,
-              boxShadow: allChecksPassed ? '0 10px 20px -5px rgba(16, 185, 129, 0.5)' : 'none'
-            }}
-          >
-            <i className="fas fa-play"></i>
-            <span>
-              {isFinalVerifying ? 'Verifying Final 3s Audit...' : allChecksPassed ? 'Start Exam & Begin Proctoring' : 'Complete All System Checks to Start'}
-            </span>
-          </button>
+              {faceVerifyState.status === 'mismatch' && (
+                <button
+                  onClick={handleDeleteAndReEnroll}
+                  disabled={isSecondVerifying}
+                  style={{
+                    padding: '10px 14px',
+                    borderRadius: '10px',
+                    border: 'none',
+                    background: 'rgba(124, 58, 237, 0.3)',
+                    color: '#c084fc',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    fontSize: '0.82rem',
+                    marginTop: '4px'
+                  }}
+                >
+                  🔄 Re-Enroll Face
+                </button>
+              )}
+            </>
+          )}
         </div>
 
       </div>

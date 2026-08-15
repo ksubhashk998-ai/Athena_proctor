@@ -12,7 +12,7 @@ const VerificationLogSchema = new mongoose.Schema({
     result: { 
         type: String, 
         required: true, 
-        enum: ['VERIFIED', 'SUSPICIOUS', 'REJECTED', 'MULTIPLE_FACES_DETECTED', 'CHALLENGE_FAILED', 'verified', 'rejected', 'suspicious'] 
+        enum: ['VERIFIED', 'REVIEW', 'SUSPICIOUS', 'REJECTED', 'INSUFFICIENT_SAMPLES', 'MULTIPLE_FACES_DETECTED', 'CHALLENGE_FAILED', 'verified', 'review', 'rejected', 'suspicious', 'insufficient_samples'] 
     },
     ipAddress: { type: String },
     deviceFingerprint: { type: String },

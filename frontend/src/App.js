@@ -6,6 +6,7 @@ import Dashboard from "./pages/Dashboard";
 import ProctorDashboard from "./pages/ProctorDashboard";
 import AthenaExamDashboard from "./pages/AthenaExamDashboard";
 import Diagnostics from "./pages/Diagnostics";
+import AdminMonitor from "./pages/AdminMonitor";
 import { detectPhone, showPhoneWarning } from "./utils/deviceDetection";
 import EyeTrackingWidget from "./components/EyeTrackingWidget";
 
@@ -142,6 +143,10 @@ function AppContent() {
           <Route
             path="/admin"
             element={<ExternalAdminRedirect />}
+          />
+          <Route
+            path="/admin-monitor"
+            element={<AdminMonitor />}
           />
 
 

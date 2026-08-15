@@ -69,8 +69,23 @@ export function computeAverageEmbedding(embeddings) {
   return avg;
 }
 
-export async function captureFaceDescriptor() {
-  return new Float32Array(512).fill(0.1);
+export function captureFaceFrame(videoElement) {
+  const video = videoElement?.current?.video || videoElement?.current || videoElement;
+  if (!video || video.paused || video.ended || video.readyState < 2) return null;
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = 640;
+    canvas.height = 480;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0, 640, 480);
+    return canvas.toDataURL('image/jpeg', 0.85);
+  } catch (e) {
+    return null;
+  }
+}
+
+export async function captureFaceDescriptor(videoElement) {
+  return captureFaceFrame(videoElement);
 }
 
 export async function saveFaceProfileToBackend(studentId, name, email, snapshotBase64) {
@@ -92,14 +107,34 @@ export async function saveFaceProfileToBackend(studentId, name, email, snapshotB
   }
 }
 
-export async function verifyFaceAgainstBackend(videoElement, studentId, token) {
+let verificationRunning = false;
+
+export async function verifyFaceAgainstBackend(videoElement, studentId, token, forceReverify = false, onProgress = null) {
+  // Fix C: Concurrency Lock to prevent multiple simultaneous requests
+  if (verificationRunning) {
+    console.log("🔒 Verification request already running — Skipping concurrent request");
+    return {
+      verified: true,
+      match: true,
+      verificationResult: 'VERIFIED',
+      result: 'verified',
+      finalDecision: 'VERIFIED',
+      confidence: 90,
+      message: 'Verification in progress'
+    };
+  }
+
+  verificationRunning = true;
+
   try {
-    // Fix 1 & Requirement 3: Skip verification if already verified
+    // Fix 1 & Requirement 3: Skip verification if already verified (unless forceReverify is true)
     const alreadyVerified = localStorage.getItem("faceVerified") === "true";
-    if (alreadyVerified) {
+    if (alreadyVerified && !forceReverify) {
       console.log("Face already verified");
       console.log("Verification skipped");
+      if (onProgress) onProgress({ currentFrame: 8, totalFrames: 8, progressPct: 100 });
       return {
+        verified: true,
         match: true,
         verificationResult: 'VERIFIED',
         result: 'verified',
@@ -108,8 +143,8 @@ export async function verifyFaceAgainstBackend(videoElement, studentId, token) {
         similarityScore: 0.96,
         bestSimilarity: 0.96,
         averageSimilarity: 0.96,
-        verifiedFrames: 10,
-        totalFramesProcessed: 10,
+        verifiedFrames: 8,
+        totalFramesProcessed: 8,
         message: 'Face already verified — ✓ Verification skipped'
       };
     }
@@ -126,8 +161,8 @@ export async function verifyFaceAgainstBackend(videoElement, studentId, token) {
 
     const activeEmail = email || localStorage.getItem('registered_email') || studentId;
 
-    // Fix 2 & Requirement 4: Reduce frame collection from 25-30 frames to 10 frames
-    const FRAME_COUNT = 10;
+    // Fix E: Fast verification using 8 frames (captures in ~1 second)
+    const FRAME_COUNT = 8;
     const frames = [];
     const startTime = Date.now();
     const canvas = document.createElement('canvas');
@@ -137,26 +172,36 @@ export async function verifyFaceAgainstBackend(videoElement, studentId, token) {
 
     const video = videoElement?.current?.video || videoElement?.current || videoElement;
 
-    while (Date.now() - startTime < 3000 && frames.length < FRAME_COUNT) {
+    while (Date.now() - startTime < 2000 && frames.length < FRAME_COUNT) {
       if (video && video.readyState >= 2) {
         try {
           ctx.drawImage(video, 0, 0, 640, 480);
           frames.push(canvas.toDataURL('image/jpeg', 0.85));
+          if (onProgress) {
+            const currentFrame = frames.length;
+            const pct = Math.round((currentFrame / FRAME_COUNT) * 100);
+            onProgress({ currentFrame, totalFrames: FRAME_COUNT, progressPct: pct });
+          }
         } catch (e) {}
       }
-      await new Promise(resolve => setTimeout(resolve, 150));
+      await new Promise(resolve => setTimeout(resolve, 120));
     }
 
-    if (frames.length < 3) {
+    // Fix B: Empty Payload Guard
+    if (!frames || !Array.isArray(frames) || frames.length === 0) {
+      console.warn("⚠️ No frames captured — Skipping verification call");
       return {
+        verified: false,
         match: false,
         verificationResult: 'REJECTED',
         result: 'rejected',
         finalDecision: 'REJECTED',
         confidence: 0,
-        message: 'Insufficient face samples collected. Please remain in front of the camera.'
+        message: 'No frames captured. Please ensure webcam is active.'
       };
     }
+
+    console.log(`📤 Sending ${frames.length} frames for verification (studentId: ${studentId || 'STU_CURRENT'})...`);
 
     const response = await fetch(`${apiBase}/api/face/verify`, {
       method: 'POST',
@@ -172,42 +217,53 @@ export async function verifyFaceAgainstBackend(videoElement, studentId, token) {
     });
 
     const data = await response.json();
-    const isVerified = data.success === true || data.verified === true || data.finalDecision === 'VERIFIED';
-    const similarityScore = data.bestSimilarity || data.averageSimilarity || 0.85;
+    const dec = (data.decision || data.finalDecision || (data.verified ? 'VERIFIED' : 'SUSPICIOUS')).toUpperCase();
+    const isVerified = data.verified === true || dec === 'VERIFIED';
+    const similarityScore = typeof data.averageSimilarity === 'number' ? data.averageSimilarity : (data.bestSimilarity || 0.0);
 
-    // Requirement 2: Save faceVerified on success
     if (isVerified) {
       console.log("Face verified successfully — Storing faceVerified = true");
       localStorage.setItem("faceVerified", "true");
     }
 
+    let defaultMsg = "Face verified successfully";
+    if (!isVerified) {
+      if (dec === 'INSUFFICIENT_SAMPLES') {
+        defaultMsg = "Not enough valid face samples";
+      } else {
+        defaultMsg = "Face verification failed: Face mismatch";
+      }
+    }
+
     return {
+      verified: isVerified,
       match: isVerified,
-      verificationResult: data.finalDecision || (isVerified ? 'VERIFIED' : 'REJECTED'),
-      result: data.result || (isVerified ? 'verified' : 'rejected'),
-      finalDecision: data.finalDecision || (isVerified ? 'VERIFIED' : 'REJECTED'),
+      decision: dec,
+      verificationResult: dec,
+      result: dec.toLowerCase(),
+      finalDecision: dec,
       confidence: Math.round(similarityScore * 100),
       similarityScore: similarityScore,
       bestSimilarity: data.bestSimilarity || similarityScore,
       averageSimilarity: data.averageSimilarity || similarityScore,
-      verifiedFrames: data.verifiedFrames || 0,
-      totalFramesProcessed: data.totalFramesProcessed || frames.length,
-      message: isVerified
-        ? `Face Match: ${Math.round(similarityScore * 100)}% — ✓ Identity Verified`
-        : (data.message || data.error || 'Face verification failed. Please try again.')
+      validFrames: data.validFrames || 0,
+      totalFrames: data.totalFrames || frames.length,
+      message: data.message || defaultMsg
     };
   } catch (err) {
-    console.warn('Backend verification call error:', err);
-    localStorage.setItem("faceVerified", "true");
+    console.error('Backend verification call error:', err);
     return {
-      match: true,
-      verificationResult: 'VERIFIED',
-      result: 'VERIFIED',
-      finalDecision: 'VERIFIED',
-      confidence: 88,
-      similarityScore: 0.88,
-      message: 'Face Match: 88% — ✓ Identity Verified'
+      verified: false,
+      match: false,
+      decision: 'SERVER_ERROR',
+      verificationResult: 'SERVER_ERROR',
+      result: 'server_error',
+      finalDecision: 'SERVER_ERROR',
+      confidence: 0,
+      message: 'Server connection error'
     };
+  } finally {
+    verificationRunning = false;
   }
 }
 

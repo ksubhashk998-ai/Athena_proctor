@@ -40,17 +40,25 @@ function ExamBlockerModal({ onStartExam }) {
 
   // Active Student & Token Credentials
   const getAuthDetails = useCallback(() => {
-    let studentId = 'STU_' + Date.now();
+    let studentId = '';
+    let email = '';
     let token = '';
     try {
       const stored = localStorage.getItem('user');
       if (stored) {
         const u = JSON.parse(stored);
-        studentId = u.studentId || studentId;
+        email = u.email || '';
+        studentId = u.studentId || (email ? 'STU_' + email.replace(/[^a-z0-9]/gi, '_') : '');
+      }
+      if (!email) {
+        email = localStorage.getItem('registered_email') || '';
+        if (email && !studentId) {
+          studentId = 'STU_' + email.replace(/[^a-z0-9]/gi, '_');
+        }
       }
       token = localStorage.getItem('token') || '';
     } catch (e) {}
-    return { studentId, token };
+    return { studentId, email, token };
   }, []);
 
   // Initialize Web Audio API for Microphone Volume Analysis
@@ -185,12 +193,13 @@ function ExamBlockerModal({ onStartExam }) {
       message: "Verifying identity..."
     }));
 
-    const { studentId, token } = getAuthDetails();
-    const activeEmail = localStorage.getItem('registered_email') || studentId;
+    const { studentId, email, token } = getAuthDetails();
+    const activeEmail = email || localStorage.getItem('registered_email') || '';
+    const activeStudentId = studentId || ('STU_' + (activeEmail || 'user').replace(/[^a-z0-9]/gi, '_'));
     const apiBase = getApiBaseUrl();
 
     try {
-      console.log(`📤 Sending single batch request containing ${verificationFrames.length} frames for second ArcFace identity verification...`);
+      console.log(`📤 Sending single batch request containing ${verificationFrames.length} frames for second ArcFace identity verification (${activeEmail})...`);
 
       const response = await fetch(`${apiBase}/api/face/verify`, {
         method: 'POST',
@@ -199,7 +208,7 @@ function ExamBlockerModal({ onStartExam }) {
           Authorization: token ? `Bearer ${token}` : ''
         },
         body: JSON.stringify({
-          studentId: studentId,
+          studentId: activeStudentId,
           email: activeEmail,
           frames: verificationFrames
         })

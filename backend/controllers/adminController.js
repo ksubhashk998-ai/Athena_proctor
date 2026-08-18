@@ -1022,6 +1022,72 @@ const upsertLiveSession = async (req, res) => {
   }
 };
 
+/**
+ * 13. Submit Exam Session (Marks session as Finished & updates admin lists)
+ * POST /api/admin/submit-exam
+ */
+const submitExamSession = async (req, res) => {
+  try {
+    const { studentId, email, studentName, examName } = req.body;
+    const cleanEmail = (email || '').trim().toLowerCase();
+    const cleanId = (studentId || '').trim() || ('STU_' + cleanEmail.replace(/[^a-z0-9]/gi, '_'));
+
+    let session = await LiveSession.findOne({
+      $or: [{ studentId: cleanId }, { email: cleanEmail }]
+    });
+
+    const violations = await SuspiciousActivity.find({ studentId: cleanId });
+    const integrityScore = violations.length === 0 ? '98% Safe' : (violations.length < 3 ? '85% Good' : '65% Review');
+
+    if (!session) {
+      session = new LiveSession({
+        studentId: cleanId,
+        studentName: studentName || cleanEmail.split('@')[0],
+        email: cleanEmail,
+        usn: cleanId,
+        examName: examName || 'Computer Science Final Assessment',
+        department: 'Computer Science',
+        status: 'Finished',
+        riskLevel: violations.length > 2 ? 'High' : 'Low',
+        startTime: new Date(Date.now() - 45 * 60 * 1000)
+      });
+    }
+
+    session.status = 'Finished';
+    session.lastActive = new Date();
+    session.updatedAt = new Date();
+    await session.save();
+
+    const io = req.app.get('io');
+    if (io) {
+      const finishPayload = {
+        studentId: cleanId,
+        studentName: session.studentName,
+        usn: session.usn || cleanId,
+        email: session.email,
+        examName: session.examName,
+        status: 'Finished',
+        integrityScore,
+        duration: '00:45:00',
+        endTime: new Date()
+      };
+      io.to('admin_room').emit('student-finished', finishPayload);
+      io.emit('student-finished', finishPayload);
+      io.emit('exam-finished', session);
+    }
+
+    res.json({
+      success: true,
+      message: 'Exam submitted successfully and recorded as Finished.',
+      session,
+      integrityScore
+    });
+  } catch (error) {
+    console.error('Error in submitExamSession:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
 module.exports = {
   loginAdmin,
   getDashboardOverview,
@@ -1035,5 +1101,6 @@ module.exports = {
   getReports,
   getAnalytics,
   getAlerts,
-  upsertLiveSession
+  upsertLiveSession,
+  submitExamSession
 };

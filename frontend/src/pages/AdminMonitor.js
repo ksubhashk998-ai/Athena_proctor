@@ -10,6 +10,8 @@ export default function AdminMonitor() {
 
   const [students, setStudents] = useState([]);
   const [violations, setViolations] = useState([]);
+  const [finishedStudents, setFinishedStudents] = useState([]);
+  const [terminatedStudents, setTerminatedStudents] = useState([]);
   const [selectedStudentDetail, setSelectedStudentDetail] = useState(null);
   const [watchingStudent, setWatchingStudent] = useState(null);
   const [evidenceModalImage, setEvidenceModalImage] = useState(null);
@@ -29,10 +31,12 @@ export default function AdminMonitor() {
   const fetchData = async () => {
     try {
       const apiBase = getApiBaseUrl();
-      const [studentsRes, analyticsRes, violationsRes] = await Promise.all([
+      const [studentsRes, analyticsRes, violationsRes, finishedRes, terminatedRes] = await Promise.all([
         axios.get(`${apiBase}/api/admin/students/live`).catch(() => null),
         axios.get(`${apiBase}/api/admin/analytics`).catch(() => null),
-        axios.get(`${apiBase}/api/admin/violations`).catch(() => null)
+        axios.get(`${apiBase}/api/admin/violations`).catch(() => null),
+        axios.get(`${apiBase}/api/admin/finished`).catch(() => null),
+        axios.get(`${apiBase}/api/admin/terminated`).catch(() => null)
       ]);
 
       if (studentsRes?.data?.success) {
@@ -45,6 +49,14 @@ export default function AdminMonitor() {
 
       if (violationsRes?.data?.success) {
         setViolations(violationsRes.data.violations || []);
+      }
+
+      if (finishedRes?.data?.success) {
+        setFinishedStudents(finishedRes.data.finishedStudents || []);
+      }
+
+      if (terminatedRes?.data?.success) {
+        setTerminatedStudents(terminatedRes.data.terminatedStudents || []);
       }
     } catch (error) {
       console.error('Error loading admin live data:', error);
@@ -116,6 +128,21 @@ export default function AdminMonitor() {
           }
           return [studentObj, ...prev];
         });
+      });
+
+      socket.on('student-finished', (data) => {
+        setFinishedStudents(prev => [data, ...prev.filter(s => s.studentId !== data.studentId)]);
+        setStudents(prev => prev.filter(s => s.studentId !== data.studentId && s.email !== data.email));
+      });
+
+      socket.on('exam-finished', (data) => {
+        setFinishedStudents(prev => [data, ...prev.filter(s => s.studentId !== data.studentId)]);
+        setStudents(prev => prev.filter(s => s.studentId !== data.studentId && s.email !== data.email));
+      });
+
+      socket.on('student-terminated', (data) => {
+        setTerminatedStudents(prev => [data, ...prev.filter(s => s.studentId !== data.studentId)]);
+        setStudents(prev => prev.filter(s => s.studentId !== data.studentId && s.email !== data.email));
       });
     }
 
@@ -950,7 +977,7 @@ export default function AdminMonitor() {
             <h2 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#ef4444', marginBottom: '16px' }}>
               🔴 Terminated Student Sessions
             </h2>
-            {students.filter(s => s.status === 'Terminated').length === 0 ? (
+            {terminatedStudents.length === 0 ? (
               <div style={styles.emptyStateContainer}>
                 <div style={styles.emptyStateIcon}>🟢</div>
                 <h3 style={styles.emptyStateTitle}>No Terminated Students</h3>
@@ -958,18 +985,18 @@ export default function AdminMonitor() {
               </div>
             ) : (
               <div style={styles.grid}>
-                {students.filter(s => s.status === 'Terminated').map((s, i) => (
+                {terminatedStudents.map((s, i) => (
                   <div key={i} style={{ ...styles.studentCard, borderColor: '#ef4444' }}>
                     <div style={styles.cardHeader}>
                       <div>
                         <h3 style={{ margin: 0, color: '#ffffff', fontSize: '1rem' }}>{s.studentName}</h3>
-                        <div style={{ fontSize: '0.75rem', color: '#94a3b8' }}>USN: {s.usn}</div>
+                        <div style={{ fontSize: '0.75rem', color: '#94a3b8' }}>USN: {s.usn || s.studentId}</div>
                       </div>
                       <span style={styles.criticalPill}>TERMINATED</span>
                     </div>
                     <div style={{ padding: '14px', fontSize: '0.8rem', color: '#cbd5e1' }}>
                       <div>Reason: <strong>{s.terminationReason || 'Exceeded maximum violation limit'}</strong></div>
-                      <div style={{ marginTop: '4px', color: '#94a3b8' }}>Terminated at: {s.startTime || 'Recent'}</div>
+                      <div style={{ marginTop: '4px', color: '#94a3b8' }}>Terminated at: {s.terminationTime ? new Date(s.terminationTime).toLocaleTimeString() : 'Recent'}</div>
                     </div>
                   </div>
                 ))}
@@ -983,14 +1010,23 @@ export default function AdminMonitor() {
            ------------------------------------------------------------- */}
         {activeNav === 'finished' && (
           <div style={{ padding: '24px' }}>
-            <h2 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#34d399', marginBottom: '16px' }}>
-              ✔️ Finished & Passed Exam Sessions
-            </h2>
-            {students.filter(s => s.status === 'Finished' || s.status === 'Completed').length === 0 ? (
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <h2 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#34d399', margin: 0 }}>
+                ✔️ Finished & Passed Exam Sessions
+              </h2>
+              <span style={{ fontSize: '0.85rem', color: '#94a3b8' }}>
+                {finishedStudents.length} Completed Examinations
+              </span>
+            </div>
+
+            {finishedStudents.length === 0 ? (
               <div style={styles.emptyStateContainer}>
                 <div style={styles.emptyStateIcon}>✔️</div>
                 <h3 style={styles.emptyStateTitle}>No Finished Exams Yet</h3>
                 <p style={styles.emptyStateSubtitle}>Completed student exam submissions with proctoring score will be logged here.</p>
+                <button onClick={fetchData} style={styles.refreshBtn}>
+                  🔄 Refresh List
+                </button>
               </div>
             ) : (
               <div style={styles.tableCard}>
@@ -1002,16 +1038,42 @@ export default function AdminMonitor() {
                       <th style={styles.tableTh}>Duration</th>
                       <th style={styles.tableTh}>Integrity Score</th>
                       <th style={styles.tableTh}>Status</th>
+                      <th style={styles.tableTh}>Action</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {students.filter(s => s.status === 'Finished' || s.status === 'Completed').map((s, i) => (
-                      <tr key={i} style={styles.tableRow}>
-                        <td style={styles.tableTd}><strong>{s.studentName}</strong> ({s.usn})</td>
+                    {finishedStudents.map((s, i) => (
+                      <tr key={s._id || s.studentId || i} style={styles.tableRow}>
+                        <td style={styles.tableTd}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                            <div style={styles.miniAvatar}>
+                              {s.studentName ? s.studentName.charAt(0).toUpperCase() : 'S'}
+                            </div>
+                            <div>
+                              <div style={{ fontWeight: 800, color: '#ffffff', fontSize: '0.9rem' }}>{s.studentName}</div>
+                              <div style={{ fontSize: '0.725rem', color: '#94a3b8' }}>USN: {s.usn || s.studentId}</div>
+                            </div>
+                          </div>
+                        </td>
                         <td style={styles.tableTd}>{s.examName || 'Computer Science Final Assessment'}</td>
-                        <td style={styles.tableTd}>{s.duration || '01:45:00'}</td>
-                        <td style={styles.tableTd}><strong style={{ color: '#34d399' }}>{s.integrityScore || '98% Safe'}</strong></td>
-                        <td style={styles.tableTd}><span style={{ background: '#10b981', color: '#fff', padding: '2px 8px', borderRadius: '10px', fontSize: '0.7rem', fontWeight: 800 }}>Completed</span></td>
+                        <td style={styles.tableTd}>{s.duration || '00:45:00'}</td>
+                        <td style={styles.tableTd}>
+                          <strong style={{ color: '#34d399' }}>{s.integrityScore || (s.totalViolations > 0 ? (s.totalViolations > 2 ? '65% Review' : '85% Good') : '98% Safe')}</strong>
+                        </td>
+                        <td style={styles.tableTd}>
+                          <span style={{ background: '#10b981', color: '#fff', padding: '3px 10px', borderRadius: '10px', fontSize: '0.725rem', fontWeight: 800 }}>
+                            Completed
+                          </span>
+                        </td>
+                        <td style={styles.tableTd}>
+                          <button
+                            onClick={() => handleOpenStudentDetail(s)}
+                            style={styles.actionLaunchBtn}
+                            title="Inspect Student Session Report"
+                          >
+                            ↗
+                          </button>
+                        </td>
                       </tr>
                     ))}
                   </tbody>

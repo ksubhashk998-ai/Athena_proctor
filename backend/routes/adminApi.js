@@ -13,14 +13,16 @@ const {
   getReports,
   getAnalytics,
   getAlerts,
-  upsertLiveSession
+  upsertLiveSession,
+  submitExamSession
 } = require('../controllers/adminController');
 
 const { verifyAdminToken } = require('../middleware/adminAuthMiddleware');
 
-// Public / Auth / Student Live Registration Endpoints
+// Public / Auth / Student Live Registration & Submission Endpoints
 router.post('/login', loginAdmin);
 router.post('/live-session', upsertLiveSession);
+router.post('/submit-exam', submitExamSession);
 
 // Live Students Endpoint (Available publicly for internal dev + protected)
 router.get('/students/live', getLiveStudents);

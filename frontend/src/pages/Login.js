@@ -515,6 +515,9 @@ function Login() {
 
     localStorage.setItem("token", activeToken);
     localStorage.setItem("user", JSON.stringify(activeStudent));
+    if (activeStudent.email) {
+      localStorage.setItem("registered_email", activeStudent.email);
+    }
 
     // Register Live Session for Admin Monitoring
     const apiBase = getApiBaseUrl();

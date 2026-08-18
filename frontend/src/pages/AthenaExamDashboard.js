@@ -352,16 +352,24 @@ function AthenaExamDashboard() {
 
       const userStr = localStorage.getItem('user');
       let studentEmail = 'student@proctor.com';
-      let studentName = 'Veeru Reddy';
-      let studentId = 'STU_veerureddy';
+      let studentName = 'Student';
+      let studentId = '';
 
       if (userStr) {
         try {
           const u = JSON.parse(userStr);
-          studentEmail = u.email || studentEmail;
-          studentName = u.name || studentName;
-          studentId = u.studentId || 'STU_' + studentEmail.replace(/[^a-z0-9]/g, '_');
+          studentEmail = u.email || localStorage.getItem('registered_email') || studentEmail;
+          studentName = u.fullName || u.name || (u.firstName ? `${u.firstName} ${u.lastName}` : studentName);
+          studentId = u.studentId || ('STU_' + studentEmail.replace(/[^a-z0-9]/gi, '_'));
         } catch (e) {}
+      } else {
+        const regEmail = localStorage.getItem('registered_email');
+        if (regEmail) {
+          studentEmail = regEmail;
+          studentId = 'STU_' + regEmail.replace(/[^a-z0-9]/gi, '_');
+        } else {
+          studentId = 'STU_' + Date.now();
+        }
       }
 
       const payload = {
@@ -1084,7 +1092,58 @@ function AthenaExamDashboard() {
       <SubmitConfirmationModal
         isOpen={isSubmitModalOpen}
         onClose={() => setIsSubmitModalOpen(false)}
-        onConfirmSubmit={() => {
+        onConfirmSubmit={async () => {
+          const userStr = localStorage.getItem('user');
+          let studentEmail = 'student@proctor.com';
+          let studentName = 'Student';
+          let studentId = '';
+
+          if (userStr) {
+            try {
+              const u = JSON.parse(userStr);
+              studentEmail = u.email || localStorage.getItem('registered_email') || studentEmail;
+              studentName = u.fullName || u.name || (u.firstName ? `${u.firstName} ${u.lastName}` : studentName);
+              studentId = u.studentId || ('STU_' + studentEmail.replace(/[^a-z0-9]/gi, '_'));
+            } catch (e) {}
+          } else {
+            const regEmail = localStorage.getItem('registered_email');
+            if (regEmail) {
+              studentEmail = regEmail;
+              studentId = 'STU_' + regEmail.replace(/[^a-z0-9]/gi, '_');
+            } else {
+              studentId = 'STU_' + Date.now();
+            }
+          }
+
+          const apiBase = getApiBaseUrl();
+          try {
+            await fetch(`${apiBase}/api/admin/submit-exam`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                studentId,
+                email: studentEmail,
+                studentName,
+                examName: 'Computer Science Final Assessment',
+                mcqStats: { answered: mcqAnsweredCount, total: mcqQuestions.length },
+                codingStats: { submitted: codingSubmittedCount, total: codingProblems.length }
+              })
+            });
+          } catch (e) {}
+
+          const socket = getSocket();
+          if (socket) {
+            socket.emit('exam-finished', {
+              studentId,
+              studentName,
+              email: studentEmail,
+              examName: 'Computer Science Final Assessment',
+              status: 'Finished',
+              integrityScore: violationsCount === 0 ? '98% Safe' : (violationsCount < 3 ? '85% Good' : '65% Review'),
+              duration: '00:45:00'
+            });
+          }
+
           alert('🎓 Exam submitted successfully! Redirecting to student summary dashboard...');
           window.location.href = '/dashboard';
         }}

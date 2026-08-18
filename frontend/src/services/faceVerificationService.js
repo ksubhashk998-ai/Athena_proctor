@@ -210,7 +210,7 @@ export async function verifyFaceAgainstBackend(videoElement, studentId, token, f
         Authorization: token ? `Bearer ${token}` : ''
       },
       body: JSON.stringify({
-        studentId: studentId || 'STU_CURRENT',
+        studentId: studentId || ('STU_' + (activeEmail || 'current').replace(/[^a-z0-9]/gi, '_')),
         email: activeEmail,
         frames: frames
       })

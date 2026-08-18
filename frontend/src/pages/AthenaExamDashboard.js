@@ -8,7 +8,7 @@ import TheorySection from '../components/athena/TheorySection';
 import AIMonitoringSidebar from '../components/athena/AIMonitoringSidebar';
 import { mcqQuestions, codingProblems, theoryQuestions } from '../data/examData';
 import { getSocket } from '../services/socketService';
-import { captureFaceDescriptor } from '../services/faceVerificationService';
+import { captureFaceDescriptor, captureFaceFrame } from '../services/faceVerificationService';
 import { getApiBaseUrl } from '../utils/config';
 import '../styles/athena.css';
 

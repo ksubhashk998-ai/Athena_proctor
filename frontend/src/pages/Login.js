@@ -95,9 +95,9 @@ function Login() {
         const { token, admin } = res.data;
         localStorage.setItem("adminToken", token);
         localStorage.setItem("adminData", JSON.stringify(admin));
-        setAdminSuccess("✅ Admin Authenticated! Opening Admin Dashboard on Port 3001...");
+        setAdminSuccess("✅ Admin Authenticated! Opening Admin Dashboard...");
         setTimeout(() => {
-          window.location.href = "http://localhost:3001";
+          window.location.href = "/admin";
         }, 400);
         return;
       }
@@ -116,9 +116,9 @@ function Login() {
     };
     localStorage.setItem("adminToken", token);
     localStorage.setItem("adminData", JSON.stringify(admin));
-    setAdminSuccess("✅ Admin Authenticated! Launching Admin Dashboard on Port 3001...");
+    setAdminSuccess("✅ Admin Authenticated! Launching Admin Dashboard...");
     setTimeout(() => {
-      window.location.href = "http://localhost:3001";
+      window.location.href = "/admin";
     }, 400);
     setAdminLoading(false);
   };
@@ -680,9 +680,7 @@ function Login() {
 
             <div style={{ marginTop: "16px", paddingTop: "12px", borderTop: "1px solid rgba(255,255,255,0.08)" }}>
               <a
-                href="http://localhost:3001"
-                target="_blank"
-                rel="noreferrer"
+                href="/admin"
                 style={{
                   display: "inline-block",
                   color: "#818cf8",
@@ -691,7 +689,7 @@ function Login() {
                   textDecoration: "none"
                 }}
               >
-                🚀 Direct Link: Open Admin Dashboard (Port 3001)
+                🚀 Direct Link: Open Admin Dashboard
               </a>
             </div>
           </div>

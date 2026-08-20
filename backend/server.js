@@ -2329,6 +2329,8 @@ io.on('connection', (socket) => {
     socket.on('video-stream', async (data) => {
         if (data && (data.studentId || data.sessionId || data.email)) {
             const studentId = data.studentId || `STU_${data.email ? data.email.replace(/[^a-z0-9]/g, '_') : '1001'}`;
+            socket.studentId = studentId;
+            socket.studentEmail = data.email;
             const payload = { ...data, studentId };
 
             io.to('admin_room').emit('video-stream', payload);
@@ -2337,14 +2339,15 @@ io.on('connection', (socket) => {
 
             if (data.image) {
                 try {
-                    await LiveSession.findOneAndUpdate(
-                        { studentId },
-                        {
-                            lastWebcamFrame: data.image,
-                            lastActive: new Date(),
-                            status: 'Online'
+                    const session = await LiveSession.findOne({ $or: [{ studentId }, { usn: studentId }, { email: data.email }] });
+                    if (session) {
+                        session.lastWebcamFrame = data.image;
+                        session.lastActive = new Date();
+                        if (!['Finished', 'Completed', 'Terminated'].includes(session.status)) {
+                            session.status = 'Online';
                         }
-                    );
+                        await session.save();
+                    }
                 } catch (err) {}
             }
         }
@@ -2353,14 +2356,21 @@ io.on('connection', (socket) => {
     socket.on('video-stream', async (data) => {
         if (data && (data.studentId || data.sessionId || data.email)) {
             const studentId = data.studentId || `STU_${data.email ? data.email.replace(/[^a-z0-9]/g, '_') : '1001'}`;
+            socket.studentId = studentId;
+            socket.studentEmail = data.email;
             const payload = { ...data, studentId };
 
             if (data.image) {
                 try {
-                    await LiveSession.findOneAndUpdate(
-                        { $or: [{ studentId }, { usn: studentId }, { email: data.email }] },
-                        { lastWebcamFrame: data.image, lastActive: new Date() }
-                    );
+                    const session = await LiveSession.findOne({ $or: [{ studentId }, { usn: studentId }, { email: data.email }] });
+                    if (session) {
+                        session.lastWebcamFrame = data.image;
+                        session.lastActive = new Date();
+                        if (!['Finished', 'Completed', 'Terminated'].includes(session.status)) {
+                            session.status = 'Online';
+                        }
+                        await session.save();
+                    }
                 } catch (e) {}
             }
 
@@ -2373,14 +2383,21 @@ io.on('connection', (socket) => {
     socket.on('student-camera', async (data) => {
         if (data && (data.studentId || data.sessionId || data.email)) {
             const studentId = data.studentId || `STU_${data.email ? data.email.replace(/[^a-z0-9]/g, '_') : '1001'}`;
+            socket.studentId = studentId;
+            socket.studentEmail = data.email;
             const payload = { ...data, studentId };
 
             if (data.image) {
                 try {
-                    await LiveSession.findOneAndUpdate(
-                        { $or: [{ studentId }, { usn: studentId }, { email: data.email }] },
-                        { lastWebcamFrame: data.image, lastActive: new Date() }
-                    );
+                    const session = await LiveSession.findOne({ $or: [{ studentId }, { usn: studentId }, { email: data.email }] });
+                    if (session) {
+                        session.lastWebcamFrame = data.image;
+                        session.lastActive = new Date();
+                        if (!['Finished', 'Completed', 'Terminated'].includes(session.status)) {
+                            session.status = 'Online';
+                        }
+                        await session.save();
+                    }
                 } catch (e) {}
             }
 
@@ -2394,20 +2411,25 @@ io.on('connection', (socket) => {
     socket.on('telemetry-update', async (data) => {
         if (data && (data.studentId || data.email)) {
             const studentId = data.studentId || `STU_${data.email ? data.email.replace(/[^a-z0-9]/g, '_') : '1001'}`;
+            socket.studentId = studentId;
+            socket.studentEmail = data.email;
             try {
-                const updated = await LiveSession.findOneAndUpdate(
-                    { studentId },
-                    {
-                        ...data,
-                        studentId,
-                        lastActive: new Date(),
-                        status: 'Online',
-                        ...(data.image ? { lastWebcamFrame: data.image } : {})
-                    },
-                    { upsert: true, new: true }
-                );
+                const session = await LiveSession.findOne({ $or: [{ studentId }, { usn: studentId }, { email: data.email }] });
+                if (session) {
+                    session.lastActive = new Date();
+                    if (!['Finished', 'Completed', 'Terminated'].includes(session.status)) {
+                        session.status = 'Online';
+                    }
+                    if (data.image) session.lastWebcamFrame = data.image;
+                    if (data.tabSwitchingCount !== undefined) session.tabSwitchingCount = data.tabSwitchingCount;
+                    if (data.suspiciousActivityCount !== undefined) session.suspiciousActivityCount = data.suspiciousActivityCount;
+                    if (data.riskLevel) session.riskLevel = data.riskLevel;
+                    if (data.headPose) session.headPose = data.headPose;
+                    if (data.eyeGaze) session.eyeGaze = data.eyeGaze;
+                    await session.save();
+                    io.to('admin_room').emit('student-updated', session);
+                }
 
-                io.to('admin_room').emit('student-updated', updated);
                 if (data.image) {
                     io.to('admin_room').emit('video-stream', { studentId, image: data.image });
                     io.to('admin_room').emit('student-camera', { studentId, image: data.image });
@@ -2422,6 +2444,16 @@ io.on('connection', (socket) => {
     socket.on('ai-alert', (data) => {
         console.log(`🚨 ai-alert: ${data?.alertType || 'anomaly'} for ${data?.studentName || data?.studentId}`);
         io.to('admin_room').emit('ai-alert', data);
+        io.to('admin_room').emit('admin-notification', {
+            id: `NOTIF_${Date.now()}_${Math.random()}`,
+            type: data?.alertType || 'AI_ALERT',
+            studentId: data?.studentId,
+            studentName: data?.studentName || 'Student',
+            usn: data?.usn || data?.studentId,
+            message: data?.description || data?.message || 'Proctoring Anomaly Alert Detected',
+            severity: data?.severity || 'high',
+            timestamp: new Date()
+        });
     });
 
     // 5. violation / violation-detected / student-violation
@@ -2430,6 +2462,16 @@ io.on('connection', (socket) => {
         io.to('admin_room').emit('violation', data);
         io.to('admin_room').emit('violation-detected', data);
         io.to('admin_room').emit('student-violation', data);
+        io.to('admin_room').emit('admin-notification', {
+            id: `NOTIF_${Date.now()}_${Math.random()}`,
+            type: data?.type || data?.violationType || 'VIOLATION',
+            studentId: data?.studentId,
+            studentName: data?.studentName || 'Student',
+            usn: data?.usn || data?.studentId,
+            message: data?.description || data?.message || `${data?.type || 'Proctoring violation'} detected!`,
+            severity: data?.severity || 'warning',
+            timestamp: new Date()
+        });
     });
 
     socket.on('violation-detected', (data) => {
@@ -2437,6 +2479,16 @@ io.on('connection', (socket) => {
         io.to('admin_room').emit('violation', data);
         io.to('admin_room').emit('violation-detected', data);
         io.to('admin_room').emit('student-violation', data);
+        io.to('admin_room').emit('admin-notification', {
+            id: `NOTIF_${Date.now()}_${Math.random()}`,
+            type: data?.type || data?.violationType || 'VIOLATION',
+            studentId: data?.studentId,
+            studentName: data?.studentName || 'Student',
+            usn: data?.usn || data?.studentId,
+            message: data?.description || data?.message || `${data?.type || 'Proctoring violation'} detected!`,
+            severity: data?.severity || 'warning',
+            timestamp: new Date()
+        });
     });
 
     socket.on('student-violation', (data) => {
@@ -2444,6 +2496,32 @@ io.on('connection', (socket) => {
         io.to('admin_room').emit('violation', data);
         io.to('admin_room').emit('violation-detected', data);
         io.to('admin_room').emit('student-violation', data);
+        io.to('admin_room').emit('admin-notification', {
+            id: `NOTIF_${Date.now()}_${Math.random()}`,
+            type: data?.type || data?.violationType || 'VIOLATION',
+            studentId: data?.studentId,
+            studentName: data?.studentName || 'Student',
+            usn: data?.usn || data?.studentId,
+            message: data?.description || data?.message || `${data?.type || 'Proctoring violation'} detected!`,
+            severity: data?.severity || 'warning',
+            timestamp: new Date()
+        });
+    });
+
+    socket.on('tab-switch', (data) => {
+        console.log(`📑 tab-switch by ${data?.studentName || data?.studentId}`);
+        io.to('admin_room').emit('tab-switch', data);
+        io.to('admin_room').emit('student-violation', { ...data, type: 'TAB_SWITCH' });
+        io.to('admin_room').emit('admin-notification', {
+            id: `NOTIF_${Date.now()}_${Math.random()}`,
+            type: 'TAB_SWITCH',
+            studentId: data?.studentId,
+            studentName: data?.studentName || 'Student',
+            usn: data?.usn || data?.studentId,
+            message: `⚠️ Candidate ${data?.studentName || data?.studentId} switched browser tabs! (Switch count: ${data?.tabSwitchingCount || 1})`,
+            severity: 'high',
+            timestamp: new Date()
+        });
     });
 
     // 6. student-status
@@ -2540,6 +2618,27 @@ io.on('connection', (socket) => {
         io.to('admin_room').emit('dashboard-updated', data);
     });
 
+    // Heartbeat
+    socket.on('heartbeat', async (data) => {
+        if (data && (data.studentId || data.email)) {
+            const studentId = data.studentId || `STU_${data.email ? data.email.replace(/[^a-z0-9]/g, '_') : '1001'}`;
+            socket.studentId = studentId;
+            socket.studentEmail = data.email;
+            try {
+                const existing = await LiveSession.findOne({ studentId });
+                if (existing && !['Finished', 'Completed', 'Terminated'].includes(existing.status)) {
+                    existing.lastActive = new Date();
+                    existing.status = 'Online';
+                    if (data.image) existing.lastWebcamFrame = data.image;
+                    await existing.save();
+                }
+            } catch (e) {}
+        }
+        socket.emit('pong', { timestamp: Date.now() });
+    });
+
+    socket.on('ping', () => socket.emit('pong', { timestamp: Date.now() }));
+
     // Watch specific student feed
     socket.on('subscribe_student', (studentId) => {
         socket.join(`watch_${studentId}`);
@@ -2549,16 +2648,48 @@ io.on('connection', (socket) => {
     socket.on('disconnect', async () => {
         if (socket.studentId) {
             try {
-                await LiveSession.findOneAndUpdate({ studentId: socket.studentId }, { status: 'Offline' });
+                const existing = await LiveSession.findOne({ studentId: socket.studentId });
+                if (existing && !['Finished', 'Completed', 'Terminated'].includes(existing.status)) {
+                    existing.status = 'Offline';
+                    existing.lastActive = new Date();
+                    await existing.save();
+                }
             } catch (e) {}
-            io.to('admin_room').emit('student-disconnected', { studentId: socket.studentId, socketId: socket.id });
+            io.to('admin_room').emit('student-disconnected', { studentId: socket.studentId, socketId: socket.id, status: 'Offline' });
+            io.to('admin_room').emit('student-status', { studentId: socket.studentId, status: 'Offline' });
         }
         console.log(`🔌 Socket disconnected: ${socket.id}`);
     });
-
-    // Heartbeat
-    socket.on('ping', () => socket.emit('pong'));
 });
+
+// Periodic Stale Presence Sweeper (Every 10 seconds):
+// Marks sessions without active heartbeat within 20s as Offline
+setInterval(async () => {
+    try {
+        const staleThreshold = new Date(Date.now() - 20 * 1000);
+        const staleSessions = await LiveSession.find({
+            status: { $in: ['Online', 'Active', 'Warning', 'in-progress'] },
+            $or: [
+                { lastActive: { $lt: staleThreshold } },
+                { lastActive: { $exists: false } }
+            ]
+        });
+
+        if (staleSessions.length > 0) {
+            await LiveSession.updateMany(
+                { _id: { $in: staleSessions.map(s => s._id) } },
+                { $set: { status: 'Offline' } }
+            );
+
+            staleSessions.forEach(s => {
+                io.to('admin_room').emit('student-disconnected', { studentId: s.studentId, status: 'Offline' });
+                io.to('admin_room').emit('student-status', { studentId: s.studentId, status: 'Offline' });
+            });
+        }
+    } catch (e) {
+        // Silent error catch to prevent unhandled rejections
+    }
+}, 10000);
 
 
 httpServer.on('error', (err) => {

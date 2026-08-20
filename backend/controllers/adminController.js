@@ -137,6 +137,17 @@ const getDashboardOverview = async (req, res) => {
     let violationsTodayCount = 0;
 
     try {
+      const activeThreshold = new Date(Date.now() - 60 * 1000);
+      await LiveSession.updateMany(
+        {
+          status: { $in: ['Online', 'Active', 'Warning', 'in-progress'] },
+          $or: [
+            { lastActive: { $lt: activeThreshold } },
+            { lastActive: { $exists: false } }
+          ]
+        },
+        { $set: { status: 'Offline' } }
+      );
       allSessions = await LiveSession.find().lean();
       violationsTodayCount = await SuspiciousActivity.countDocuments({ timestamp: { $gte: todayStart } });
     } catch (e) {
@@ -288,6 +299,21 @@ const getDashboardOverview = async (req, res) => {
 const getLiveStudents = async (req, res) => {
   try {
     const { search, riskLevel, status, department } = req.query;
+
+    // Heartbeat liveness timeout: students with no activity for > 20 seconds are Offline
+    const activeThreshold = new Date(Date.now() - 20 * 1000);
+
+    // Auto-mark stale "Online"/"Active" sessions as "Offline"
+    await LiveSession.updateMany(
+      {
+        status: { $in: ['Online', 'Active', 'Warning', 'in-progress'] },
+        $or: [
+          { lastActive: { $lt: activeThreshold } },
+          { lastActive: { $exists: false } }
+        ]
+      },
+      { $set: { status: 'Offline' } }
+    );
 
     const query = {
       status: status || { $in: ['Online', 'Active', 'Warning', 'in-progress'] }
@@ -644,7 +670,7 @@ const getTerminatedStudents = async (req, res) => {
 const getFinishedStudents = async (req, res) => {
   try {
     const { search, department, statusFilter } = req.query;
-    const query = { status: { $in: ['Finished', 'Completed'] } };
+    const query = { status: { $in: ['Finished', 'Completed', 'Submitted'] } };
 
     if (department) query.department = department;
     if (search) {
@@ -656,33 +682,106 @@ const getFinishedStudents = async (req, res) => {
       ];
     }
 
-    const finishedSessions = await LiveSession.find(query).sort({ updatedAt: -1 });
+    const [finishedSessions, examReports] = await Promise.all([
+      LiveSession.find(query).sort({ updatedAt: -1 }).lean(),
+      ExamReport.find().sort({ createdAt: -1 }).lean()
+    ]);
 
-    const enriched = await Promise.all(
-      finishedSessions.map(async s => {
-        const sObj = s.toObject();
-        const violations = await SuspiciousActivity.find({ studentId: s.studentId });
-        const totalV = violations.length;
-        const rScore = calculateRiskScore(sObj, totalV);
+    const reportMap = new Map();
+    examReports.forEach(r => {
+      if (r.studentId) reportMap.set(r.studentId, r);
+      if (r.email) reportMap.set(r.email.toLowerCase(), r);
+    });
 
-        sObj.totalViolations = totalV;
-        sObj.riskScore = rScore;
-        sObj.endTime = s.updatedAt || s.lastActive;
-        sObj.duration = '1h 45m';
-        sObj.monitoringStatus = (totalV <= 2 && rScore < 30) ? 'Passed Monitoring' : 'Needs Review';
-        return sObj;
-      })
-    );
+    const studentMap = new Map();
 
-    let filtered = enriched;
+    finishedSessions.forEach(s => {
+      const rep = reportMap.get(s.studentId) || reportMap.get((s.email || '').toLowerCase()) || {};
+      const key = s.studentId || s.email;
+      const totalV = s.suspiciousActivityCount || s.tabSwitchingCount || 0;
+      const startTime = s.startTime || rep.startTime || new Date(Date.now() - 45 * 60 * 1000);
+      const endTime = s.endTime || rep.endTime || s.updatedAt || s.lastActive || new Date();
+      
+      studentMap.set(key, {
+        ...s,
+        ...rep,
+        _id: s._id,
+        sessionId: s.sessionId || s._id,
+        studentId: s.studentId,
+        studentName: s.studentName || rep.studentName,
+        usn: s.usn || s.studentId || rep.usn,
+        email: s.email || rep.email,
+        department: s.department || rep.department || 'Computer Science & Engineering',
+        examName: s.examName || rep.examName || 'Computer Science Final Assessment',
+        startTime,
+        loginTime: startTime,
+        endTime,
+        submissionTime: endTime,
+        duration: s.duration || (rep.totalDurationMinutes ? `${rep.totalDurationMinutes} mins` : '00:45:00'),
+        score: rep.obtainedMarks !== undefined ? rep.obtainedMarks : (s.score || 0),
+        totalMarks: rep.totalMarks || 100,
+        percentage: rep.percentage || (rep.totalMarks ? Math.round(((rep.obtainedMarks || s.score || 0) / rep.totalMarks) * 100) : 0),
+        totalQuestions: rep.totalQuestions || (s.answers ? s.answers.length : 0),
+        attemptedQuestions: rep.attemptedQuestions || 0,
+        correctCount: rep.correctCount || 0,
+        wrongCount: rep.wrongCount || 0,
+        unansweredCount: rep.unansweredCount || 0,
+        answers: rep.answers || s.answers || [],
+        codingAnswers: rep.codingAnswers || s.codingAnswers || {},
+        theoryAnswers: rep.theoryAnswers || s.theoryAnswers || {},
+        integrityScore: totalV === 0 ? '98% Safe' : (totalV < 3 ? '85% Good' : '65% Review'),
+        status: 'Completed',
+        monitoringStatus: totalV <= 2 ? 'Passed Monitoring' : 'Needs Review'
+      });
+    });
+
+    examReports.forEach(r => {
+      const key = r.studentId || r.email;
+      if (!studentMap.has(key)) {
+        const totalV = r.totalViolations || 0;
+        const startTime = r.startTime || new Date(Date.now() - 45 * 60 * 1000);
+        const endTime = r.endTime || r.createdAt || new Date();
+        studentMap.set(key, {
+          ...r,
+          sessionId: r.reportId || r._id,
+          studentId: r.studentId,
+          studentName: r.studentName,
+          usn: r.usn || r.studentId,
+          email: r.email,
+          department: r.department || 'Computer Science & Engineering',
+          examName: r.examName || 'Computer Science Final Assessment',
+          startTime,
+          loginTime: startTime,
+          endTime,
+          submissionTime: endTime,
+          duration: r.totalDurationMinutes ? `${r.totalDurationMinutes} mins` : '00:45:00',
+          score: r.obtainedMarks !== undefined ? r.obtainedMarks : (r.score || 0),
+          totalMarks: r.totalMarks || 100,
+          percentage: r.percentage || 0,
+          totalQuestions: r.totalQuestions || (r.answers ? r.answers.length : 0),
+          attemptedQuestions: r.attemptedQuestions || 0,
+          correctCount: r.correctCount || 0,
+          wrongCount: r.wrongCount || 0,
+          unansweredCount: r.unansweredCount || 0,
+          answers: r.answers || [],
+          codingAnswers: r.codingAnswers || {},
+          theoryAnswers: r.theoryAnswers || {},
+          integrityScore: totalV === 0 ? '98% Safe' : (totalV < 3 ? '85% Good' : '65% Review'),
+          status: 'Completed',
+          monitoringStatus: totalV <= 2 ? 'Passed Monitoring' : 'Needs Review'
+        });
+      }
+    });
+
+    let finishedList = Array.from(studentMap.values());
     if (statusFilter) {
-      filtered = enriched.filter(s => s.monitoringStatus === statusFilter);
+      finishedList = finishedList.filter(s => s.monitoringStatus === statusFilter);
     }
 
     res.json({
       success: true,
-      count: filtered.length,
-      finishedStudents: filtered
+      count: finishedList.length,
+      finishedStudents: finishedList
     });
   } catch (error) {
     console.error('Error in getFinishedStudents:', error);
@@ -958,9 +1057,12 @@ const upsertLiveSession = async (req, res) => {
     const sEmail = email || (req.user && req.user.email) || 'student@university.edu';
     const sUsn = usn || sId;
 
-    let session = await LiveSession.findOne({ studentId: sId });
-
-    if (!session) {
+    if (session) {
+      // If session is already finished or terminated, do not revert to Online from generic heartbeat
+      if (['Finished', 'Completed', 'Terminated'].includes(session.status) && (!status || status === 'Online')) {
+        return res.json({ success: true, message: 'Session already completed', session });
+      }
+    } else {
       session = new LiveSession({
         sessionId: req.body.sessionId || `SESS-${sId}`,
         studentId: sId,
@@ -1028,63 +1130,147 @@ const upsertLiveSession = async (req, res) => {
  */
 const submitExamSession = async (req, res) => {
   try {
-    const { studentId, email, studentName, examName } = req.body;
+    const {
+      studentId,
+      email,
+      studentName,
+      usn,
+      examId,
+      examName,
+      department,
+      answers,
+      codingAnswers,
+      theoryAnswers,
+      mcqStats,
+      codingStats,
+      theoryStats,
+      score,
+      totalMarks,
+      obtainedMarks,
+      percentage,
+      totalQuestions,
+      attemptedQuestions,
+      correctCount,
+      wrongCount,
+      unansweredCount,
+      totalViolations
+    } = req.body;
+
     const cleanEmail = (email || '').trim().toLowerCase();
     const cleanId = (studentId || '').trim() || ('STU_' + cleanEmail.replace(/[^a-z0-9]/gi, '_'));
+    const cleanUsn = (usn || cleanId).trim();
+    const activeExamId = examId || 'CS-401';
+    const activeExamName = examName || 'Computer Science Final Assessment';
+    const activeDept = department || 'Computer Science & Engineering';
 
+    const calculatedObtained = obtainedMarks !== undefined ? obtainedMarks : (score || 0);
+    const calculatedTotalMarks = totalMarks || 100;
+    const calculatedPercentage = percentage !== undefined ? percentage : (calculatedTotalMarks > 0 ? Math.round((calculatedObtained / calculatedTotalMarks) * 100) : 0);
+
+    // 1. Persist in ExamReport collection
+    let report = await ExamReport.findOne({
+      $or: [
+        { studentId: cleanId, examId: activeExamId },
+        { email: cleanEmail, examId: activeExamId }
+      ]
+    });
+
+    if (!report) {
+      report = new ExamReport({
+        reportId: `REP-${cleanId}-${Date.now()}`,
+        studentId: cleanId,
+        studentName: studentName || cleanEmail.split('@')[0],
+        usn: cleanUsn,
+        email: cleanEmail,
+        examId: activeExamId,
+        examName: activeExamName,
+        department: activeDept,
+        startTime: new Date(Date.now() - 45 * 60 * 1000)
+      });
+    }
+
+    report.endTime = new Date();
+    report.score = calculatedObtained;
+    report.totalMarks = calculatedTotalMarks;
+    report.obtainedMarks = calculatedObtained;
+    report.percentage = calculatedPercentage;
+    report.totalQuestions = totalQuestions || (answers ? answers.length : 0);
+    report.attemptedQuestions = attemptedQuestions || (answers ? answers.filter(a => a.selectedOption !== null && a.selectedOption !== undefined).length : 0);
+    report.correctCount = correctCount || (answers ? answers.filter(a => a.isCorrect).length : 0);
+    report.wrongCount = wrongCount || (answers ? answers.filter(a => a.selectedOption !== null && a.selectedOption !== undefined && !a.isCorrect).length : 0);
+    report.unansweredCount = unansweredCount || (answers ? answers.filter(a => a.selectedOption === null || a.selectedOption === undefined).length : 0);
+    report.answers = answers || [];
+    report.codingAnswers = codingAnswers || {};
+    report.theoryAnswers = theoryAnswers || {};
+    report.totalViolations = totalViolations || 0;
+    report.status = 'Submitted';
+    await report.save();
+
+    // 2. Persist in LiveSession collection (Mark status as Finished)
     let session = await LiveSession.findOne({
       $or: [{ studentId: cleanId }, { email: cleanEmail }]
     });
 
-    const violations = await SuspiciousActivity.find({ studentId: cleanId });
-    const integrityScore = violations.length === 0 ? '98% Safe' : (violations.length < 3 ? '85% Good' : '65% Review');
-
     if (!session) {
       session = new LiveSession({
+        sessionId: `SESS-${cleanId}`,
         studentId: cleanId,
         studentName: studentName || cleanEmail.split('@')[0],
+        usn: cleanUsn,
         email: cleanEmail,
-        usn: cleanId,
-        examName: examName || 'Computer Science Final Assessment',
-        department: 'Computer Science',
-        status: 'Finished',
-        riskLevel: violations.length > 2 ? 'High' : 'Low',
+        examId: activeExamId,
+        examName: activeExamName,
+        department: activeDept,
         startTime: new Date(Date.now() - 45 * 60 * 1000)
       });
     }
 
     session.status = 'Finished';
+    session.score = calculatedObtained;
+    session.answers = answers || [];
+    session.mcqStats = mcqStats || {};
+    session.codingStats = codingStats || {};
+    session.theoryStats = theoryStats || {};
     session.lastActive = new Date();
     session.updatedAt = new Date();
     await session.save();
 
+    const integrityScore = (totalViolations || 0) === 0 ? '98% Safe' : ((totalViolations || 0) < 3 ? '85% Good' : '65% Review');
+
     const io = req.app.get('io');
     if (io) {
       const finishPayload = {
+        sessionId: session.sessionId || session._id,
         studentId: cleanId,
         studentName: session.studentName,
-        usn: session.usn || cleanId,
+        usn: session.usn || cleanUsn,
         email: session.email,
         examName: session.examName,
         status: 'Finished',
         integrityScore,
         duration: '00:45:00',
+        score: calculatedObtained,
+        percentage: calculatedPercentage,
+        answersCount: (answers || []).length,
         endTime: new Date()
       };
       io.to('admin_room').emit('student-finished', finishPayload);
-      io.emit('student-finished', finishPayload);
-      io.emit('exam-finished', session);
+      io.to('admin_room').emit('exam-finished', finishPayload);
+      io.to('admin_room').emit('dashboard-updated', { studentId: cleanId, status: 'Finished' });
     }
 
     res.json({
       success: true,
-      message: 'Exam submitted successfully and recorded as Finished.',
-      session,
-      integrityScore
+      message: 'Exam submitted successfully and recorded in MongoDB.',
+      reportId: report.reportId,
+      score: calculatedObtained,
+      percentage: calculatedPercentage,
+      answersCount: (answers || []).length,
+      session
     });
   } catch (error) {
     console.error('Error in submitExamSession:', error);
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({ success: false, error: 'Failed to submit exam: ' + error.message });
   }
 };
 

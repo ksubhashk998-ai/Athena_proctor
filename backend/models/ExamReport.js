@@ -50,6 +50,56 @@ const examReportSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  totalMarks: {
+    type: Number,
+    default: 100
+  },
+  obtainedMarks: {
+    type: Number,
+    default: 0
+  },
+  percentage: {
+    type: Number,
+    default: 0
+  },
+  totalQuestions: {
+    type: Number,
+    default: 0
+  },
+  attemptedQuestions: {
+    type: Number,
+    default: 0
+  },
+  correctCount: {
+    type: Number,
+    default: 0
+  },
+  wrongCount: {
+    type: Number,
+    default: 0
+  },
+  unansweredCount: {
+    type: Number,
+    default: 0
+  },
+  answers: [{
+    questionId: mongoose.Schema.Types.Mixed,
+    questionText: String,
+    selectedOption: mongoose.Schema.Types.Mixed,
+    selectedOptionText: String,
+    correctOption: mongoose.Schema.Types.Mixed,
+    isCorrect: Boolean,
+    points: Number,
+    answeredAt: { type: Date, default: Date.now }
+  }],
+  codingAnswers: {
+    type: mongoose.Schema.Types.Mixed,
+    default: {}
+  },
+  theoryAnswers: {
+    type: mongoose.Schema.Types.Mixed,
+    default: {}
+  },
   totalViolations: {
     type: Number,
     default: 0

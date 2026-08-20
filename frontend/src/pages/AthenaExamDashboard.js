@@ -214,34 +214,53 @@ function AthenaExamDashboard() {
       const video = document.querySelector('video');
       if (!video || video.readyState < 2) return;
 
-      // Fix C: Prevent multiple simultaneous requests
+      // Prevent multiple simultaneous requests
       if (isVerifyingRef.current) return;
       isVerifyingRef.current = true;
 
       try {
         const frameBase64 = captureFaceFrame(video);
 
-        // Check if video feed is active
+        // Check if video feed has a visible face
         if (!frameBase64) {
           unknownCounterRef.current += 1;
-          if (unknownCounterRef.current >= 3) {
-            setIdentityVerification({
-              isVerified: false,
-              studentName: 'No Face Detected',
-              confidence: 0,
-              status: 'No Face Detected'
-            });
-            setFaceDetectionState({
-              status: 'red',
-              value: '✗ No Face Detected',
-              detail: 'No face in camera frame'
-            });
-            recordViolation(`⚠️ WARNING: No Face Detected for ${unknownCounterRef.current} continuous checks`);
+          if (unknownCounterRef.current >= 2) {
+            const now = Date.now();
+            if (now - lastFaceMissingTimeRef.current >= 8000) {
+              lastFaceMissingTimeRef.current = now;
+              setIdentityVerification({
+                isVerified: false,
+                studentName: 'No Face Detected',
+                confidence: 0,
+                status: 'No Face Detected'
+              });
+              setFaceDetectionState({
+                status: 'red',
+                value: '✗ No Face Detected',
+                detail: 'No face in camera frame'
+              });
+              recordViolation(`⚠️ WARNING: Face is not visible in camera frame!`);
+
+              const socket = getSocket();
+              if (socket) {
+                socket.emit('student-violation', {
+                  studentId,
+                  studentName: fullName,
+                  usn: activeUser?.usn || studentId,
+                  email,
+                  type: 'FACE_MISSING',
+                  violationType: 'Face Missing',
+                  description: `Candidate ${fullName} (${activeUser?.usn || studentId}) - Face not detected in camera frame!`,
+                  severity: 'critical',
+                  timestamp: new Date()
+                });
+              }
+            }
           }
           return;
         }
 
-        // Live Proctoring Status Check (Maintains identity verified state from login/second verification)
+        // Live Proctoring Status Check
         unknownCounterRef.current = 0;
         setConsecutiveIdentityFailures(0);
 
@@ -275,10 +294,69 @@ function AthenaExamDashboard() {
       } finally {
         isVerifyingRef.current = false;
       }
-    }, 5000); // Fix G: 1 check every 5 seconds
+    }, 5000);
 
     return () => clearInterval(interval);
   }, [isExamUnlocked, isExamTerminated, handleAutoTermination, recordViolation]);
+
+  // Tab Switching & Focus Loss Alert Sentinel (Throttled to 1 notification per switch)
+  const lastTabSwitchTimeRef = React.useRef(0);
+  const lastFaceMissingTimeRef = React.useRef(0);
+
+  useEffect(() => {
+    if (!isExamUnlocked || isExamTerminated) return;
+
+    const userStr = localStorage.getItem('user');
+    let studentId = 'STU_001';
+    let studentName = 'Student';
+    let email = 'student@proctor.com';
+    let usn = 'STU_001';
+    if (userStr) {
+      try {
+        const u = JSON.parse(userStr);
+        studentId = u.studentId || studentId;
+        studentName = u.fullName || u.name || studentName;
+        email = u.email || email;
+        usn = u.usn || studentId;
+      } catch (e) {}
+    }
+
+    const handleTabSwitch = () => {
+      if (document.hidden) {
+        const now = Date.now();
+        if (now - lastTabSwitchTimeRef.current < 5000) return; // 5s debounce cooldown
+        lastTabSwitchTimeRef.current = now;
+
+        setTabSwitchesCount(prev => {
+          const newCount = prev + 1;
+          recordViolation(`⚠️ WARNING: Tab Switch Detected (${newCount} times)! Return focus immediately.`);
+          
+          const socket = getSocket();
+          if (socket) {
+            socket.emit('student-violation', {
+              studentId,
+              studentName,
+              usn,
+              email,
+              type: 'TAB_SWITCH',
+              violationType: 'Tab Switch',
+              description: `Candidate ${studentName} (${usn}) switched browser tabs! (Count: ${newCount})`,
+              tabSwitchingCount: newCount,
+              severity: 'high',
+              timestamp: new Date()
+            });
+          }
+          return newCount;
+        });
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleTabSwitch);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleTabSwitch);
+    };
+  }, [isExamUnlocked, isExamTerminated, recordViolation]);
 
   // Live Admin Monitoring & Socket Sync Effect
   useEffect(() => {
@@ -355,20 +433,24 @@ function AthenaExamDashboard() {
       let studentName = 'Student';
       let studentId = '';
 
+      let studentUsn = studentId;
       if (userStr) {
         try {
           const u = JSON.parse(userStr);
           studentEmail = u.email || localStorage.getItem('registered_email') || studentEmail;
           studentName = u.fullName || u.name || (u.firstName ? `${u.firstName} ${u.lastName}` : studentName);
           studentId = u.studentId || ('STU_' + studentEmail.replace(/[^a-z0-9]/gi, '_'));
+          studentUsn = u.usn || u.studentId || studentId;
         } catch (e) {}
       } else {
         const regEmail = localStorage.getItem('registered_email');
         if (regEmail) {
           studentEmail = regEmail;
           studentId = 'STU_' + regEmail.replace(/[^a-z0-9]/gi, '_');
+          studentUsn = studentId;
         } else {
           studentId = 'STU_' + Date.now();
+          studentUsn = studentId;
         }
       }
 
@@ -376,7 +458,7 @@ function AthenaExamDashboard() {
         studentId,
         studentName,
         email: studentEmail,
-        usn: '1SZ23CS001',
+        usn: studentUsn,
         examId: 'CS-401',
         examName: 'Computer Science Final Assessment',
         department: 'Computer Science & Engineering',
@@ -400,12 +482,10 @@ function AthenaExamDashboard() {
         body: JSON.stringify(payload)
       }).catch(() => {});
 
-      if (apiBase !== '/api' && apiBase !== '') {
-        fetch('/api/admin/live-session', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        }).catch(() => {});
+      const socket = getSocket();
+      if (socket) {
+        socket.emit('video-stream', payload);
+        socket.emit('telemetry-update', payload);
       }
     }, 4000);
 
@@ -1097,6 +1177,7 @@ function AthenaExamDashboard() {
           let studentEmail = 'student@proctor.com';
           let studentName = 'Student';
           let studentId = '';
+          let studentUsn = '';
 
           if (userStr) {
             try {
@@ -1104,47 +1185,99 @@ function AthenaExamDashboard() {
               studentEmail = u.email || localStorage.getItem('registered_email') || studentEmail;
               studentName = u.fullName || u.name || (u.firstName ? `${u.firstName} ${u.lastName}` : studentName);
               studentId = u.studentId || ('STU_' + studentEmail.replace(/[^a-z0-9]/gi, '_'));
+              studentUsn = u.usn || u.studentId || studentId;
             } catch (e) {}
           } else {
             const regEmail = localStorage.getItem('registered_email');
             if (regEmail) {
               studentEmail = regEmail;
               studentId = 'STU_' + regEmail.replace(/[^a-z0-9]/gi, '_');
+              studentUsn = studentId;
             } else {
               studentId = 'STU_' + Date.now();
+              studentUsn = studentId;
             }
           }
+
+          // Compile structured answers list for every question
+          const structuredAnswers = mcqQuestions.map(q => {
+            const selected = mcqAnswers[q.id];
+            const isAnswered = selected !== undefined && selected !== null;
+            const isCorrect = isAnswered && Number(selected) === Number(q.correctAnswer);
+            return {
+              questionId: q.id,
+              questionText: q.question,
+              selectedOption: isAnswered ? Number(selected) : null,
+              selectedOptionText: isAnswered && q.options && q.options[selected] ? q.options[selected] : null,
+              correctOption: q.correctAnswer,
+              isCorrect,
+              points: isCorrect ? (q.points || 10) : 0,
+              answeredAt: new Date()
+            };
+          });
+
+          const correctCount = structuredAnswers.filter(a => a.isCorrect).length;
+          const attemptedCount = structuredAnswers.filter(a => a.selectedOption !== null).length;
+          const wrongCount = structuredAnswers.filter(a => a.selectedOption !== null && !a.isCorrect).length;
+          const unansweredCount = structuredAnswers.filter(a => a.selectedOption === null).length;
+          const obtainedMarks = structuredAnswers.reduce((sum, a) => sum + (a.points || 0), 0);
+          const totalMarks = mcqQuestions.reduce((sum, q) => sum + (q.points || 10), 0);
+          const percentage = totalMarks > 0 ? Math.round((obtainedMarks / totalMarks) * 100) : 0;
+
+          const submissionPayload = {
+            studentId,
+            usn: studentUsn,
+            email: studentEmail,
+            studentName,
+            examId: 'CS-401',
+            examName: 'Computer Science Final Assessment',
+            department: 'Computer Science & Engineering',
+            answers: structuredAnswers,
+            codingAnswers: codingSubmissions,
+            theoryAnswers,
+            mcqStats: { answered: mcqAnsweredCount, total: mcqQuestions.length },
+            codingStats: { submitted: codingSubmittedCount, total: codingProblems.length },
+            theoryStats: { completed: theoryCompletedCount, total: theoryQuestions.length },
+            score: obtainedMarks,
+            obtainedMarks,
+            totalMarks,
+            percentage,
+            totalQuestions: mcqQuestions.length,
+            attemptedQuestions: attemptedCount,
+            correctCount,
+            wrongCount,
+            unansweredCount,
+            totalViolations: violationsCount
+          };
 
           const apiBase = getApiBaseUrl();
           try {
             await fetch(`${apiBase}/api/admin/submit-exam`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                studentId,
-                email: studentEmail,
-                studentName,
-                examName: 'Computer Science Final Assessment',
-                mcqStats: { answered: mcqAnsweredCount, total: mcqQuestions.length },
-                codingStats: { submitted: codingSubmittedCount, total: codingProblems.length }
-              })
+              body: JSON.stringify(submissionPayload)
             });
-          } catch (e) {}
+          } catch (e) {
+            console.error('Submission API error:', e);
+          }
 
           const socket = getSocket();
           if (socket) {
             socket.emit('exam-finished', {
               studentId,
               studentName,
+              usn: studentUsn,
               email: studentEmail,
               examName: 'Computer Science Final Assessment',
               status: 'Finished',
               integrityScore: violationsCount === 0 ? '98% Safe' : (violationsCount < 3 ? '85% Good' : '65% Review'),
+              score: obtainedMarks,
+              percentage,
               duration: '00:45:00'
             });
           }
 
-          alert('🎓 Exam submitted successfully! Redirecting to student summary dashboard...');
+          alert(`🎓 Exam submitted successfully! Score: ${obtainedMarks}/${totalMarks} (${percentage}%). Redirecting...`);
           window.location.href = '/dashboard';
         }}
         mcqStats={{ answered: mcqAnsweredCount, total: mcqQuestions.length }}

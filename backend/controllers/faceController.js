@@ -427,7 +427,7 @@ const verifyFace = async (req, res) => {
       averageSimilarity: averageSimilarity,
       bestSimilarity: bestSimilarity,
       confidence: confidencePct,
-      threshold: 0.78,
+      threshold: 0.65,
       validFrames: verifiedFrames,
       totalFrames: verificationFrames.length,
       totalFramesProcessed: verificationFrames.length,

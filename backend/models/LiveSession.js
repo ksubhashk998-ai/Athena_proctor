@@ -48,8 +48,28 @@ const liveSessionSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['Online', 'Offline', 'Completed', 'Terminated'],
+    enum: ['Online', 'Offline', 'Completed', 'Finished', 'Terminated', 'Warning', 'Active', 'in-progress'],
     default: 'Online'
+  },
+  score: {
+    type: Number,
+    default: 0
+  },
+  answers: {
+    type: mongoose.Schema.Types.Mixed,
+    default: []
+  },
+  mcqStats: {
+    type: mongoose.Schema.Types.Mixed,
+    default: {}
+  },
+  codingStats: {
+    type: mongoose.Schema.Types.Mixed,
+    default: {}
+  },
+  theoryStats: {
+    type: mongoose.Schema.Types.Mixed,
+    default: {}
   },
   lastWebcamFrame: {
     type: String,

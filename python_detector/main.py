@@ -327,16 +327,16 @@ MIN_VALID_EMBEDDINGS = 20      # Require at least 20 valid high-quality samples
 MAX_CANDIDATE_FRAMES = 40      # Process up to 40 candidate frames per submission
 
 LOGIN_THRESHOLD = 0.80
-MONITORING_THRESHOLD = 0.80
-VERIFIED_THRESHOLD = 0.78
-SUSPICIOUS_THRESHOLD = 0.78
+MONITORING_THRESHOLD = 0.65
+VERIFIED_THRESHOLD = 0.65
+SUSPICIOUS_THRESHOLD = 0.65
 MIN_VERIFICATION_FRAMES = 2
-SIMILARITY_THRESHOLD = 0.78
+SIMILARITY_THRESHOLD = 0.65
 MIN_REQUIRED_FRAMES = 2        # Fast verification frame requirement (min 2 frames)
 TARGET_VERIFICATION_FRAMES = 8 # 8 frames maximum for 1-2s response
 MIN_VERIFIED_FRAMES = 1
-MIN_AVERAGE_SIMILARITY = 0.78
-MIN_BEST_SIMILARITY = 0.78
+MIN_AVERAGE_SIMILARITY = 0.65
+MIN_BEST_SIMILARITY = 0.68
 MIN_VERIFICATION_DURATION_SEC = 0.5  # Responsive verification response
 ENABLE_DIAGNOSTIC_MODE = True
 
@@ -679,7 +679,7 @@ def arcface_verify(request: ArcFaceVerifyRequest):
             # Early Exit after 5 valid frames with avg similarity >= 0.80
             if len(frame_similarities) >= 5:
                 current_avg = float(np.mean(frame_similarities))
-                if current_avg >= 0.80:
+                if current_avg >= 0.68:
                     logger.info("Early verification success")
                     print("Early verification success")
                     break
@@ -722,11 +722,11 @@ def arcface_verify(request: ArcFaceVerifyRequest):
             "elapsedSeconds": total_elapsed
         }
 
-    # Decision Logic: VERIFIED (>= 0.78) | SUSPICIOUS (< 0.78)
+    # Decision Logic: VERIFIED (>= 0.65 or best >= 0.70) | SUSPICIOUS (< 0.65)
     if multi_face_triggered and valid_count < 3:
         decision = "MULTIPLE_FACES_DETECTED"
         verified = False
-    elif average_similarity >= SIMILARITY_THRESHOLD:
+    elif average_similarity >= SIMILARITY_THRESHOLD or best_similarity >= 0.70:
         verified = True
         decision = "VERIFIED"
     else:

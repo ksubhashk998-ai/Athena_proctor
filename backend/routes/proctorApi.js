@@ -12,7 +12,6 @@ const crypto = require('crypto');
 const { sendOtpEmail } = require('../services/emailService');
 
 const mongoose = require('mongoose');
-try { mongoose.set('bufferCommands', false); } catch(e) {}
 
 const FaceProfile = require('../models/FaceProfile');
 const User = require('../models/User');

@@ -1,6 +1,5 @@
 const express = require('express');
 const mongoose = require('mongoose');
-mongoose.set('bufferCommands', false);
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const bcrypt = require('bcryptjs');
@@ -397,42 +396,59 @@ if (!fs.existsSync(screenshotsDir)) {
 }
 
 // ==================== DATABASE CONNECTION ====================
+let cachedDBPromise = null;
+
 const connectDB = async () => {
     if (mongoose.connection.readyState === 1) {
-        console.log('✅ MongoDB Connected');
         return mongoose.connection;
     }
+    if (cachedDBPromise) {
+        return cachedDBPromise;
+    }
     try {
-        mongoose.set('bufferCommands', false);
-
         const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URL || 'mongodb://127.0.0.1:27017/smart-proctoring';
         const isAtlas = mongoUri.includes('mongodb+srv') || mongoUri.includes('mongodb.net');
-        console.log(`🔌 [MongoDB Server] Initiating connection to: ${isAtlas ? 'MongoDB Atlas Cluster' : mongoUri}...`);
+        console.log(`🔌 [MongoDB Server] Connecting to: ${isAtlas ? 'MongoDB Atlas Cluster' : mongoUri}...`);
 
-        mongoose.connection.on('connected', () => {
-            console.log('✅ MongoDB Connected');
-        });
-        mongoose.connection.on('error', (err) => {
-            console.error('❌ MongoDB Failed:', err.message);
-        });
-        mongoose.connection.on('disconnected', () => {
-            console.warn('⚠️ MongoDB Disconnected');
-        });
-
-        const conn = await mongoose.connect(mongoUri, {
+        cachedDBPromise = mongoose.connect(mongoUri, {
             useNewUrlParser: true,
             useUnifiedTopology: true,
             maxPoolSize: parseInt(process.env.DB_POOL_SIZE) || 10,
             serverSelectionTimeoutMS: 10000,
+        }).then(conn => {
+            console.log(`✅ MongoDB Connected: ${conn.connection.host} [Database: ${conn.connection.name}]`);
+            return conn;
+        }).catch(err => {
+            cachedDBPromise = null;
+            console.error(`❌ MongoDB Connection Error: ${err.message}`);
+            return null;
         });
-        console.log(`✅ MongoDB Connected: ${conn.connection.host} [Database: ${conn.connection.name}]`);
-        return conn;
+
+        return await cachedDBPromise;
     } catch (error) {
+        cachedDBPromise = null;
         console.error(`❌ MongoDB Failed: ${error.message}`);
         return null;
     }
 };
-connectDB();
+
+// Initiate non-blocking connection on server boot
+connectDB().catch(() => {});
+
+// Attach connectDB to Express app instance for Serverless / Vercel handlers
+app.connectDB = connectDB;
+
+// Middleware to ensure active DB connection before handling requests
+app.use(async (req, res, next) => {
+    if (mongoose.connection.readyState !== 1) {
+        try {
+            await connectDB();
+        } catch (err) {
+            console.warn('⚠️ DB Connection Middleware Notice:', err.message);
+        }
+    }
+    next();
+});
 
 
 

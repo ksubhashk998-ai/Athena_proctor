@@ -2,9 +2,6 @@ const mongoose = require('mongoose');
 
 const connectDB = async () => {
   try {
-    // Disable Mongoose query buffering to prevent 10,000ms buffering timeouts
-    mongoose.set('bufferCommands', false);
-
     const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URL || 'mongodb://127.0.0.1:27017/smart-proctoring';
     console.log(`🔌 [MongoDB] Attempting connection to: ${mongoUri}...`);
 

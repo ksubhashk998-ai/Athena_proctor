@@ -3,10 +3,10 @@ const webpack = require('webpack');
 
 module.exports = {
   webpack: function override(config, env) {
-    // Optimize Webpack compilation speed in development (disable sourcemap generation for heavy tfjs/face-api/MUI packages)
+    // Disable sourcemap generation to prevent memory exhaustion for heavy tfjs/face-api packages
+    config.devtool = false;
     if (env === 'development') {
       config.cache = { type: 'memory' };
-      config.devtool = false;
     }
 
     // Add fallbacks for Node.js core modules in Webpack 5

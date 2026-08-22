@@ -70,7 +70,7 @@
   },
   "scripts": {
     "start": "node scripts/start-app.js",
-    "build": "cross-env CI=false react-app-rewired build",
+    "build": "cross-env CI=false GENERATE_SOURCEMAP=false NODE_OPTIONS=\"--max-old-space-size=4096 --no-deprecation\" react-app-rewired build",
     "test": "react-app-rewired test",
     "eject": "react-scripts eject"
   },

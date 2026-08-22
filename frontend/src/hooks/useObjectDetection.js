@@ -5,22 +5,13 @@ export function useObjectDetection({
   token,
   isActive = true,
   intervalMs = 3500,
-  onPhoneDetected,
-  onHeadphoneDetected
+  onPhoneDetected
 }) {
   const [phoneState, setPhoneState] = useState({
     detected: false,
     confidence: 0,
     model: 'YOLOv8n',
     lastDetectionTime: null
-  });
-
-  const [headphoneState, setHeadphoneState] = useState({
-    detected: false,
-    confidence: 0,
-    label: '',
-    screenshot: null,
-    model: 'YOLOv8_Headphone'
   });
 
   const isRunningRef = useRef(false);
@@ -71,47 +62,7 @@ export function useObjectDetection({
     } catch (err) {
       console.warn('Phone detection API error:', err);
     }
-
-    // 2. Detect Headphone/Earbuds via backend proxy
-    try {
-      const hpRes = await fetch('/api/detect/headphone', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify({ imageBase64, confidence_threshold: 0.35 })
-      });
-
-      const hpData = await hpRes.json();
-      if (hpData.detected) {
-        const topDetection = hpData.detections[0] || {};
-        const conf = topDetection.confidence || 0.75;
-        const label = topDetection.label || 'Headphone / Earbuds';
-
-        setHeadphoneState({
-          detected: true,
-          confidence: conf,
-          label,
-          screenshot: imageBase64,
-          model: hpData.model || 'YOLOv8_Headphone'
-        });
-
-        if (onHeadphoneDetected) {
-          onHeadphoneDetected({
-            type: 'headphone_detected',
-            confidence: conf,
-            description: `${label} detected with ${(conf * 100).toFixed(1)}% confidence`,
-            screenshotBase64: imageBase64
-          });
-        }
-      } else {
-        setHeadphoneState((prev) => ({ ...prev, detected: false, confidence: 0 }));
-      }
-    } catch (err) {
-      console.warn('Headphone detection API error:', err);
-    }
-  }, [captureFrameBase64, token, onPhoneDetected, onHeadphoneDetected]);
+  }, [captureFrameBase64, token, onPhoneDetected]);
 
   useEffect(() => {
     if (!isActive) {
@@ -132,5 +83,5 @@ export function useObjectDetection({
     };
   }, [isActive, intervalMs, detectObjects]);
 
-  return { phoneState, headphoneState };
+  return { phoneState };
 }

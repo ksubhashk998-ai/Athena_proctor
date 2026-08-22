@@ -3,7 +3,6 @@ import Sidebar from '../components/Sidebar';
 import WebcamFeed from '../components/WebcamFeed';
 import FaceVerificationStatus from '../components/FaceVerificationStatus';
 import PhoneDetectionCard from '../components/PhoneDetectionCard';
-import HeadphoneDetectionCard from '../components/HeadphoneDetectionCard';
 import ViolationHistory from '../components/ViolationHistory';
 import NotificationToast from '../components/NotificationToast';
 
@@ -114,13 +113,12 @@ export default function ProctorDashboard({ user, onLogout }) {
     onViolation: handleViolation
   });
 
-  const { phoneState, headphoneState } = useObjectDetection({
+  const { phoneState } = useObjectDetection({
     webcamRef,
     token,
     isActive: isMonitoring,
     intervalMs: 3500,
-    onPhoneDetected: handleViolation,
-    onHeadphoneDetected: handleViolation
+    onPhoneDetected: handleViolation
   });
 
   useSecurityControls({
@@ -198,11 +196,6 @@ export default function ProctorDashboard({ user, onLogout }) {
                 <PhoneDetectionCard
                   phoneState={phoneState}
                   violationCount={violations.filter((v) => v.type === 'phone_detected').length}
-                />
-
-                {/* Headphone & Earbud Card */}
-                <HeadphoneDetectionCard
-                  headphoneState={headphoneState}
                 />
 
                 {/* ArcFace & Telemetry Card */}

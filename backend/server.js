@@ -2720,7 +2720,7 @@ httpServer.on('error', (err) => {
                 execSync(`fuser -k ${PORT}/tcp || true`);
             }
             setTimeout(() => {
-                httpServer.listen(PORT);
+                httpServer.listen(PORT, '0.0.0.0');
             }, 1200);
             return;
         } catch (e) {
@@ -2732,7 +2732,7 @@ httpServer.on('error', (err) => {
 
 let server = null;
 if (!process.env.VERCEL) {
-    server = httpServer.listen(PORT, () => {
+    server = httpServer.listen(PORT, '0.0.0.0', () => {
         console.log(`\n=================================`);
         console.log(`🎓 Smart Proctoring System`);
         console.log(`=================================`);

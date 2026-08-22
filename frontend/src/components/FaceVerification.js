@@ -1,5 +1,6 @@
 import React, { useRef, useState, useEffect } from 'react';
 import Webcam from 'react-webcam';
+import { getApiBaseUrl } from '../utils/config';
 
 export default function FaceVerification({
   userEmail,
@@ -89,7 +90,7 @@ export default function FaceVerification({
       const activeEmail = userEmail || localStorage.getItem('registered_email') || studentId || 'student@proctor.com';
       const cleanStudentId = studentId || activeEmail;
 
-      const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+      const API_BASE = getApiBaseUrl() + '/api';
 
       const response = await fetch(`${API_BASE}/face/verify`, {
         method: 'POST',

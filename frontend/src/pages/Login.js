@@ -18,8 +18,8 @@ const postWithFallback = async (primaryUrl, fallbackUrl, payload) => {
   try {
     return await axios.post(fullUrl, payload);
   } catch (err) {
-    if (fallbackUrl) {
-      const cleanFallback = fallbackUrl.replace(/^http:\/\/localhost:5000/, '');
+    if (fallbackUrl && fallbackUrl !== primaryUrl) {
+      const cleanFallback = fallbackUrl.replace(/^https?:\/\/[^\/]+/, '');
       const fullFallback = cleanFallback.startsWith('http') ? cleanFallback : `${baseUrl}${cleanFallback}`;
       console.warn(`Primary route ${fullUrl} failed (${err.message}), attempting fallback ${fullFallback}`);
       return await axios.post(fullFallback, payload);
@@ -87,7 +87,7 @@ function Login() {
     try {
       const res = await postWithFallback(
         "/api/admin/login",
-        "http://localhost:5000/api/admin/login",
+        "/api/login",
         { email: adminEmail.trim(), password: adminPassword }
       );
 
@@ -166,7 +166,7 @@ function Login() {
     try {
       const res = await postWithFallback(
         "/api/otp/forgot-password",
-        "http://localhost:5000/api/otp/forgot-password",
+        "/api/auth/forgot-password",
         { email: targetEmail }
       );
 
@@ -206,7 +206,7 @@ function Login() {
     try {
       const res = await postWithFallback(
         "/api/otp/reset-password",
-        "http://localhost:5000/api/otp/reset-password",
+        "/api/auth/reset-password",
         {
           email: forgotEmail.trim(),
           otp: forgotOtp.trim(),
@@ -269,7 +269,7 @@ function Login() {
       // Attempt backend authentication
       const res = await postWithFallback(
         "/api/auth/login",
-        "http://localhost:5000/api/auth/login",
+        "/api/login",
         { email: userEmail, password }
       );
 
@@ -344,7 +344,7 @@ function Login() {
       if (code.length === 6) {
         const res = await postWithFallback(
           "/api/otp/verify",
-          "http://localhost:5000/api/otp/verify",
+          "/api/auth/verify-otp",
           { email: tempStudent.email, otp: code }
         );
 
@@ -385,7 +385,7 @@ function Login() {
     try {
       const res = await postWithFallback(
         "/api/otp/resend",
-        "http://localhost:5000/api/otp/resend",
+        "/api/auth/resend-otp",
         { email: tempStudent.email, name: tempStudent.name }
       );
 

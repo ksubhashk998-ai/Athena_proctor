@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { useParams } from 'react-router-dom';
+import { getApiBaseUrl } from '../utils/config';
 import EnhancedProctoringService from '../services/enhancedProctoringService';
 
 const ProctoringDashboard = ({ examId, onViolation }) => {
@@ -51,7 +53,7 @@ const ProctoringDashboard = ({ examId, onViolation }) => {
 
     const fetchLogs = async () => {
         try {
-            const response = await fetch(`http://localhost:5000/api/proctoring/logs/${examId}`, {
+            const response = await fetch(`${getApiBaseUrl()}/api/proctoring/logs/${examId}`, {
                 headers: {
                     'Authorization': `Bearer ${localStorage.getItem('token')}`
                 }
@@ -67,7 +69,7 @@ const ProctoringDashboard = ({ examId, onViolation }) => {
 
     const saveSessionData = async (sessionData) => {
         try {
-            await fetch(`http://localhost:5000/api/proctoring/session/${examId}`, {
+            await fetch(`${getApiBaseUrl()}/api/proctoring/session/${examId}`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -82,7 +84,7 @@ const ProctoringDashboard = ({ examId, onViolation }) => {
 
     const downloadReport = async () => {
         try {
-            const response = await fetch(`http://localhost:5000/api/proctoring/report/${examId}`, {
+            const response = await fetch(`${getApiBaseUrl()}/api/proctoring/report/${examId}`, {
                 headers: {
                     'Authorization': `Bearer ${localStorage.getItem('token')}`
                 }

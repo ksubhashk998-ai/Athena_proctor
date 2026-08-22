@@ -31,6 +31,7 @@
  */
 
 import * as faceapi from '@vladmandic/face-api';
+import gazeAttentionService from './gazeAttentionService';
 
 // ─── Eye Landmark Indices in face-api.js 68-point model ─────────────────────
 // Left eye:  36 (outer) → 37 → 38 → 39 (inner) → 40 → 41
@@ -317,6 +318,16 @@ class ProctoringPipeline {
     else if (personCount === 2) faceCountLabel = 'Faces: 2';
     else if (personCount >= 3) faceCountLabel = `Faces: ${personCount}+`;
 
+    // ── F. Attention & Gaze Deviations Engine ────────────────
+    const attentionState = gazeAttentionService.processTelemetry({
+      rawGazeDir: poseResult.rawGazeDir || poseResult.gazeDirection,
+      headPose: { yaw: poseResult.yaw, pitch: poseResult.pitch, roll: poseResult.roll },
+      personCount,
+      isFaceDetected,
+      confidence: faceConfidence,
+      interactionContext: options.interactionContext || { isRecent: false, type: 'none' }
+    });
+
     return {
       faceStatusLabel,
       isFaceDetected,
@@ -333,12 +344,12 @@ class ProctoringPipeline {
       yawAngle: poseResult.yaw,
       pitchAngle: poseResult.pitch,
       rollAngle: poseResult.roll,
-      gazeDirection: poseResult.gazeDirection,
+      gazeDirection: attentionState.gazeDirection || poseResult.gazeDirection,
       rawGazeDir: poseResult.rawGazeDir || poseResult.gazeDirection,
       rawBlink: poseResult.rawBlink || (poseResult.ear !== undefined && poseResult.ear < 0.26),
       ear: poseResult.ear,
-      gazeLabel: poseResult.gazeDirection !== 'Center'
-        ? `⚠ Looking ${poseResult.gazeDirection}`
+      gazeLabel: attentionState.gazeDirection !== 'CENTER' && attentionState.gazeDirection !== 'Center'
+        ? `⚠ Looking ${attentionState.gazeDirection}`
         : '✓ Looking Center',
       gazeConfidence: poseResult.gazeConfidence,
       detectedPhone: objectResult.isPhoneActive,
@@ -346,10 +357,12 @@ class ProctoringPipeline {
       phoneTrackSec: (this.phoneTrackFrames * 0.3).toFixed(1),
       detectedEarphones: objectResult.isEarphonesActive,
       earphonesScore: objectResult.earphonesScore,
+      // Attention Monitoring Telemetry
+      attentionState,
       // Trigger flags strictly filtered by 5 continuous seconds (17 frames at 300ms intervals = 5.1s)
       faceReminderTrigger: this.faceMissingFrames >= 10 && this.faceMissingFrames < 17, // 3-5s: Soft reminder "Please remain visible" (No warning count)
       faceMissingTrigger: this.faceMissingFrames >= 17, // > 5 seconds face missing -> Warning
-      multiFaceTrigger: this.multiFaceFrames >= 7,      // > 2 continuous seconds multiple faces -> Warning
+      multiFaceTrigger: this.multiFaceFrames >= 17,     // > 5 continuous seconds multiple faces -> Warning
       phoneTrigger: objectResult.isPhoneActive && this.phoneTrackFrames >= 10,
       earphoneTrigger: objectResult.isEarphonesActive && this.earphoneTrackFrames >= 10,
       gazeAwayTrigger: this.gazeAwayFrames >= 17,       // > 5 continuous seconds looking away / head pose outside ±20° -> Warning
@@ -542,12 +555,6 @@ class ProctoringPipeline {
         detectedPhoneNow = true;
         if (conf > phoneScore) { phoneScore = conf; phoneBox = box; }
       }
-
-      const isEarphone = cls === 'headphones' || cls === 'headphone' || cls === 'earphones' || cls === 'earphone' || cls === 'headset';
-      if (isEarphone && conf >= 45) {
-        detectedEarphonesNow = true;
-        if (conf > earphonesScore) { earphonesScore = conf; earphonesBox = box; }
-      }
     });
 
     // Phone temporal state
@@ -562,19 +569,7 @@ class ProctoringPipeline {
     }
     const isPhoneActive = detectedPhoneNow || (this.phoneAbsentFrames < 3 && this.phoneTrackFrames > 0);
 
-    // Earphone temporal state
-    if (detectedEarphonesNow) {
-      this.earphoneAbsentFrames = 0;
-      this.earphoneTrackFrames++;
-    } else {
-      this.earphoneAbsentFrames++;
-      if (this.earphoneAbsentFrames >= 3) {
-        this.earphoneTrackFrames = 0; earphonesScore = 0; earphonesBox = null;
-      }
-    }
-    const isEarphonesActive = detectedEarphonesNow || (this.earphoneAbsentFrames < 3 && this.earphoneTrackFrames > 0);
-
-    return { isPhoneActive, phoneScore, phoneBox, isEarphonesActive, earphonesScore, earphonesBox };
+    return { isPhoneActive, phoneScore, phoneBox, isEarphonesActive: false, earphonesScore: 0, earphonesBox: null };
   }
 
   // Normal left-to-right canvas text drawing helper for overlay HUD & bounding boxes

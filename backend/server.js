@@ -2355,71 +2355,31 @@ io.on('connection', (socket) => {
 
             if (data.image) {
                 try {
-                    const session = await LiveSession.findOne({ $or: [{ studentId }, { usn: studentId }, { email: data.email }] });
-                    if (session) {
-                        session.lastWebcamFrame = data.image;
-                        session.lastActive = new Date();
-                        if (!['Finished', 'Completed', 'Terminated'].includes(session.status)) {
-                            session.status = 'Online';
-                        }
-                        await session.save();
+                    let session = await LiveSession.findOne({ $or: [{ studentId }, { usn: studentId }, { email: data.email }] });
+                    if (!session) {
+                        session = new LiveSession({
+                            sessionId: data.sessionId || `SESS_${studentId}`,
+                            studentId: studentId,
+                            studentName: data.studentName || 'Student',
+                            usn: data.usn || studentId,
+                            email: data.email || 'student@university.edu',
+                            examId: data.examId || 'CS-401',
+                            examName: data.examName || 'Computer Science Final Assessment',
+                            department: data.department || 'Computer Science & Engineering',
+                            startTime: new Date(),
+                            status: 'Online',
+                            riskLevel: 'Low'
+                        });
                     }
+                    session.lastWebcamFrame = data.image;
+                    session.lastActive = new Date();
+                    if (!['Finished', 'Completed', 'Terminated'].includes(session.status)) {
+                        session.status = 'Online';
+                    }
+                    await session.save();
+                    io.to('admin_room').emit('student-updated', session);
                 } catch (err) {}
             }
-        }
-    });
-
-    socket.on('video-stream', async (data) => {
-        if (data && (data.studentId || data.sessionId || data.email)) {
-            const studentId = data.studentId || `STU_${data.email ? data.email.replace(/[^a-z0-9]/g, '_') : '1001'}`;
-            socket.studentId = studentId;
-            socket.studentEmail = data.email;
-            const payload = { ...data, studentId };
-
-            if (data.image) {
-                try {
-                    const session = await LiveSession.findOne({ $or: [{ studentId }, { usn: studentId }, { email: data.email }] });
-                    if (session) {
-                        session.lastWebcamFrame = data.image;
-                        session.lastActive = new Date();
-                        if (!['Finished', 'Completed', 'Terminated'].includes(session.status)) {
-                            session.status = 'Online';
-                        }
-                        await session.save();
-                    }
-                } catch (e) {}
-            }
-
-            io.to('admin_room').emit('video-stream', payload);
-            io.to('admin_room').emit('student-camera', payload);
-            io.to(`watch_${studentId}`).emit('video-stream', payload);
-        }
-    });
-
-    socket.on('student-camera', async (data) => {
-        if (data && (data.studentId || data.sessionId || data.email)) {
-            const studentId = data.studentId || `STU_${data.email ? data.email.replace(/[^a-z0-9]/g, '_') : '1001'}`;
-            socket.studentId = studentId;
-            socket.studentEmail = data.email;
-            const payload = { ...data, studentId };
-
-            if (data.image) {
-                try {
-                    const session = await LiveSession.findOne({ $or: [{ studentId }, { usn: studentId }, { email: data.email }] });
-                    if (session) {
-                        session.lastWebcamFrame = data.image;
-                        session.lastActive = new Date();
-                        if (!['Finished', 'Completed', 'Terminated'].includes(session.status)) {
-                            session.status = 'Online';
-                        }
-                        await session.save();
-                    }
-                } catch (e) {}
-            }
-
-            io.to('admin_room').emit('video-stream', payload);
-            io.to('admin_room').emit('student-camera', payload);
-            io.to(`watch_${studentId}`).emit('video-stream', payload);
         }
     });
 
@@ -2430,21 +2390,34 @@ io.on('connection', (socket) => {
             socket.studentId = studentId;
             socket.studentEmail = data.email;
             try {
-                const session = await LiveSession.findOne({ $or: [{ studentId }, { usn: studentId }, { email: data.email }] });
-                if (session) {
-                    session.lastActive = new Date();
-                    if (!['Finished', 'Completed', 'Terminated'].includes(session.status)) {
-                        session.status = 'Online';
-                    }
-                    if (data.image) session.lastWebcamFrame = data.image;
-                    if (data.tabSwitchingCount !== undefined) session.tabSwitchingCount = data.tabSwitchingCount;
-                    if (data.suspiciousActivityCount !== undefined) session.suspiciousActivityCount = data.suspiciousActivityCount;
-                    if (data.riskLevel) session.riskLevel = data.riskLevel;
-                    if (data.headPose) session.headPose = data.headPose;
-                    if (data.eyeGaze) session.eyeGaze = data.eyeGaze;
-                    await session.save();
-                    io.to('admin_room').emit('student-updated', session);
+                let session = await LiveSession.findOne({ $or: [{ studentId }, { usn: studentId }, { email: data.email }] });
+                if (!session) {
+                    session = new LiveSession({
+                        sessionId: data.sessionId || `SESS_${studentId}`,
+                        studentId: studentId,
+                        studentName: data.studentName || data.fullName || 'Student',
+                        usn: data.usn || studentId,
+                        email: data.email || 'student@university.edu',
+                        examId: data.examId || 'CS-401',
+                        examName: data.examName || 'Computer Science Final Assessment',
+                        department: data.department || 'Computer Science & Engineering',
+                        startTime: new Date(),
+                        status: 'Online',
+                        riskLevel: 'Low'
+                    });
                 }
+                session.lastActive = new Date();
+                if (!['Finished', 'Completed', 'Terminated'].includes(session.status)) {
+                    session.status = 'Online';
+                }
+                if (data.image) session.lastWebcamFrame = data.image;
+                if (data.tabSwitchingCount !== undefined) session.tabSwitchingCount = data.tabSwitchingCount;
+                if (data.suspiciousActivityCount !== undefined) session.suspiciousActivityCount = data.suspiciousActivityCount;
+                if (data.riskLevel) session.riskLevel = data.riskLevel;
+                if (data.headPose) session.headPose = data.headPose;
+                if (data.eyeGaze) session.eyeGaze = data.eyeGaze;
+                await session.save();
+                io.to('admin_room').emit('student-updated', session);
 
                 if (data.image) {
                     io.to('admin_room').emit('video-stream', { studentId, image: data.image });
@@ -2453,6 +2426,28 @@ io.on('connection', (socket) => {
             } catch (err) {
                 console.error('Error updating telemetry session:', err.message);
             }
+        }
+    });
+
+    // 4. gaze-telemetry
+    socket.on('gaze-telemetry', async (data) => {
+        if (data && (data.studentId || data.sessionId || data.email)) {
+            const studentId = data.studentId || `STU_${data.email ? data.email.replace(/[^a-z0-9]/g, '_') : '1001'}`;
+            const payload = {
+                type: 'GAZE_DEVIATION',
+                studentId,
+                examId: data.examId || 'EXAM_MAIN',
+                sessionId: data.sessionId || `SESSION_${studentId}`,
+                direction: (data.gazeDirection || data.direction || 'CENTER').toUpperCase(),
+                headPose: data.headPose || { yaw: 0, pitch: 0, roll: 0 },
+                duration: Number(data.duration) || 0,
+                suspicionScore: Number(data.suspicionScore) || 0,
+                riskLevel: (data.riskLevel || 'NORMAL').toUpperCase(),
+                timestamp: data.timestamp || new Date().toISOString()
+            };
+
+            io.to('admin_room').emit('gaze-attention-update', payload);
+            io.to('admin_room').emit('student-attention-event', payload);
         }
     });
 

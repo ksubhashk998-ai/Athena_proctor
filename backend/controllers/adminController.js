@@ -300,8 +300,8 @@ const getLiveStudents = async (req, res) => {
   try {
     const { search, riskLevel, status, department } = req.query;
 
-    // Heartbeat liveness timeout: students with no activity for > 20 seconds are Offline
-    const activeThreshold = new Date(Date.now() - 20 * 1000);
+    // Heartbeat liveness timeout: students with no activity for > 90 seconds are Offline
+    const activeThreshold = new Date(Date.now() - 90 * 1000);
 
     // Auto-mark stale "Online"/"Active" sessions as "Offline"
     await LiveSession.updateMany(
@@ -1056,6 +1056,15 @@ const upsertLiveSession = async (req, res) => {
     const sName = studentName || (req.user && req.user.name) || 'Student';
     const sEmail = email || (req.user && req.user.email) || 'student@university.edu';
     const sUsn = usn || sId;
+
+    let session = await LiveSession.findOne({
+      $or: [
+        { sessionId: req.body.sessionId },
+        { studentId: sId },
+        { usn: sUsn },
+        { email: sEmail }
+      ].filter(cond => Object.values(cond)[0])
+    });
 
     if (session) {
       // If session is already finished or terminated, do not revert to Online from generic heartbeat

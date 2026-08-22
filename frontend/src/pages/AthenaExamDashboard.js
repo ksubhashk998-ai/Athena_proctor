@@ -88,9 +88,14 @@ function AthenaExamDashboard() {
     value: '✗ No Phone Detected'
   });
 
-  const [earphoneDetectionState, setEarphoneDetectionState] = useState({
-    status: 'green',
-    value: '✗ Not Detected'
+  const [attentionState, setAttentionState] = useState({
+    gazeDirection: 'CENTER',
+    riskLevel: 'NORMAL',
+    suspicionScore: 0,
+    isAway: false,
+    currentAwayDurationSec: 0,
+    longestAwayDurationSec: 0,
+    totalDeviationsCount: 0
   });
 
   const [headPoseState, setHeadPoseState] = useState({
@@ -532,6 +537,8 @@ function AthenaExamDashboard() {
 
   // 1. Live Production Telemetry Callback (Instant Stale Reset & Strict Rules)
   const handleDetectionUpdate = useCallback((data) => {
+    if (!data) return;
+    if (data.attentionState) setAttentionState(data.attentionState);
     const {
       faceStatusLabel,
       isFaceDetected,
@@ -541,8 +548,6 @@ function AthenaExamDashboard() {
       detectedPhone,
       phoneScore,
       phoneTrackSec,
-      detectedEarphones,
-      earphonesScore,
       gazeDirection,
       gazeLabel,
       gazeConfidence,
@@ -564,19 +569,6 @@ function AthenaExamDashboard() {
       setPhoneDetectionState({
         status: 'green',
         value: '✗ No Phone Detected',
-      });
-    }
-
-    // Earphones / AirPods State Rule: ✓ Detected / ✗ Not Detected (Instant Reset)
-    if (detectedEarphones) {
-      setEarphoneDetectionState({
-        status: 'red',
-        value: `✓ Earphones Detected (${earphonesScore}%)`,
-      });
-    } else {
-      setEarphoneDetectionState({
-        status: 'green',
-        value: '✗ Not Detected',
       });
     }
 
@@ -960,7 +952,7 @@ function AthenaExamDashboard() {
           eyeTrackingState={eyeTrackingState}
           faceDetectionState={faceDetectionState}
           phoneDetectionState={phoneDetectionState}
-          earphoneDetectionState={earphoneDetectionState}
+          attentionState={attentionState}
           headPoseState={headPoseState}
           tabSwitchesCount={tabSwitchesCount}
           multiFaceWarningsCount={multiFaceWarningsCount}

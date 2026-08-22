@@ -4,13 +4,14 @@ import AudioWaveMeter from './AudioWaveMeter';
 import StatusBadgeCard from './StatusBadgeCard';
 import CriticalAlertBox from './CriticalAlertBox';
 import ActivityLogPanel from './ActivityLogPanel';
+import AttentionStatusCard from './AttentionStatusCard';
 
 function AIMonitoringSidebar({
   isProctoringActive,
   eyeTrackingState,
   faceDetectionState,
   phoneDetectionState,
-  earphoneDetectionState,
+  attentionState,
   headPoseState,
   tabSwitchesCount,
   maxTabSwitches = 3,
@@ -128,20 +129,15 @@ function AIMonitoringSidebar({
           detail={headPoseState.detail}
         />
 
+        {/* Attention Sentinel Card */}
+        <AttentionStatusCard attentionState={attentionState} />
+
         {/* Phone Detection Card */}
         <StatusBadgeCard
           icon="fas fa-mobile-alt"
-          label="PHONE DETECTION"
+          label="PHONE DETECTOR"
           value={phoneDetectionState.value}
           status={phoneDetectionState.status}
-        />
-
-        {/* Earphone Detection Card */}
-        <StatusBadgeCard
-          icon="fas fa-headphones"
-          label="EARPHONE / AIRPODS"
-          value={earphoneDetectionState.value}
-          status={earphoneDetectionState.status}
         />
 
         {/* Multi-Face Warning Counter Card (Requirement 8) */}

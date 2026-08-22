@@ -113,6 +113,20 @@ export const StudentDetailPage = () => {
               </Box>
 
               <Box>
+                <Typography variant="caption" color="text.secondary" display="block">Attention Risk</Typography>
+                <Typography variant="subtitle2" sx={{ fontWeight: 800, color: student.attentionRiskLevel === 'HIGH RISK' ? '#ef4444' : (student.attentionRiskLevel === 'SUSPICIOUS' ? '#f59e0b' : '#10b981') }}>
+                  {student.attentionRiskLevel || 'NORMAL'}
+                </Typography>
+              </Box>
+
+              <Box>
+                <Typography variant="caption" color="text.secondary" display="block">Gaze Deviations</Typography>
+                <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                  {student.gazeDeviationsCount || 0} {student.longestGazeDeviation ? `(max ${student.longestGazeDeviation}s)` : ''}
+                </Typography>
+              </Box>
+
+              <Box>
                 <Typography variant="caption" color="text.secondary" display="block">Suspicious Count</Typography>
                 <Typography variant="subtitle2" sx={{ fontWeight: 800, color: student.suspiciousActivityCount > 2 ? '#ef4444' : '#10b981' }}>
                   {student.suspiciousActivityCount || 0} Events

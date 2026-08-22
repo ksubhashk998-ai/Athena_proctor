@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import proctoringPipeline from '../../services/proctoringPipeline';
+import gazeAttentionService from '../../services/gazeAttentionService';
+import { useInteractionTracker } from '../../hooks/useInteractionTracker';
 import { getSocket } from '../../services/socketService';
 
 function WebcamFeed({ isProctoringActive, onDetectionUpdate, onViolationTriggered, identityVerification }) {
@@ -33,6 +35,15 @@ function WebcamFeed({ isProctoringActive, onDetectionUpdate, onViolationTriggere
 
   const isVerified = identityVerification?.isVerified !== false;
   const confidence = identityVerification?.confidence || faceConfidence || 98;
+
+  const { isRecentInteraction } = useInteractionTracker(isProctoringActive);
+
+  useEffect(() => {
+    const email = activeStudent?.email || 'student@university.edu';
+    const studentId = activeStudent?.studentId || `STU_${email.replace(/[^a-z0-9]/g, '_')}`;
+    const token = localStorage.getItem('token') || '';
+    gazeAttentionService.setSessionContext({ studentId, sessionId: `SESSION_${studentId}`, token });
+  }, [activeStudent]);
 
   // ── 1. Initialize Webcam Stream ─────────────────────────────
   useEffect(() => {
@@ -108,7 +119,8 @@ function WebcamFeed({ isProctoringActive, onDetectionUpdate, onViolationTriggere
         studentName,
         isVerified,
         confidence,
-        identityStatus: isVerified ? 'Verified' : 'Identity Failed'
+        identityStatus: isVerified ? 'Verified' : 'Identity Failed',
+        interactionContext: isRecentInteraction()
       };
 
       const t = await proctoringPipeline.processFrame(video, canvas, studentInfo);
@@ -123,14 +135,12 @@ function WebcamFeed({ isProctoringActive, onDetectionUpdate, onViolationTriggere
       // Violations
       if (t.phoneTrigger)
         triggerViolation('phone_detected', `📱 Phone Detected (${t.phoneScore}%, ${t.phoneTrackSec}s)`);
-      if (t.earphoneTrigger)
-        triggerViolation('earphones_detected', `🎧 Earphones Detected (${t.earphonesScore}%)`);
       if (t.faceMissingTrigger)
-        triggerViolation('no_face', '⚠️ Candidate face absent > 3 continuous seconds');
+        triggerViolation('no_face', '⚠️ Candidate face absent > 5 continuous seconds');
       if (t.multiFaceTrigger)
-        triggerViolation('multiple_faces', `👥 Multiple Faces (${t.personCount}) for > 2 seconds`);
+        triggerViolation('multiple_faces', `👥 Multiple Faces (${t.personCount}) for > 5 continuous seconds`);
       if (t.gazeAwayTrigger)
-        triggerViolation('gaze_away', `👁 Gaze Away: ${t.gazeDirection} > 2 continuous seconds`);
+        triggerViolation('gaze_away', `👁 Gaze Away: ${t.gazeDirection} > 5 continuous seconds`);
 
       // Emit full telemetry to dashboard
       if (onDetectionUpdate) {
@@ -153,6 +163,7 @@ function WebcamFeed({ isProctoringActive, onDetectionUpdate, onViolationTriggere
           phoneTrackSec: t.phoneTrackSec,
           detectedEarphones: t.detectedEarphones,
           earphonesScore: t.earphonesScore,
+          attentionState: t.attentionState,
           modelStatus,
         });
       }

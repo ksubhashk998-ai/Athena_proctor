@@ -209,6 +209,28 @@ export default function AdminMonitor() {
         setStudents(prev => prev.filter(s => s.studentId !== data.studentId && s.email !== data.email));
       });
 
+      socket.on('gaze-attention-update', (data) => {
+        if (!data || !data.studentId) return;
+        setStudents(prev => {
+          const idx = prev.findIndex(s => s.studentId === data.studentId || s.usn === data.studentId || s.sessionId === data.sessionId);
+          if (idx !== -1) {
+            const updated = [...prev];
+            const curr = updated[idx];
+            updated[idx] = {
+              ...curr,
+              attentionRiskLevel: data.riskLevel || 'NORMAL',
+              lastGazeDirection: data.direction || 'CENTER',
+              suspicionScore: data.suspicionScore || 0,
+              gazeDeviationsCount: (curr.gazeDeviationsCount || 0) + (data.eventType === 'GAZE_DEVIATION' ? 1 : 0),
+              longestGazeDeviation: Math.max(curr.longestGazeDeviation || 0, data.duration || 0),
+              recentGazeEvents: [data, ...(curr.recentGazeEvents || []).slice(0, 9)]
+            };
+            return updated;
+          }
+          return prev;
+        });
+      });
+
       socket.on('student-terminated', (data) => {
         setTerminatedStudents(prev => [data, ...prev.filter(s => s.studentId !== data.studentId)]);
         setStudents(prev => prev.filter(s => s.studentId !== data.studentId && s.email !== data.email));
@@ -258,9 +280,11 @@ export default function AdminMonitor() {
   };
 
   const filteredStudents = students.filter((s) => {
-    const isOnline = ['Online', 'Active', 'Warning', 'in-progress'].includes(s.status) && s.status !== 'Offline' && s.status !== 'Finished' && s.status !== 'Terminated';
+    const statusStr = String(s.status || 'Online').toLowerCase();
+    const isOnline = !['offline', 'finished', 'completed', 'terminated'].includes(statusStr);
 
     const matchesSearch =
+      !searchTerm.trim() ||
       s.studentName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       s.usn?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       s.email?.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -268,9 +292,9 @@ export default function AdminMonitor() {
 
     const matchesRisk =
       riskFilter === 'ALL' ||
-      (riskFilter === 'SAFE' && (s.riskLevel?.includes('Safe') || s.riskLevel?.includes('Low'))) ||
-      (riskFilter === 'MEDIUM' && (s.riskLevel?.includes('Medium') || s.status === 'Warning')) ||
-      (riskFilter === 'HIGH' && (s.riskLevel?.includes('High') || s.status === 'Terminated'));
+      (riskFilter === 'SAFE' && (s.riskLevel?.toLowerCase().includes('safe') || s.riskLevel?.toLowerCase().includes('low') || s.riskLevel?.toLowerCase().includes('normal'))) ||
+      (riskFilter === 'MEDIUM' && (s.riskLevel?.toLowerCase().includes('medium') || s.riskLevel?.toLowerCase().includes('suspicious') || s.riskLevel?.toLowerCase().includes('warning') || statusStr === 'warning')) ||
+      (riskFilter === 'HIGH' && (s.riskLevel?.toLowerCase().includes('high') || statusStr === 'terminated'));
 
     return isOnline && matchesSearch && matchesRisk;
   });
@@ -823,16 +847,30 @@ export default function AdminMonitor() {
 
                         <div style={{ display: 'flex', gap: '6px' }}>
                           <span style={{ color: '#94a3b8' }}>Eye Gaze:</span>
-                          <strong style={{ color: s.eyeGaze?.includes('Right') || s.eyeGaze?.includes('Off') ? '#f59e0b' : '#10b981' }}>
-                            {s.eyeGaze?.includes('Right') || s.eyeGaze?.includes('Off') ? '⚠️ ' : '✔ '}{s.eyeGaze || 'Center'}
+                          <strong style={{ color: s.lastGazeDirection && s.lastGazeDirection !== 'CENTER' ? '#f59e0b' : '#10b981' }}>
+                            {s.lastGazeDirection && s.lastGazeDirection !== 'CENTER' ? `⚠️ ${s.lastGazeDirection}` : '✔ Center'}
                           </strong>
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '6px' }}>
+                          <span style={{ color: '#94a3b8' }}>Attention:</span>
+                          <span style={{
+                            fontSize: '0.72rem',
+                            fontWeight: 700,
+                            padding: '1px 6px',
+                            borderRadius: '4px',
+                            background: s.attentionRiskLevel === 'HIGH RISK' || s.attentionRiskLevel === 'HIGH_RISK' ? 'rgba(239, 68, 68, 0.2)' : (s.attentionRiskLevel === 'SUSPICIOUS' || s.attentionRiskLevel === 'WARNING' ? 'rgba(245, 158, 11, 0.2)' : 'rgba(16, 185, 129, 0.2)'),
+                            color: s.attentionRiskLevel === 'HIGH RISK' || s.attentionRiskLevel === 'HIGH_RISK' ? '#ef4444' : (s.attentionRiskLevel === 'SUSPICIOUS' || s.attentionRiskLevel === 'WARNING' ? '#f59e0b' : '#10b981')
+                          }}>
+                            {s.attentionRiskLevel || 'NORMAL'}
+                          </span>
                         </div>
                       </div>
 
-                      {/* Tab Switches & Copy/Paste Counters */}
+                      {/* Gaze Deviations & Tab Switches Counters */}
                       <div style={styles.countsRow}>
+                        <span>Gaze Away: <strong>{s.gazeDeviationsCount || 0}</strong> {s.longestGazeDeviation ? `(max ${s.longestGazeDeviation}s)` : ''}</span>
                         <span>Tab Switches: <strong>{s.tabSwitchingCount || 0}</strong></span>
-                        <span>Copy/Paste: <strong>{s.copyPasteAttempts || 0}</strong></span>
                       </div>
 
                       {/* Action Buttons */}

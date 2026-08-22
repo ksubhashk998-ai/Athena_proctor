@@ -21,6 +21,8 @@ const ScreenshotEvidence = require('../models/ScreenshotEvidence');
 const Student = require('../models/Student');
 const Incident = require('../models/Incident');
 const VerificationLog = require('../models/VerificationLog');
+const GazeEvent = require('../models/GazeEvent');
+const LiveSession = require('../models/LiveSession');
 
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this-in-production';
@@ -1202,5 +1204,162 @@ function euclideanDistance(a, b) {
     }
     return Math.sqrt(sum);
 }
+
+// =========================================================================
+// GAZE DEVIATION & ATTENTION MONITORING ENDPOINTS
+// =========================================================================
+
+/**
+ * POST /api/proctoring/gaze
+ * Records meaningful gaze deviation & attention events, updates live session, and broadcasts to admin.
+ */
+router.post('/proctoring/gaze', async (req, res) => {
+    try {
+        const {
+            studentId,
+            examId,
+            sessionId,
+            gazeDirection,
+            headPose,
+            duration,
+            suspicionScore,
+            riskLevel,
+            eventType,
+            confidence,
+            interactionContext,
+            timestamp
+        } = req.body;
+
+        if (!studentId) {
+            return res.status(400).json({ success: false, error: 'studentId is required' });
+        }
+
+        const cleanStudentId = String(studentId).trim();
+        const cleanExamId = String(examId || 'EXAM_MAIN').trim();
+        const cleanSessionId = String(sessionId || `SESSION_${cleanStudentId}`).trim();
+        const finalDirection = (gazeDirection || 'CENTER').toUpperCase();
+        const finalRisk = (riskLevel || 'NORMAL').toUpperCase();
+        const finalDuration = parseFloat(duration) || 0;
+        const finalScore = parseInt(suspicionScore, 10) || 0;
+
+        // 1. Create and save persistent GazeEvent
+        const gazeLog = new GazeEvent({
+            studentId: cleanStudentId,
+            examId: cleanExamId,
+            sessionId: cleanSessionId,
+            gazeDirection: finalDirection,
+            headPose: {
+                yaw: Number(headPose?.yaw) || 0,
+                pitch: Number(headPose?.pitch) || 0,
+                roll: Number(headPose?.roll) || 0
+            },
+            duration: finalDuration,
+            suspicionScore: finalScore,
+            riskLevel: finalRisk,
+            eventType: eventType || 'GAZE_DEVIATION',
+            confidence: Number(confidence) || 90,
+            interactionContext: {
+                wasInteracting: Boolean(interactionContext?.wasInteracting),
+                lastInteractionType: String(interactionContext?.lastInteractionType || 'none')
+            },
+            timestamp: timestamp ? new Date(timestamp) : new Date()
+        });
+
+        await gazeLog.save();
+
+        // 2. Update active LiveSession if found
+        try {
+            const liveSession = await LiveSession.findOne({
+                $or: [{ studentId: cleanStudentId }, { sessionId: cleanSessionId }]
+            });
+
+            if (liveSession) {
+                liveSession.lastGazeDirection = finalDirection;
+                liveSession.attentionRiskLevel = finalRisk;
+                liveSession.suspicionScore = finalScore;
+                if (finalDuration > (liveSession.longestGazeDeviation || 0)) {
+                    liveSession.longestGazeDeviation = finalDuration;
+                }
+                liveSession.gazeDeviationsCount = (liveSession.gazeDeviationsCount || 0) + (eventType === 'GAZE_DEVIATION' ? 1 : 0);
+                liveSession.lastAttentionEvent = {
+                    direction: finalDirection,
+                    duration: finalDuration,
+                    riskLevel: finalRisk,
+                    timestamp: new Date()
+                };
+                await liveSession.save();
+            }
+        } catch (sessionErr) {
+            console.warn('⚠️ LiveSession gaze update notice:', sessionErr.message);
+        }
+
+        // 3. Broadcast real-time telemetry to Admin Room via Socket.IO
+        const io = req.app?.get('io');
+        if (io) {
+            const broadcastPayload = {
+                type: 'GAZE_DEVIATION',
+                studentId: cleanStudentId,
+                examId: cleanExamId,
+                sessionId: cleanSessionId,
+                direction: finalDirection,
+                headPose: gazeLog.headPose,
+                duration: finalDuration,
+                suspicionScore: finalScore,
+                riskLevel: finalRisk,
+                eventType: gazeLog.eventType,
+                confidence: gazeLog.confidence,
+                timestamp: gazeLog.timestamp
+            };
+
+            io.to('admin_room').emit('gaze-attention-update', broadcastPayload);
+            io.to('admin_room').emit('student-attention-event', broadcastPayload);
+        }
+
+        return res.json({
+            success: true,
+            message: 'Gaze attention event recorded successfully',
+            event: gazeLog
+        });
+    } catch (error) {
+        console.error('Gaze event logging error:', error);
+        return res.status(500).json({ success: false, error: 'Failed to record gaze event: ' + error.message });
+    }
+});
+
+/**
+ * GET /api/proctoring/gaze/:sessionId
+ * Retrieves the gaze deviation timeline for a given session.
+ */
+router.get('/proctoring/gaze/:sessionId', async (req, res) => {
+    try {
+        const { sessionId } = req.params;
+        if (!sessionId) {
+            return res.status(400).json({ success: false, error: 'Session ID is required' });
+        }
+
+        const events = await GazeEvent.find({
+            $or: [{ sessionId }, { studentId: sessionId }]
+        })
+        .sort({ timestamp: -1 })
+        .limit(100);
+
+        const summary = {
+            totalEvents: events.length,
+            longestDeviation: events.reduce((max, ev) => Math.max(max, ev.duration || 0), 0),
+            highRiskEvents: events.filter(ev => ev.riskLevel === 'HIGH_RISK' || ev.riskLevel === 'HIGH RISK').length,
+            suspiciousEvents: events.filter(ev => ev.riskLevel === 'SUSPICIOUS' || ev.riskLevel === 'WARNING').length
+        };
+
+        return res.json({
+            success: true,
+            sessionId,
+            summary,
+            events
+        });
+    } catch (error) {
+        console.error('Fetch gaze events error:', error);
+        return res.status(500).json({ success: false, error: 'Failed to fetch gaze events: ' + error.message });
+    }
+});
 
 module.exports = router;

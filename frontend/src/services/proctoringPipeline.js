@@ -274,8 +274,8 @@ class ProctoringPipeline {
     if (personCount >= 2) this.multiFaceFrames++;
     else this.multiFaceFrames = Math.max(0, this.multiFaceFrames - 1);
 
-    const isBlinkingOrNormalReading = poseResult.rawBlink || poseResult.gazeDirection === 'blinking' || (Math.abs(poseResult.yaw) <= 20 && Math.abs(poseResult.pitch) <= 20);
-    const isHeadOrExtremeGazeAway = !isBlinkingOrNormalReading && (poseResult.headPoseDirection !== 'Center' || poseResult.gazeDirection !== 'Center');
+    const isBlinkingOrNormalReading = poseResult.rawBlink || poseResult.gazeDirection === 'blinking';
+    const isHeadOrExtremeGazeAway = !isBlinkingOrNormalReading && (poseResult.gazeDirection !== 'Center');
     
     if (isHeadOrExtremeGazeAway) this.gazeAwayFrames++;
     else this.gazeAwayFrames = 0;
@@ -371,7 +371,7 @@ class ProctoringPipeline {
       multiFaceTrigger: this.multiFaceFrames >= 7,      // ~2 seconds confirmed multiple faces -> Warning
       phoneTrigger: objectResult.isPhoneActive && this.phoneTrackFrames >= 10,
       earphoneTrigger: objectResult.isEarphonesActive && this.earphoneTrackFrames >= 10,
-      gazeAwayTrigger: this.gazeAwayFrames >= 17,       // > 5 continuous seconds looking away / head pose outside ±20° -> Warning
+      gazeAwayTrigger: this.gazeAwayFrames >= 34,       // > 10 continuous seconds looking away / head pose outside ±20° -> Warning
     };
   }
 
@@ -625,13 +625,6 @@ class ProctoringPipeline {
 
       this._drawUnmirroredText(ctx, label, x, Math.max(18, y - 4), canvasW, color, Math.max(label.length * 7.5, 160));
     });
-
-    // Continuous Head Pose overlay HUD
-    if (personCount >= 1) {
-      const poseBg = poseResult.headPoseDirection !== 'Center' ? 'rgba(239,68,68,0.9)' : 'rgba(15,23,42,0.85)';
-      const hudTxt = `HEAD POSE: ${poseResult.headPoseDirection} | Yaw:${poseResult.yaw}° Pitch:${poseResult.pitch}°`;
-      this._drawUnmirroredText(ctx, hudTxt, 6, 22, canvasW, poseBg, 305);
-    }
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -641,7 +634,7 @@ class ProctoringPipeline {
     if (personCount === 0) return;
     const gazeBg = poseResult.gazeDirection !== 'Center' ? 'rgba(245,158,11,0.9)' : 'rgba(16,185,129,0.85)';
     const gazeTxt = `GAZE: Looking ${poseResult.gazeDirection} (${poseResult.gazeConfidence}%)`;
-    this._drawUnmirroredText(ctx, gazeTxt, 6, 48, canvasW, gazeBg, 250);
+    this._drawUnmirroredText(ctx, gazeTxt, 6, 22, canvasW, gazeBg, 250);
   }
 
   // ═══════════════════════════════════════════════════════════

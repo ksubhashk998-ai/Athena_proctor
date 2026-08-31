@@ -140,7 +140,7 @@ function WebcamFeed({ isProctoringActive, onDetectionUpdate, onViolationTriggere
       if (t.multiFaceTrigger)
         triggerViolation('multiple_faces', `👥 Multiple Faces (${t.personCount}) for > 5 continuous seconds`);
       if (t.gazeAwayTrigger)
-        triggerViolation('gaze_away', `👁 Gaze Away: ${t.gazeDirection} > 5 continuous seconds`);
+        triggerViolation('gaze_away', `👁 Gaze Away: ${t.gazeDirection} > 10 continuous seconds`);
 
       // Emit full telemetry to dashboard
       if (onDetectionUpdate) {

@@ -12,9 +12,9 @@ export const GAZE_CONFIG = {
   SMOOTHING_BUFFER_SIZE: 6,         // Temporal sliding window size for majority voting
 
   // Duration Thresholds (Milliseconds)
-  AWAY_IGNORE_DURATION_MS: 3000,     // Deviations < 3s are ignored as normal
-  AWAY_SUSPICIOUS_DURATION_MS: 5000, // Deviations between 3s-5s are suspicious (+1 score)
-  AWAY_EXTREME_DURATION_MS: 8000,    // Deviations > 5s are stronger suspicious events (+2 score)
+  AWAY_IGNORE_DURATION_MS: 10000,    // Deviations < 10s are ignored as normal
+  AWAY_SUSPICIOUS_DURATION_MS: 12000, // Deviations between 10s-12s are suspicious (+1 score)
+  AWAY_EXTREME_DURATION_MS: 15000,   // Deviations > 12s are stronger suspicious events (+2 score)
 
   // Keyboard & Mouse Interaction Grace Window
   TYPING_GRACE_WINDOW_MS: 2200,      // Looking down within 2.2s of typing/mouse interaction is normal

@@ -120,15 +120,6 @@ function AIMonitoringSidebar({
           detail={eyeTrackingState.detail}
         />
 
-        {/* Head Pose Card */}
-        <StatusBadgeCard
-          icon="fas fa-compass"
-          label="HEAD POSE"
-          value={headPoseState.value}
-          status={headPoseState.status}
-          detail={headPoseState.detail}
-        />
-
         {/* Attention Sentinel Card */}
         <AttentionStatusCard attentionState={attentionState} />
 

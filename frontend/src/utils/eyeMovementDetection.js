@@ -455,28 +455,13 @@ class EyeMovementDetection {
 
             // 10 continuous seconds of eye/iris DOWN -> ONE violation
             if (downDurationSec >= this.DOWNWARD_GAZE_VIOLATION_SECONDS && !this.downGazeViolationEmitted) {
-                this.triggerAlert('Looking Down Violation Detected', 'down');
+                this.triggerAlert('Looking Down for Long Duration', 'down');
                 this.downGazeViolationEmitted = true;
             }
         } else {
             // Eye/iris changed away from DOWN -> reset continuous downward timer and violation flag
             this.downGazeStartTime = null;
             this.downGazeViolationEmitted = false;
-        }
-
-        // Track other sustained off-center directions (left / right / up)
-        if (gazeDirection !== 'center' && gazeDirection !== 'down' && this.isCalibrated) {
-            this.consecutiveOffCenterFrames++;
-            
-            // Sustained off-center gaze (> 30 checks ~= 3.0s)
-            if (this.consecutiveOffCenterFrames > 30 && (now - this.lastAlertTime > 6000)) {
-                let msg = `Looking away from screen - Direct gaze turned ${gazeDirection.toUpperCase()}`;
-                this.triggerAlert(msg, gazeDirection);
-                this.lastAlertTime = now;
-                this.consecutiveOffCenterFrames = 0;
-            }
-        } else if (gazeDirection === 'center') {
-            this.consecutiveOffCenterFrames = Math.max(0, this.consecutiveOffCenterFrames - 1);
         }
 
         // Dispatch live gaze update event for UI visual widget

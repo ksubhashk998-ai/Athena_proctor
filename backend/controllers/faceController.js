@@ -213,6 +213,8 @@ const enrollFace = async (req, res) => {
         email: cleanEmail,
         enrolled: true,
         samplesCollected: embeddings.length,
+        averageEmbedding: averageEmbedding,
+        embeddings: embeddings,
         profile: savedProfile
       });
     } catch (dbErr) {
@@ -242,6 +244,8 @@ const enrollFace = async (req, res) => {
             email: cleanEmail,
             enrolled: true,
             samplesCollected: embeddings.length,
+            averageEmbedding: averageEmbedding,
+            embeddings: embeddings,
             profile: retryProfile
           });
         }

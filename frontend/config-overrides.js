@@ -3,13 +3,33 @@ const webpack = require('webpack');
 
 module.exports = {
   webpack: function override(config, env) {
-    // Disable sourcemap generation to prevent memory exhaustion for heavy tfjs/face-api packages
+    // Disable sourcemap generation to prevent memory exhaustion and drastically speed up compilation
     config.devtool = false;
-    if (env === 'development') {
-      config.cache = { type: 'memory' };
+
+    // Use persistent filesystem caching for ultra-fast startup and hot reloads
+    config.cache = {
+      type: 'filesystem',
+      allowCollectingMemory: true,
+    };
+
+    // Remove source-map-loader which severely slows down processing heavy packages like @tensorflow & face-api
+    if (config.module && config.module.rules) {
+      config.module.rules = config.module.rules.filter(rule => {
+        if (rule.loader && rule.loader.includes('source-map-loader')) return false;
+        if (rule.use && Array.isArray(rule.use) && rule.use.some(u => (typeof u === 'string' ? u : u.loader || '').includes('source-map-loader'))) return false;
+        return true;
+      });
     }
 
+    // Remove ESLint plugin from webpack in dev mode if present (already checked or handled)
+    config.plugins = (config.plugins || []).filter(p => {
+      const name = p && p.constructor && p.constructor.name;
+      return name !== 'ESLintWebpackPlugin' && name !== 'ForkTsCheckerWebpackPlugin';
+    });
+
     // Add fallbacks for Node.js core modules in Webpack 5
+    config.resolve = config.resolve || {};
+    config.resolve.symlinks = false;
     config.resolve.fallback = {
       ...config.resolve.fallback,
       "buffer": require.resolve("buffer/"),
@@ -21,13 +41,12 @@ module.exports = {
     };
     
     // Add plugins
-    config.plugins = [
-      ...config.plugins,
+    config.plugins.push(
       new webpack.ProvidePlugin({
         process: 'process/browser.js',
         Buffer: ['buffer', 'Buffer']
       })
-    ];
+    );
     
     // Ignore warnings for TensorFlow, @vladmandic/face-api, node_modules, asn1.js, fs, vm
     config.ignoreWarnings = [

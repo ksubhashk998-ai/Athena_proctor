@@ -238,7 +238,11 @@ class EnhancedProctoringService {
     }
 
     handleEyeAlert(details) {
-        this.addLog('warning', `Eye Movement: ${details.message}`);
+        if (details.isWarningOnly) {
+            this.addLog('warning', `Eye Movement: ${details.message}`);
+            return;
+        }
+        this.addLog('violation', `Eye Movement: ${details.message}`);
         this.notifyViolation(details.message, new Date().toISOString());
         this.captureEvidenceScreenshot('eye_movement');
         

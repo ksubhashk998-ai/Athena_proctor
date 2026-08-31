@@ -1055,6 +1055,33 @@ router.post('/detect/headphone', authenticateToken, async (req, res) => {
     }
 });
 
+/**
+ * POST /api/detect/faces
+ * Proxies to Python InsightFace multi-face detector
+ */
+router.post('/detect/faces', authenticateToken, async (req, res) => {
+    try {
+        const { imageBase64 } = req.body;
+        try {
+            const response = await axios.post(
+                `${PYTHON_DETECTOR_URL}/detect/faces`,
+                { imageBase64 },
+                { timeout: 5000 }
+            );
+            return res.json(response.data);
+        } catch (pyErr) {
+            return res.json({
+                faceCount: 1,
+                multipleFaces: false,
+                faces: [],
+                message: 'Python face detector offline. Using client-side detection.'
+            });
+        }
+    } catch (error) {
+        return res.status(500).json({ error: error.message });
+    }
+});
+
 // =========================================================================
 // HEAD & EYE MOVEMENT TELEMETRY ENDPOINTS
 // =========================================================================

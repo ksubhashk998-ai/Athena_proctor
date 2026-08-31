@@ -318,6 +318,41 @@ async def detect_headphone(request: DetectionRequest):
         logger.error(f"Headphone detection error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/detect/faces")
+async def detect_faces(request: DetectionRequest):
+    """
+    Real-time high-accuracy multi-face detection using InsightFace:
+    - Decodes base64 image
+    - Detects all distinct real faces
+    - Returns count, bounding boxes, and multiFace flag
+    """
+    try:
+        bgr_img = preprocess_image_np(request.imageBase64, target_max_dim=640)
+        if bgr_img is None or bgr_img.size == 0:
+            return {"faceCount": 0, "multipleFaces": False, "faces": []}
+
+        app_face = get_insightface()
+        if app_face is None:
+            return {"faceCount": 0, "multipleFaces": False, "faces": []}
+
+        raw_faces = app_face.get(bgr_img)
+        faces = filter_real_faces(raw_faces, bgr_img.shape, min_conf=0.45, min_size=30)
+        face_list = []
+        for f in faces:
+            bbox = [round(float(c), 1) for c in f.bbox]
+            score = round(float(getattr(f, 'det_score', 1.0) or 1.0), 4)
+            face_list.append({"bbox": bbox, "confidence": score})
+
+        return {
+            "faceCount": len(faces),
+            "multipleFaces": len(faces) >= 2,
+            "faces": face_list,
+            "status": "multiple_faces_detected" if len(faces) >= 2 else ("single_face" if len(faces) == 1 else "no_face")
+        }
+    except Exception as e:
+        logger.error(f"Multi-face detection error: {e}")
+        return {"faceCount": 0, "multipleFaces": False, "faces": [], "error": str(e)}
+
 # ----------------- INSIGHTFACE ARCFACE ENDPOINTS -----------------
 
 # ArcFace Biometric Configuration & Threshold Constants
@@ -400,6 +435,63 @@ def validate_face_quality(bgr_img: np.ndarray, face) -> dict:
         "reason": quality_label if passed else f"Low quality (Res:{face_w}x{face_h}, Blur:{round(blur_var,1)}, Bright:{round(mean_brightness,1)})"
     }
 
+def compute_iou(box1, box2):
+    """Compute Intersection-over-Union between two [x1, y1, x2, y2] bounding boxes"""
+    x1 = max(float(box1[0]), float(box2[0]))
+    y1 = max(float(box1[1]), float(box2[1]))
+    x2 = min(float(box1[2]), float(box2[2]))
+    y2 = min(float(box1[3]), float(box2[3]))
+
+    intersection = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+    area1 = max(0.0, float(box1[2]) - float(box1[0])) * max(0.0, float(box1[3]) - float(box1[1]))
+    area2 = max(0.0, float(box2[2]) - float(box2[0])) * max(0.0, float(box2[3]) - float(box2[1]))
+
+    union = area1 + area2 - intersection
+    if union <= 0.0:
+        return 0.0
+    return float(intersection / union)
+
+def filter_real_faces(raw_faces, img_shape, min_conf=0.50, min_size=40):
+    """
+    Filter raw InsightFace detections to distinct real faces:
+    - Filters low-confidence artifacts (det_score < min_conf)
+    - Filters tiny background noise (w < min_size or h < min_size)
+    - Deduplicates multiple overlapping anchor boxes of the same face (IoU >= 0.40)
+    """
+    if not raw_faces:
+        return []
+
+    candidates = []
+    for face in raw_faces:
+        bbox = face.bbox.astype(int) if hasattr(face.bbox, 'astype') else [int(b) for b in face.bbox]
+        x1, y1, x2, y2 = bbox
+        w, h = max(0, x2 - x1), max(0, y2 - y1)
+        conf = float(getattr(face, 'det_score', 1.0) or 1.0)
+
+        # Filter low confidence and tiny false-positive patches
+        if conf >= min_conf and w >= min_size and h >= min_size:
+            candidates.append(face)
+
+    if len(candidates) <= 1:
+        return candidates
+
+    # Sort by confidence descending
+    candidates.sort(key=lambda f: float(getattr(f, 'det_score', 1.0) or 1.0), reverse=True)
+
+    # NMS Deduplication for duplicate boxes on the same face
+    kept_faces = []
+    for cand in candidates:
+        cand_bbox = cand.bbox
+        is_duplicate = False
+        for kept in kept_faces:
+            if compute_iou(cand_bbox, kept.bbox) >= 0.40:
+                is_duplicate = True
+                break
+        if not is_duplicate:
+            kept_faces.append(cand)
+
+    return kept_faces
+
 @app.on_event("startup")
 def startup_event():
     print("[PYTHON] Warming up ArcFace model...")
@@ -438,18 +530,19 @@ def arcface_enroll(request: ArcFaceEnrollRequest):
                 rejected_reasons.append(f"Frame {idx+1}: Empty frame")
                 continue
 
-            faces = app_face.get(bgr_img)
-            
+            raw_faces = app_face.get(bgr_img)
+            faces = filter_real_faces(raw_faces, bgr_img.shape, min_conf=0.50, min_size=40)
+
             if len(faces) == 0:
                 rejected_reasons.append(f"Frame {idx+1}: No face detected")
                 continue
             if len(faces) > 1:
                 rejected_reasons.append(f"Frame {idx+1}: Multiple faces detected ({len(faces)})")
                 continue
-                
+
             face = faces[0]
             quality = validate_face_quality(bgr_img, face)
-            
+
             if not quality["passed"]:
                 rejected_reasons.append(f"Frame {idx+1}: {quality['reason']}")
                 continue
@@ -474,19 +567,19 @@ def arcface_enroll(request: ArcFaceEnrollRequest):
                 "embedding": raw_emb,
                 "frame_idx": idx + 1
             })
-            
+
         except Exception as err:
             rejected_reasons.append(f"Frame {idx+1}: Processing error {str(err)}")
 
     # Sort candidates by composite quality score descending and pick top 20 high-quality samples
     candidates.sort(key=lambda x: x["score"], reverse=True)
     top_candidates = candidates[:MIN_VALID_EMBEDDINGS]
-    
+
     embeddings = [normalize_l2(c["embedding"]) for c in top_candidates]
     quality_scores = [c["quality_score"] for c in top_candidates]
     valid_count = len(embeddings)
     elapsed = time.time() - start
-    
+
     best_q = max(quality_scores) if quality_scores else 0.0
     avg_q = round(float(np.mean(quality_scores)), 2) if quality_scores else 0.0
 
@@ -511,17 +604,17 @@ def arcface_enroll(request: ArcFaceEnrollRequest):
             "totalSubmitted": len(request.frames),
             "rejectedReasons": rejected_reasons[:10]
         }
-        
+
     # Compute mathematically correct 512d average normalized embedding vector
     emb_matrix = np.array(embeddings, dtype=np.float32)
     mean_vec = np.mean(emb_matrix, axis=0)
     average_embedding = normalize_l2(mean_vec)
-    
+
     logger.info(f"[ArcFace] Final enrollment decision: SUCCESS for {request.studentId}")
     logger.info(f"Enrollment completed for {request.studentId}")
     logger.info(f"Stored {len(embeddings)} face samples")
     logger.info("=================================")
-    
+
     return {
         "success": True,
         "message": f"Enrollment successful — {valid_count} high-quality face samples captured.",
@@ -541,7 +634,7 @@ def arcface_verify(request: ArcFaceVerifyRequest):
     - Verification succeeds if averageSimilarity >= 0.85 or bestSimilarity >= 0.85
     """
     verification_start = time.time()
-    
+
     # Collect candidate input items (base64 image strings OR float vector embeddings)
     input_items = []
     if request.frames and len(request.frames) > 0:
@@ -553,7 +646,7 @@ def arcface_verify(request: ArcFaceVerifyRequest):
 
     frames_to_process = input_items[:TARGET_VERIFICATION_FRAMES]
     total_requested = len(frames_to_process)
-    
+
     logger.info(f"🔍 [ArcFace Verification Diagnostics]")
     logger.info(f"  - Student ID: {request.studentId}")
     logger.info(f"  - Enrolled Samples Loaded: {len(request.enrolledEmbeddings or [])}")
@@ -576,7 +669,7 @@ def arcface_verify(request: ArcFaceVerifyRequest):
     app_face = get_insightface()
     if app_face is None:
         raise HTTPException(status_code=503, detail="InsightFace ArcFace engine unavailable")
-        
+
     # Requirement 9: Return "Enrollment data missing" if no enrolled embeddings provided
     if not request.enrolledEmbeddings or len(request.enrolledEmbeddings) == 0:
         logger.warning(f"❌ [ArcFace Verification] Enrollment data missing for Student ID: {request.studentId}")
@@ -592,7 +685,7 @@ def arcface_verify(request: ArcFaceVerifyRequest):
             "bestSimilarity": 0.0,
             "averageSimilarity": 0.0
         }
-        
+
     for enrolled in request.enrolledEmbeddings:
         if not isinstance(enrolled, list) or len(enrolled) != 512:
             raise HTTPException(status_code=400, detail="Invalid enrolled embedding dimension. Expected 512d.")
@@ -601,7 +694,7 @@ def arcface_verify(request: ArcFaceVerifyRequest):
     enrolled_matrix = np.asarray(request.enrolledEmbeddings, dtype=np.float32)
     norms = np.linalg.norm(enrolled_matrix, axis=1, keepdims=True)
     enrolled_matrix = enrolled_matrix / np.maximum(norms, 1e-8)
-    
+
     # Pre-compute enrolled average vector if provided
     average_vector = None
     if request.averageEmbedding and len(request.averageEmbedding) == 512:
@@ -617,7 +710,7 @@ def arcface_verify(request: ArcFaceVerifyRequest):
     frame_similarities = []
     quality_scores = []
     poses_detected = []
-    
+
     for idx, item in enumerate(frames_to_process):
         try:
             live_vector = None
@@ -628,25 +721,45 @@ def arcface_verify(request: ArcFaceVerifyRequest):
             elif isinstance(item, str) and len(item) > 100:
                 bgr_img = preprocess_image_np(item, target_max_dim=640)
                 if bgr_img is not None and bgr_img.size > 0:
-                    faces = app_face.get(bgr_img)
+                    img_h, img_w = bgr_img.shape[:2]
+                    raw_faces = app_face.get(bgr_img)
+                    faces = filter_real_faces(raw_faces, bgr_img.shape, min_conf=0.50, min_size=40)
+
+                    # Diagnostic logging per frame
+                    logger.info(f"Frame {idx+1}:")
+                    logger.info(f"Image size: {img_w}x{img_h}")
+                    logger.info(f"Faces detected: {len(faces)}")
+                    for f_idx, f in enumerate(faces):
+                        f_box = [round(float(coord), 1) for coord in f.bbox]
+                        f_conf = round(float(getattr(f, 'det_score', 1.0) or 1.0), 4)
+                        logger.info(f"Face {f_idx+1} bbox: {f_box}")
+                        logger.info(f"Face {f_idx+1} confidence: {f_conf}")
+
+                    if len(faces) == 0:
+                        logger.info(f"Status: REJECTED_NO_FACE")
+                        rejected_count += 1
+                        continue
+
                     if len(faces) > 1:
+                        logger.info(f"Status: REJECTED_MULTIPLE_FACES")
                         logger.warning(f"🚨 [ArcFace Verification] MULTIPLE FACES DETECTED in frame {idx+1}")
                         multi_face_triggered = True
                         rejected_count += 1
                         continue
-                    if len(faces) == 1:
-                        face = faces[0]
-                        quality = validate_face_quality(bgr_img, face)
-                        quality_scores.append(quality["score"])
-                        if hasattr(face, 'pose') and face.pose is not None:
-                            pitch, yaw, roll = face.pose
-                            poses_detected.append({"pitch": float(pitch), "yaw": float(yaw), "roll": float(roll)})
-                        raw_live_emb = getattr(face, 'normed_embedding', None)
-                        if raw_live_emb is None:
-                            raw_live_emb = getattr(face, 'embedding', None)
-                        if raw_live_emb is not None and raw_live_emb.shape[0] == 512:
-                            live_vector = np.asarray(raw_live_emb, dtype=np.float32)
-                            live_vector = live_vector / max(np.linalg.norm(live_vector), 1e-8)
+
+                    logger.info(f"Status: VALID")
+                    face = faces[0]
+                    quality = validate_face_quality(bgr_img, face)
+                    quality_scores.append(quality["score"])
+                    if hasattr(face, 'pose') and face.pose is not None:
+                        pitch, yaw, roll = face.pose
+                        poses_detected.append({"pitch": float(pitch), "yaw": float(yaw), "roll": float(roll)})
+                    raw_live_emb = getattr(face, 'normed_embedding', None)
+                    if raw_live_emb is None:
+                        raw_live_emb = getattr(face, 'embedding', None)
+                    if raw_live_emb is not None and raw_live_emb.shape[0] == 512:
+                        live_vector = np.asarray(raw_live_emb, dtype=np.float32)
+                        live_vector = live_vector / max(np.linalg.norm(live_vector), 1e-8)
 
             if live_vector is None:
                 rejected_count += 1
@@ -656,10 +769,8 @@ def arcface_verify(request: ArcFaceVerifyRequest):
             # Vectorized Cosine Similarity
             similarities = np.dot(enrolled_matrix, live_vector)
             best_sim = float(np.max(similarities))
-            
+
             if average_vector is not None:
-                sim_to_avg = float(np.dot(average_vector, live_vector))
-                best_sim = float(max(best_sim, sim_to_avg))
                 sim_to_avg = float(np.dot(average_vector, live_vector))
                 best_sim = float(max(best_sim, sim_to_avg))
 
@@ -683,7 +794,7 @@ def arcface_verify(request: ArcFaceVerifyRequest):
                     logger.info("Early verification success")
                     print("Early verification success")
                     break
-                
+
         except Exception as err:
             logger.error(f"Error processing frame {idx+1}: {err}")
             rejected_count += 1

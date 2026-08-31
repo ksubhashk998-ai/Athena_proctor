@@ -43,6 +43,11 @@ class EyeMovementDetection {
         this.consecutiveOffCenterFrames = 0;
         this.lastAlertTime = 0;
 
+        // Continuous Eye/Iris Gaze Down Tracking (10 continuous seconds)
+        this.DOWNWARD_GAZE_VIOLATION_SECONDS = 10;
+        this.downGazeStartTime = null;
+        this.downGazeViolationEmitted = false;
+
         // Offscreen canvas for pupil intensity extraction
         this.offscreenCanvas = document.createElement('canvas');
         this.offscreenCtx = this.offscreenCanvas.getContext('2d', { willReadFrequently: true });
@@ -196,13 +201,17 @@ class EyeMovementDetection {
                 this.smoothedYaw = this.alpha * yaw + (1 - this.alpha) * this.smoothedYaw;
                 this.smoothedPitch = this.alpha * pitch + (1 - this.alpha) * this.smoothedPitch;
 
-                // Determine gaze direction based on baseline offsets
+                // Determine gaze direction based purely on pupil eye landmarks
                 const gazeDirection = this.determineGazeDirection(
                     this.smoothedHRatio,
                     this.smoothedVRatio,
-                    this.smoothedYaw,
-                    this.smoothedPitch,
                     ear
+                );
+
+                // Determine head direction independently based purely on face pose landmarks
+                const headDirection = this.determineHeadDirection(
+                    this.smoothedYaw,
+                    this.smoothedPitch
                 );
 
                 return {
@@ -210,6 +219,7 @@ class EyeMovementDetection {
                     rightEye,
                     center: eyeCenter,
                     gazeDirection,
+                    headDirection,
                     ear,
                     hRatio: this.smoothedHRatio,
                     vRatio: this.smoothedVRatio,
@@ -384,7 +394,19 @@ class EyeMovementDetection {
         return (v1 + v2) / (2.0 * h);
     }
 
-    determineGazeDirection(hRatio, vRatio, yaw, pitch, ear) {
+    determineHeadDirection(yaw, pitch) {
+        const deltaYaw = yaw - (this.calibrationData?.baseYaw || 0);
+        const deltaPitch = pitch - (this.calibrationData?.basePitch || 0.45);
+
+        // Independent physical head direction from face pose landmarks
+        if (deltaYaw > 0.14) return 'left';
+        if (deltaYaw < -0.14) return 'right';
+        if (deltaPitch > 0.12) return 'down';
+        if (deltaPitch < -0.12) return 'up';
+        return 'center';
+    }
+
+    determineGazeDirection(hRatio, vRatio, ear) {
         // EAR check for blink
         if (ear < 0.16) {
             return 'blinking';
@@ -392,22 +414,12 @@ class EyeMovementDetection {
 
         const deltaH = hRatio - this.calibrationData.baseHRatio;
         const deltaV = vRatio - this.calibrationData.baseVRatio;
-        const deltaYaw = yaw - this.calibrationData.baseYaw;
-        const deltaPitch = pitch - this.calibrationData.basePitch;
 
-        // Horizontal head yaw & gaze offset evaluated first
-        if (deltaYaw > 0.10 || deltaH < -0.07) {
-            return 'left';
-        }
-        if (deltaYaw < -0.10 || deltaH > 0.07) {
-            return 'right';
-        }
-        if (Math.abs(yaw) < 0.15 && (deltaV > 0.10 || deltaPitch > 0.10)) {
-            return 'down';
-        }
-        if (Math.abs(yaw) < 0.15 && (deltaV < -0.10 || deltaPitch < -0.10)) {
-            return 'up';
-        }
+        // Independent eye gaze direction from pupil position
+        if (deltaH < -0.07) return 'left';
+        if (deltaH > 0.07) return 'right';
+        if (deltaV > 0.08) return 'down';
+        if (deltaV < -0.08) return 'up';
 
         return 'center';
     }
@@ -415,10 +427,10 @@ class EyeMovementDetection {
     analyzeEyeMovements(eyeData) {
         if (!eyeData) return;
 
-        const { gazeDirection, center } = eyeData;
+        const { gazeDirection, headDirection, center } = eyeData;
         const now = Date.now();
 
-        // Handle blinking count
+        // Handle blinking count (normal blinking is ignored)
         if (gazeDirection === 'blinking') {
             if (!this.isBlinking) {
                 this.isBlinking = true;
@@ -429,24 +441,41 @@ class EyeMovementDetection {
             this.isBlinking = false;
         }
 
-        // Track off-center gaze frames
-        if (gazeDirection !== 'center' && this.isCalibrated) {
+        // =========================================================================
+        // 10-SECOND CONTINUOUS EYE/IRIS GAZE DOWN VIOLATION
+        // Head pose has ZERO influence on this detection. Only eye gaze DOWN starts timer.
+        // =========================================================================
+        if (gazeDirection === 'down' && this.isCalibrated) {
+            if (this.downGazeStartTime === null) {
+                this.downGazeStartTime = now;
+                this.downGazeViolationEmitted = false;
+            }
+
+            const downDurationSec = (now - this.downGazeStartTime) / 1000;
+
+            // 10 continuous seconds of eye/iris DOWN -> ONE violation
+            if (downDurationSec >= this.DOWNWARD_GAZE_VIOLATION_SECONDS && !this.downGazeViolationEmitted) {
+                this.triggerAlert('Looking Down Violation Detected', 'down');
+                this.downGazeViolationEmitted = true;
+            }
+        } else {
+            // Eye/iris changed away from DOWN -> reset continuous downward timer and violation flag
+            this.downGazeStartTime = null;
+            this.downGazeViolationEmitted = false;
+        }
+
+        // Track other sustained off-center directions (left / right / up)
+        if (gazeDirection !== 'center' && gazeDirection !== 'down' && this.isCalibrated) {
             this.consecutiveOffCenterFrames++;
             
-            // Trigger alert if sustained off-center gaze for > 15 checks (~1.5s)
-            if (this.consecutiveOffCenterFrames > 15 && (now - this.lastAlertTime > 5000)) {
-                let msg = `Suspicious eye gaze detected - Looking ${gazeDirection.toUpperCase()}`;
-                if (gazeDirection === 'down') {
-                    msg = `Looking down continuously - Possible phone or notes usage`;
-                } else if (gazeDirection === 'left' || gazeDirection === 'right') {
-                    msg = `Looking away from screen - Direct gaze turned ${gazeDirection.toUpperCase()}`;
-                }
-                
+            // Sustained off-center gaze (> 30 checks ~= 3.0s)
+            if (this.consecutiveOffCenterFrames > 30 && (now - this.lastAlertTime > 6000)) {
+                let msg = `Looking away from screen - Direct gaze turned ${gazeDirection.toUpperCase()}`;
                 this.triggerAlert(msg, gazeDirection);
                 this.lastAlertTime = now;
                 this.consecutiveOffCenterFrames = 0;
             }
-        } else {
+        } else if (gazeDirection === 'center') {
             this.consecutiveOffCenterFrames = Math.max(0, this.consecutiveOffCenterFrames - 1);
         }
 
@@ -454,11 +483,14 @@ class EyeMovementDetection {
         const gazeEvent = new CustomEvent('gazeUpdate', {
             detail: {
                 direction: gazeDirection,
+                headDirection: headDirection || 'center',
                 isCalibrating: eyeData.isCalibrating,
                 isCalibrated: eyeData.isCalibrated,
                 calibrationProgress: eyeData.calibrationProgress,
                 hRatio: eyeData.hRatio,
                 vRatio: eyeData.vRatio,
+                yaw: eyeData.yaw,
+                pitch: eyeData.pitch,
                 blinkCount: this.blinkCount
             }
         });
@@ -501,6 +533,15 @@ class EyeMovementDetection {
 
         console.log('🚀 Starting high-accuracy eye movement detection loop...');
 
+        // Register keyboard & mouse/touchpad interaction listeners
+        if (typeof window !== 'undefined' && this.handleUserInteraction) {
+            window.addEventListener('keydown', this.handleUserInteraction, { passive: true });
+            window.addEventListener('mousemove', this.handleUserInteraction, { passive: true });
+            window.addEventListener('mousedown', this.handleUserInteraction, { passive: true });
+            window.addEventListener('touchstart', this.handleUserInteraction, { passive: true });
+            window.addEventListener('wheel', this.handleUserInteraction, { passive: true });
+        }
+
         this.faceDetectionInterval = setInterval(async () => {
             // Safety: skip if video not ready
             if (!this.video || this.video.paused || this.video.ended) return;
@@ -533,7 +574,37 @@ class EyeMovementDetection {
             clearInterval(this.faceDetectionInterval);
             this.faceDetectionInterval = null;
         }
+
+        // Clean up keyboard & mouse interaction listeners
+        if (typeof window !== 'undefined' && this.handleUserInteraction) {
+            window.removeEventListener('keydown', this.handleUserInteraction);
+            window.removeEventListener('mousemove', this.handleUserInteraction);
+            window.removeEventListener('mousedown', this.handleUserInteraction);
+            window.removeEventListener('touchstart', this.handleUserInteraction);
+            window.removeEventListener('wheel', this.handleUserInteraction);
+        }
+
+        // Reset downward gaze timers
+        this.downGazeStartTime = null;
+        this.downGazeWarningEmitted = false;
+        this.downGazeViolationEmitted = false;
+
         console.log('Eye movement detection stopped');
+    }
+
+    triggerWarning(message, direction = 'unknown') {
+        console.warn('[Eye Tracking Warning]:', message);
+
+        const alertEvent = new CustomEvent('eyeMovementAlert', {
+            detail: {
+                message,
+                direction,
+                isWarningOnly: true,
+                timestamp: new Date().toISOString(),
+                blinkCount: this.blinkCount
+            }
+        });
+        window.dispatchEvent(alertEvent);
     }
 
     triggerAlert(message, direction = 'unknown') {
@@ -543,6 +614,7 @@ class EyeMovementDetection {
             detail: {
                 message,
                 direction,
+                isWarningOnly: false,
                 timestamp: new Date().toISOString(),
                 blinkCount: this.blinkCount
             }

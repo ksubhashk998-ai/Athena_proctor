@@ -171,7 +171,8 @@ function Login() {
       );
 
       if (res.data && res.data.success) {
-        setForgotSuccess(`✉️ 6-Digit OTP code sent to ${targetEmail}. Check your email.`);
+        setForgotSuccess(`✉️ 6-Digit OTP code dispatched to ${targetEmail}. Please check your email inbox.`);
+        setForgotOtp("");
         setForgotStep("otp_reset");
         setForgotCooldown(30);
       } else {

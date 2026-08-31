@@ -345,29 +345,26 @@ const resetPassword = async (req, res) => {
     let updatedCount = 0;
 
     try {
-      if (User) {
-        const user = await User.findOne({ email: cleanEmail });
-        if (user) {
-          user.password = newPassword;
-          await user.save();
-          updatedCount++;
-        }
-      }
-    } catch (e) {
-      console.warn('Notice updating User password:', e.message);
-    }
+      const salt = await bcrypt.genSalt(10);
+      const hashedPassword = await bcrypt.hash(newPassword, salt);
 
-    try {
+      if (User) {
+        await User.updateOne(
+          { email: cleanEmail },
+          { $set: { password: hashedPassword } }
+        );
+        updatedCount++;
+      }
+
       if (Student) {
-        const student = await Student.findOne({ email: cleanEmail });
-        if (student) {
-          student.password = newPassword;
-          await student.save();
-          updatedCount++;
-        }
+        await Student.updateOne(
+          { email: cleanEmail },
+          { $set: { password: hashedPassword, passwordHash: hashedPassword } }
+        );
+        updatedCount++;
       }
     } catch (e) {
-      console.warn('Notice updating Student password:', e.message);
+      console.warn('Notice updating student password in MongoDB:', e.message);
     }
 
     // Delete used single-use OTP document

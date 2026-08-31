@@ -236,7 +236,7 @@ class ProctoringPipeline {
     if (this.faceApiReady && videoElement && videoElement.videoWidth > 0 && videoElement.videoHeight > 0 && videoElement.readyState >= 3 && !videoElement.paused) {
       try {
         const dets = await faceapi
-          .detectAllFaces(videoElement, new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.25 }))
+          .detectAllFaces(videoElement, new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.20 }))
           .withFaceLandmarks();
         if (Array.isArray(dets)) {
           rawDetections = dets.filter(d => d && d.detection && d.detection.box && typeof d.detection.box.x === 'number' && d.detection.box.x !== null && d.detection.box.width > 0);
@@ -246,8 +246,7 @@ class ProctoringPipeline {
       }
     }
 
-    const validDetections = rawDetections.filter(d => d.detection.score >= 0.25);
-    const personCount = validDetections.length;
+    const validDetections = rawDetections.filter(d => d.detection.score >= 0.20);
 
     // ── B. Head Pose & Eye Gaze from Landmarks ────────────────
     const poseResult = this._extractHeadPoseAndGaze(validDetections, videoElement, canvasW, canvasH);
@@ -261,12 +260,19 @@ class ProctoringPipeline {
     }
     const objectResult = this._extractObjects(rawPredictions, videoElement, canvasW, canvasH);
 
-    // ── D. Temporal Persistence Counters ─────────────
+    // ── D. Person Count Fusion (Faces + COCO-SSD Persons) ─────
+    let cocoPersonCount = 0;
+    if (rawPredictions && rawPredictions.length > 0) {
+      cocoPersonCount = rawPredictions.filter(p => p && p.class && p.class.toLowerCase() === 'person' && p.score >= 0.35).length;
+    }
+    const personCount = Math.max(validDetections.length, cocoPersonCount);
+
+    // ── E. Temporal Persistence Counters ─────────────
     if (personCount === 0) this.faceMissingFrames++;
     else this.faceMissingFrames = 0;
 
     if (personCount >= 2) this.multiFaceFrames++;
-    else this.multiFaceFrames = 0;
+    else this.multiFaceFrames = Math.max(0, this.multiFaceFrames - 1);
 
     const isBlinkingOrNormalReading = poseResult.rawBlink || poseResult.gazeDirection === 'blinking' || (Math.abs(poseResult.yaw) <= 20 && Math.abs(poseResult.pitch) <= 20);
     const isHeadOrExtremeGazeAway = !isBlinkingOrNormalReading && (poseResult.headPoseDirection !== 'Center' || poseResult.gazeDirection !== 'Center');
@@ -359,10 +365,10 @@ class ProctoringPipeline {
       earphonesScore: objectResult.earphonesScore,
       // Attention Monitoring Telemetry
       attentionState,
-      // Trigger flags strictly filtered by 5 continuous seconds (17 frames at 300ms intervals = 5.1s)
+      // Trigger flags strictly filtered by duration
       faceReminderTrigger: this.faceMissingFrames >= 10 && this.faceMissingFrames < 17, // 3-5s: Soft reminder "Please remain visible" (No warning count)
       faceMissingTrigger: this.faceMissingFrames >= 17, // > 5 seconds face missing -> Warning
-      multiFaceTrigger: this.multiFaceFrames >= 17,     // > 5 continuous seconds multiple faces -> Warning
+      multiFaceTrigger: this.multiFaceFrames >= 7,      // ~2 seconds confirmed multiple faces -> Warning
       phoneTrigger: objectResult.isPhoneActive && this.phoneTrackFrames >= 10,
       earphoneTrigger: objectResult.isEarphonesActive && this.earphoneTrackFrames >= 10,
       gazeAwayTrigger: this.gazeAwayFrames >= 17,       // > 5 continuous seconds looking away / head pose outside ±20° -> Warning
@@ -484,22 +490,22 @@ class ProctoringPipeline {
       ear = parseFloat(((lEyeEAR + rEyeEAR) / 2).toFixed(3));
       const isBlinking = ear < 0.22 || lEyeH < 3.0 || rEyeH < 3.0;
 
-      // Calibrated gaze dead zones with Head Pose coupling for accurate direction classification
+      // Independent Eye Gaze classification based strictly on pupil landmark displacement
       if (isBlinking) {
         rawGazeDir = 'blinking';
         gazeConfidence = 99;
-      } else if (rawHeadDir === 'Right' || yaw < -10 || avgGazeH > 0.58) {
+      } else if (avgGazeH > 0.58) {
         rawGazeDir = 'Right';
-        gazeConfidence = Math.round(Math.min(99, Math.abs(yaw) > 10 ? Math.min(99, Math.abs(yaw) * 2.5) : ((avgGazeH - 0.58) / 0.42) * 100));
-      } else if (rawHeadDir === 'Left' || yaw > 10 || avgGazeH < 0.42) {
+        gazeConfidence = Math.round(Math.min(99, ((avgGazeH - 0.58) / 0.42) * 100));
+      } else if (avgGazeH < 0.42) {
         rawGazeDir = 'Left';
-        gazeConfidence = Math.round(Math.min(99, Math.abs(yaw) > 10 ? Math.min(99, Math.abs(yaw) * 2.5) : ((0.42 - avgGazeH) / 0.42) * 100));
-      } else if (rawHeadDir === 'Up' || (avgGazeV < 0.28 && Math.abs(yaw) < 12)) {
+        gazeConfidence = Math.round(Math.min(99, ((0.42 - avgGazeH) / 0.42) * 100));
+      } else if (avgGazeV < 0.28) {
         rawGazeDir = 'Up';
-        gazeConfidence = Math.round(Math.min(99, pitch > 10 ? Math.min(99, pitch * 2.5) : ((0.28 - avgGazeV) / 0.28) * 100));
-      } else if (rawHeadDir === 'Down' || (avgGazeV > 0.72 && Math.abs(yaw) < 12)) {
+        gazeConfidence = Math.round(Math.min(99, ((0.28 - avgGazeV) / 0.28) * 100));
+      } else if (avgGazeV > 0.72) {
         rawGazeDir = 'Down';
-        gazeConfidence = Math.round(Math.min(99, pitch < -10 ? Math.min(99, Math.abs(pitch) * 2.5) : ((avgGazeV - 0.72) / 0.28) * 100));
+        gazeConfidence = Math.round(Math.min(99, ((avgGazeV - 0.72) / 0.28) * 100));
       } else {
         rawGazeDir = 'Center';
         gazeConfidence = 99;

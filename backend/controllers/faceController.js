@@ -94,7 +94,7 @@ const enrollFace = async (req, res) => {
 
     let arcfaceRes = null;
     try {
-      const response = await axios.post(`${PYTHON_SERVICE_URL}/api/arcface/enroll`, payload, { timeout: 15000 });
+      const response = await axios.post(`${PYTHON_SERVICE_URL}/api/arcface/enroll`, payload, { timeout: 90000 });
       console.log("Enrollment response:", response.data);
       arcfaceRes = response.data;
     } catch (pyErr) {

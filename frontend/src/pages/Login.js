@@ -484,8 +484,9 @@ function Login() {
         return;
       }
 
-      const simPct = Math.round((data.bestSimilarity || data.averageSimilarity || 0.80) * 100);
-      const isVerified = data.success === true || data.verified === true || data.match === true || data.finalDecision === 'VERIFIED' || simPct >= 75;
+      const simPct = Math.round((data.bestSimilarity || data.averageSimilarity || 0) * 100);
+      const decision = (data.decision || data.finalDecision || data.verificationResult || '').toUpperCase();
+      const isVerified = (data.verified === true || data.matched === true) && decision === 'VERIFIED';
 
       if (isVerified) {
         localStorage.setItem("faceVerified", "true");

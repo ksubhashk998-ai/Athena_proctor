@@ -179,46 +179,48 @@ function WebcamFeed({ isProctoringActive, onDetectionUpdate, onViolationTriggere
         });
       }
 
-      // Stream Real-Time Webcam Frame & Telemetry to Admin Monitor via Socket.IO (Throttled to ~1.2s to maintain maximum browser speed)
-      if (now - lastSocketStreamTimeRef.current >= 1200 && video && video.readyState >= 2) {
+      // Stream Real-Time Webcam Frame & Telemetry to Admin Monitor via Socket.IO (Throttled to ~1s to maintain maximum clarity and browser speed)
+      if (now - lastSocketStreamTimeRef.current >= 1000 && video && (video.readyState >= 2 || !video.paused) && video.videoWidth > 0 && video.videoHeight > 0) {
         lastSocketStreamTimeRef.current = now;
         try {
-          const sCanvas = streamCanvasRef.current;
-          if (sCanvas) {
-            const sCtx = sCanvas.getContext('2d');
-            sCtx.drawImage(video, 0, 0, 320, 240);
-            const frameImg = sCanvas.toDataURL('image/jpeg', 0.5);
-            const email = activeStudent?.email || 'student@university.edu';
-            const studentId = activeStudent?.studentId || `STU_${email.replace(/[^a-z0-9]/g, '_')}`;
+          const sCanvas = streamCanvasRef.current || document.createElement('canvas');
+          sCanvas.width = 320;
+          sCanvas.height = 240;
+          const sCtx = sCanvas.getContext('2d');
+          sCtx.drawImage(video, 0, 0, 320, 240);
+          const frameImg = sCanvas.toDataURL('image/jpeg', 0.7);
+          const email = activeStudent?.email || localStorage.getItem('registered_email') || 'student@university.edu';
+          const studentId = activeStudent?.studentId || ('STU_' + email.replace(/[^a-z0-9]/gi, '_'));
+          const studentUsn = activeStudent?.usn || studentId;
 
-            const socket = getSocket();
-            if (socket) {
-              socket.emit('video-stream', {
-                studentId,
-                studentName,
-                email,
-                image: frameImg,
-                timestamp: now
-              });
+          const socket = getSocket();
+          if (socket) {
+            socket.emit('video-stream', {
+              studentId,
+              usn: studentUsn,
+              studentName,
+              email,
+              image: frameImg,
+              timestamp: now
+            });
 
-              socket.emit('telemetry-update', {
-                studentId,
-                studentName: isVerified ? studentName : 'Unknown Person Detected',
-                email,
-                usn: activeStudent?.usn || studentId,
-                department: activeStudent?.course || 'Computer Science',
-                examName: 'Computer Science Final Assessment',
-                status: isVerified ? 'Online' : 'Identity Failed',
-                identityStatus: isVerified ? 'Verified' : 'Identity Failed',
-                confidence,
-                faceDetected: !t.faceMissingTrigger,
-                multipleFaces: !!t.multiFaceTrigger,
-                mobilePhoneDetected: !!t.phoneTrigger,
-                headPose: t.headPoseLabel || 'Normal',
-                eyeGaze: t.gazeDirection || 'Center',
-                image: frameImg
-              });
-            }
+            socket.emit('telemetry-update', {
+              studentId,
+              studentName: isVerified ? studentName : 'Unknown Person Detected',
+              email,
+              usn: studentUsn,
+              department: activeStudent?.course || 'Computer Science & Engineering',
+              examName: 'Computer Science Final Assessment',
+              status: isVerified ? 'Online' : 'Identity Failed',
+              identityStatus: isVerified ? 'Verified' : 'Identity Failed',
+              confidence,
+              faceDetected: !t.faceMissingTrigger,
+              multipleFaces: !!t.multiFaceTrigger,
+              mobilePhoneDetected: !!t.phoneTrigger,
+              headPose: t.headPoseLabel || 'Looking Center',
+              eyeGaze: t.gazeDirection || 'Center',
+              image: frameImg
+            });
           }
         } catch (e) {}
       }

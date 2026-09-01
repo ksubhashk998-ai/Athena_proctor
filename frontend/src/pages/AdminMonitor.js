@@ -1051,17 +1051,40 @@ export default function AdminMonitor() {
                       <div style={styles.cardActions}>
                         <button
                           onClick={() => handleWarnStudent(s)}
-                          disabled={isTerminated}
-                          style={styles.warnBtn}
+                          disabled={isTerminated || s.status === 'Offline'}
+                          style={{
+                            ...styles.warnBtn,
+                            opacity: isTerminated || s.status === 'Offline' ? 0.5 : 1,
+                            cursor: isTerminated || s.status === 'Offline' ? 'not-allowed' : 'pointer'
+                          }}
                         >
-                          ⚠️ Warn Student
+                          ⚠️ Warn
+                        </button>
+
+                        <button
+                          onClick={() => handleTerminateStudent(s)}
+                          disabled={isTerminated || s.status === 'Offline'}
+                          style={{
+                            padding: '8px 12px',
+                            background: 'rgba(239, 68, 68, 0.15)',
+                            border: '1px solid #ef4444',
+                            color: '#f87171',
+                            borderRadius: '8px',
+                            fontWeight: 700,
+                            fontSize: '0.75rem',
+                            cursor: isTerminated || s.status === 'Offline' ? 'not-allowed' : 'pointer',
+                            opacity: isTerminated || s.status === 'Offline' ? 0.5 : 1,
+                            transition: 'all 0.2s'
+                          }}
+                        >
+                          🔴 Terminate
                         </button>
 
                         <button
                           onClick={() => handleOpenStudentDetail(s)}
                           style={styles.detailBtn}
                         >
-                          ↗ View Detail
+                          ↗ Detail
                         </button>
                       </div>
                     </div>

@@ -932,6 +932,8 @@ const terminateSession = async (req, res) => {
       io.to('admin_room').emit('student-terminated', payload);
       io.to('admin_room').emit('student-status', { studentId: session.studentId, status: 'Terminated' });
       io.to('admin_room').emit('student-updated', session);
+      // Global broadcast fallback so student client always receives termination
+      io.emit('student-terminated', payload);
     }
 
     res.json({
@@ -999,6 +1001,9 @@ const warnStudent = async (req, res) => {
       if (session) {
         io.to('admin_room').emit('student-updated', session);
       }
+      // Global broadcast fallback so student client always receives warning
+      io.emit('warning-issued', payload);
+      io.emit('student-warning', payload);
     }
 
     res.json({

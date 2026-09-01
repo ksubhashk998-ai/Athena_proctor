@@ -438,9 +438,8 @@ function AthenaExamDashboard() {
     const handleProctorWarning = (data) => {
       if (!data) return;
       const target = data.studentId || data.usn || data.email;
-      if (target && target !== studentId && target !== studentUsn && target !== studentEmail) {
-        return;
-      }
+      const match = !target || target === studentId || target === studentUsn || (studentEmail && target.toLowerCase() === studentEmail.toLowerCase()) || (studentId && target.includes(studentId)) || (target && studentId.includes(target));
+      if (!match) return;
       const msg = data.message || '⚠️ Warning: Suspicious activity detected by the Proctor! Please focus on your exam.';
       setProctorWarning({ open: true, message: msg });
       recordViolation(`⚠️ PROCTOR WARNING: ${msg}`);
@@ -449,9 +448,8 @@ function AthenaExamDashboard() {
     const handleProctorTermination = (data) => {
       if (!data) return;
       const target = data.studentId || data.usn || data.email;
-      if (target && target !== studentId && target !== studentUsn && target !== studentEmail) {
-        return;
-      }
+      const match = !target || target === studentId || target === studentUsn || (studentEmail && target.toLowerCase() === studentEmail.toLowerCase()) || (studentId && target.includes(studentId)) || (target && studentId.includes(target));
+      if (!match) return;
       const reason = data.reason || 'Exam Terminated by Proctor / Admin Command Center';
       setIsExamTerminated(true);
       setTerminationReason(reason);
@@ -477,12 +475,13 @@ function AthenaExamDashboard() {
       let webcamBase64 = null;
       try {
         const video = document.querySelector('video');
-        if (video && (video.readyState >= 2 || !video.paused)) {
+        if (video && (video.readyState >= 2 || !video.paused) && video.videoWidth > 0 && video.videoHeight > 0) {
           const canvas = document.createElement('canvas');
           canvas.width = 320;
           canvas.height = 240;
-          canvas.getContext('2d').drawImage(video, 0, 0, 320, 240);
-          webcamBase64 = canvas.toDataURL('image/jpeg', 0.6);
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(video, 0, 0, 320, 240);
+          webcamBase64 = canvas.toDataURL('image/jpeg', 0.7);
         }
       } catch (e) {}
 

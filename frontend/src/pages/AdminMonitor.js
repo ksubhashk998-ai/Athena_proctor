@@ -1001,11 +1001,10 @@ export default function AdminMonitor() {
             ) : (
               <div style={styles.grid}>
               {filteredStudents.map((s, idx) => {
-                const isTerminated = s.status === 'Terminated';
                 const isWarning = s.status === 'Warning';
 
-                const riskText = isTerminated ? 'High Risk (50+)' : (isWarning ? 'Medium (20-50)' : (s.riskLevel || 'Safe (0-20)'));
-                const riskColor = isTerminated ? '#ef4444' : (isWarning ? '#f59e0b' : (s.status === 'Offline' ? '#94a3b8' : '#10b981'));
+                const riskText = isWarning ? 'Medium (20-50)' : (s.riskLevel && !s.riskLevel.includes('High') ? s.riskLevel : 'Low');
+                const riskColor = isWarning ? '#f59e0b' : (s.status === 'Offline' ? '#94a3b8' : '#10b981');
 
                 return (
                   <div key={s.sessionId || s.studentId || idx} style={styles.studentCard}>
@@ -1041,7 +1040,7 @@ export default function AdminMonitor() {
                         gap: '6px'
                       }}>
                         <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: riskColor }}></div>
-                        <span>{s.status === 'Offline' ? 'Registered' : riskText}</span>
+                        <span>{s.status === 'Offline' ? 'Registered' : (riskText.toLowerCase().includes('low') ? '● Low' : riskText)}</span>
                       </div>
                     </div>
 
@@ -1067,21 +1066,17 @@ export default function AdminMonitor() {
                         </div>
                       )}
 
-                      {/* Online Live Badge Overlay */}
+                      {/* Online Live Badge Overlay - Only ONLINE and OFFLINE shown */}
                       <div style={{
                         ...styles.onlineBadge,
-                        backgroundColor: s.status === 'Offline' ? 'rgba(71, 85, 105, 0.85)' : (isTerminated ? 'rgba(239, 68, 68, 0.85)' : (isWarning ? 'rgba(245, 158, 11, 0.85)' : 'rgba(16, 185, 129, 0.85)'))
+                        backgroundColor: s.status === 'Offline' ? 'rgba(71, 85, 105, 0.85)' : 'rgba(16, 185, 129, 0.85)'
                       }}>
                         <div style={{
                           ...styles.pulsingDot,
-                          backgroundColor: s.status === 'Offline' ? '#94a3b8' : (isTerminated ? '#ef4444' : (isWarning ? '#f59e0b' : '#34d399'))
+                          backgroundColor: s.status === 'Offline' ? '#94a3b8' : '#34d399'
                         }}></div>
                         <span>
-                          {s.status === 'Offline'
-                            ? '⚫ OFFLINE'
-                            : (isTerminated
-                                ? '🔴 TERMINATED'
-                                : (isWarning ? '⚠️ WARNING' : '🟢 ONLINE'))}
+                          {s.status === 'Offline' ? '⚫ OFFLINE' : '🟢 ONLINE'}
                         </span>
                       </div>
 

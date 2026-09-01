@@ -253,46 +253,100 @@ export default function AdminMonitor() {
 
       socket.on('video-stream', (data) => {
         if (!data) return;
-        setStudents(prev => prev.map(s => {
-          const isMatch = (data.studentId && (s.studentId === data.studentId || s.usn === data.studentId)) ||
-                          (data.email && s.email && s.email.toLowerCase() === data.email.toLowerCase()) ||
-                          (data.usn && s.usn === data.usn);
-          if (isMatch) {
-            return {
-              ...s,
+        setStudents(prev => {
+          const idx = prev.findIndex(s =>
+            (data.studentId && (s.studentId === data.studentId || s.usn === data.studentId)) ||
+            (data.email && s.email && s.email.toLowerCase() === data.email.toLowerCase()) ||
+            (data.usn && s.usn === data.usn)
+          );
+          if (idx !== -1) {
+            const updated = [...prev];
+            updated[idx] = {
+              ...updated[idx],
               image: data.image,
               status: 'Online'
             };
+            return updated;
           }
-          return s;
-        }));
+          const email = data.email || 'student@university.edu';
+          const studentId = data.studentId || ('STU_' + email.replace(/[^a-z0-9]/gi, '_'));
+          return [{
+            sessionId: `SESS_${studentId}`,
+            studentId,
+            studentName: data.studentName || 'Student',
+            usn: data.usn || studentId,
+            email,
+            department: 'Computer Science & Engineering',
+            examName: 'Computer Science Final Assessment',
+            status: 'Online',
+            image: data.image,
+            verificationStatus: 'Verified',
+            faceMatchConfidence: 96,
+            faceDetected: true,
+            multipleFaces: false,
+            mobilePhoneDetected: false,
+            fullScreenStatus: 'Active',
+            headPose: 'Looking Center',
+            eyeGaze: 'Center',
+            tabSwitchingCount: 0,
+            warningsCount: 0,
+            riskLevel: 'Safe (0-20)'
+          }, ...prev];
+        });
       });
 
       socket.on('telemetry-update', (data) => {
         if (!data) return;
-        setStudents(prev => prev.map(s => {
-          const isMatch = (data.studentId && (s.studentId === data.studentId || s.usn === data.studentId)) ||
-                          (data.email && s.email && s.email.toLowerCase() === data.email.toLowerCase()) ||
-                          (data.usn && s.usn === data.usn);
-          if (isMatch) {
-            return {
-              ...s,
-              studentName: data.studentName || s.studentName,
+        setStudents(prev => {
+          const idx = prev.findIndex(s =>
+            (data.studentId && (s.studentId === data.studentId || s.usn === data.studentId)) ||
+            (data.email && s.email && s.email.toLowerCase() === data.email.toLowerCase()) ||
+            (data.usn && s.usn === data.usn)
+          );
+          if (idx !== -1) {
+            const updated = [...prev];
+            updated[idx] = {
+              ...updated[idx],
+              studentName: data.studentName || updated[idx].studentName,
               status: data.status || 'Online',
-              verificationStatus: data.identityStatus || s.verificationStatus,
-              faceMatchConfidence: data.confidence || s.faceMatchConfidence,
-              faceDetected: data.faceDetected !== undefined ? data.faceDetected : s.faceDetected,
-              multipleFaces: data.multipleFaces !== undefined ? data.multipleFaces : s.multipleFaces,
-              mobilePhoneDetected: data.mobilePhoneDetected !== undefined ? data.mobilePhoneDetected : s.mobilePhoneDetected,
-              fullScreenStatus: data.fullScreenStatus || s.fullScreenStatus,
-              headPose: data.headPose || s.headPose,
-              eyeGaze: data.eyeGaze || s.eyeGaze,
-              image: data.image || s.image,
-              riskLevel: data.riskLevel || s.riskLevel
+              verificationStatus: data.identityStatus || updated[idx].verificationStatus,
+              faceMatchConfidence: data.confidence || updated[idx].faceMatchConfidence,
+              faceDetected: data.faceDetected !== undefined ? data.faceDetected : updated[idx].faceDetected,
+              multipleFaces: data.multipleFaces !== undefined ? data.multipleFaces : updated[idx].multipleFaces,
+              mobilePhoneDetected: data.mobilePhoneDetected !== undefined ? data.mobilePhoneDetected : updated[idx].mobilePhoneDetected,
+              fullScreenStatus: data.fullScreenStatus || updated[idx].fullScreenStatus,
+              headPose: data.headPose || updated[idx].headPose,
+              eyeGaze: data.eyeGaze || updated[idx].eyeGaze,
+              image: data.image || updated[idx].image,
+              riskLevel: data.riskLevel || updated[idx].riskLevel
             };
+            return updated;
           }
-          return s;
-        }));
+          const email = data.email || 'student@university.edu';
+          const studentId = data.studentId || ('STU_' + email.replace(/[^a-z0-9]/gi, '_'));
+          return [{
+            sessionId: `SESS_${studentId}`,
+            studentId,
+            studentName: data.studentName || 'Student',
+            usn: data.usn || studentId,
+            email,
+            department: 'Computer Science & Engineering',
+            examName: 'Computer Science Final Assessment',
+            status: data.status || 'Online',
+            image: data.image || null,
+            verificationStatus: data.identityStatus || 'Verified',
+            faceMatchConfidence: data.confidence || 96,
+            faceDetected: data.faceDetected !== undefined ? data.faceDetected : true,
+            multipleFaces: data.multipleFaces || false,
+            mobilePhoneDetected: data.mobilePhoneDetected || false,
+            fullScreenStatus: data.fullScreenStatus || 'Active',
+            headPose: data.headPose || 'Looking Center',
+            eyeGaze: data.eyeGaze || 'Center',
+            tabSwitchingCount: 0,
+            warningsCount: 0,
+            riskLevel: data.riskLevel || 'Safe (0-20)'
+          }, ...prev];
+        });
       });
 
       socket.on('violation', (data) => {

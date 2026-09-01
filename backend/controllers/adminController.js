@@ -282,13 +282,15 @@ const getDashboardOverview = async (req, res) => {
         finishedVsTerminated,
         departmentStats,
         riskScoreDistribution
-      }
+      },
+      recentAlerts: alerts,
+      liveSessions: liveSessions.slice(0, 6)
     });
   } catch (error) {
     console.error('Error in getDashboardOverview:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to fetch dashboard statistics: ' + error.message
+      error: 'Failed to fetch dashboard overview: ' + error.message
     });
   }
 };
@@ -301,16 +303,51 @@ const getLiveStudents = async (req, res) => {
   try {
     const { search, riskLevel, status, department } = req.query;
 
-    const [registeredUsers, activeSessions] = await Promise.all([
+    const [registeredUsers, registeredStudents, activeSessions] = await Promise.all([
       User.find({}, '-password -faceEmbeddings').sort({ createdAt: -1 }).lean().catch(() => []),
+      Student.find({}, '-password -passwordHash').sort({ createdAt: -1 }).lean().catch(() => []),
       LiveSession.find({}).sort({ updatedAt: -1, lastActive: -1 }).lean().catch(() => [])
     ]);
+
+    // Build unified student registry map
+    const studentRegistryMap = new Map();
+
+    (registeredUsers || []).forEach(u => {
+      const email = (u.email || '').toLowerCase().trim();
+      const studentId = 'STU_' + (email ? email.replace(/[^a-z0-9]/gi, '_') : u._id.toString());
+      studentRegistryMap.set(studentId, {
+        studentId,
+        studentName: u.name || 'Student',
+        usn: u.usn || studentId,
+        email: u.email,
+        department: 'Computer Science & Engineering',
+        faceEnrolled: !!u.faceEnrolled,
+        createdAt: u.createdAt,
+        updatedAt: u.updatedAt
+      });
+    });
+
+    (registeredStudents || []).forEach(s => {
+      const email = (s.email || '').toLowerCase().trim();
+      const studentId = s.studentId || ('STU_' + (email ? email.replace(/[^a-z0-9]/gi, '_') : s._id.toString()));
+      const existing = studentRegistryMap.get(studentId);
+      studentRegistryMap.set(studentId, {
+        studentId,
+        studentName: s.fullName || s.name || (s.firstName ? `${s.firstName} ${s.lastName || ''}`.trim() : (existing?.studentName || 'Student')),
+        usn: s.usn || existing?.usn || studentId,
+        email: s.email || existing?.email,
+        department: s.course || existing?.department || 'Computer Science & Engineering',
+        faceEnrolled: s.faceEnrolled !== undefined ? s.faceEnrolled : (existing?.faceEnrolled || false),
+        createdAt: s.createdAt || existing?.createdAt,
+        updatedAt: s.updatedAt || existing?.updatedAt
+      });
+    });
 
     const activeThreshold = new Date(Date.now() - 5 * 60 * 1000); // 5 minutes grace period
     const matchedSessionIds = new Set();
 
-    const mergedStudents = (registeredUsers || []).map(user => {
-      const studentId = 'STU_' + (user.email ? user.email.replace(/[^a-z0-9]/gi, '_') : user._id.toString());
+    const mergedStudents = Array.from(studentRegistryMap.values()).map(user => {
+      const studentId = user.studentId;
       const userUsn = user.usn || studentId;
 
       // Find matching session by studentId, usn, or email
@@ -329,10 +366,10 @@ const getLiveStudents = async (req, res) => {
         return {
           sessionId: session.sessionId || session._id.toString(),
           studentId: session.studentId || studentId,
-          studentName: user.name || session.studentName || 'Student',
+          studentName: user.studentName || session.studentName || 'Student',
           usn: userUsn,
           email: user.email,
-          department: session.department || 'Computer Science & Engineering',
+          department: session.department || user.department || 'Computer Science & Engineering',
           examName: session.examName || 'Computer Science Final Assessment',
           status: computedStatus,
           verificationStatus: session.verificationStatus || (user.faceEnrolled ? 'Verified' : 'Pending'),
@@ -362,10 +399,10 @@ const getLiveStudents = async (req, res) => {
       return {
         sessionId: `SESS_${studentId}`,
         studentId: studentId,
-        studentName: user.name || 'Student',
+        studentName: user.studentName || 'Student',
         usn: userUsn,
         email: user.email,
-        department: 'Computer Science & Engineering',
+        department: user.department || 'Computer Science & Engineering',
         examName: 'Computer Science Final Assessment',
         status: 'Offline',
         verificationStatus: user.faceEnrolled ? 'Verified' : 'Pending Enrollment',
@@ -391,7 +428,7 @@ const getLiveStudents = async (req, res) => {
       };
     });
 
-    // Also include any active live sessions that might not have a matching User record
+    // Also include any active live sessions that might not have a matching User/Student record
     (activeSessions || []).forEach(session => {
       const sessKey = session.sessionId || session._id.toString();
       if (!matchedSessionIds.has(sessKey)) {

@@ -70,18 +70,26 @@ export default function AdminMonitor() {
       ]);
 
       if (studentsRes?.data?.success) {
+        const incoming = studentsRes.data.students || [];
         setStudents(prev => {
-          const incoming = studentsRes.data.students || [];
+          if (incoming.length === 0) return prev;
           if (prev.length === 0) return incoming;
           return incoming.map(inc => {
-            const existing = prev.find(p => p.studentId === inc.studentId || p.usn === inc.usn || (inc.email && p.email === inc.email));
+            const existing = prev.find(p =>
+              p.studentId === inc.studentId ||
+              p.usn === inc.usn ||
+              (p.email && inc.email && p.email.toLowerCase() === inc.email.toLowerCase())
+            );
             if (!existing) return inc;
+            const isLive = !!existing.image || existing.status === 'Online';
+            const resolvedStatus = isLive ? (existing.status === 'Warning' ? 'Warning' : 'Online') : inc.status;
             return {
               ...inc,
-              image: inc.image || existing.image || null,
-              status: (existing.status === 'Online' && inc.status === 'Offline' && existing.image) ? 'Online' : inc.status,
-              headPose: inc.headPose && inc.headPose !== 'N/A' ? inc.headPose : (existing.headPose || inc.headPose),
-              eyeGaze: inc.eyeGaze && inc.eyeGaze !== 'N/A' ? inc.eyeGaze : (existing.eyeGaze || inc.eyeGaze)
+              image: existing.image || inc.image || null,
+              status: resolvedStatus,
+              riskLevel: resolvedStatus === 'Online' ? (existing.riskLevel && !existing.riskLevel.includes('High') ? existing.riskLevel : 'Safe (0-20)') : inc.riskLevel,
+              headPose: existing.headPose && existing.headPose !== 'N/A' && inc.headPose === 'N/A' ? existing.headPose : (inc.headPose || existing.headPose),
+              eyeGaze: existing.eyeGaze && existing.eyeGaze !== 'N/A' && inc.eyeGaze === 'N/A' ? existing.eyeGaze : (inc.eyeGaze || existing.eyeGaze)
             };
           });
         });

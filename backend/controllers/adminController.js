@@ -359,9 +359,9 @@ const getLiveStudents = async (req, res) => {
 
       if (session) {
         matchedSessionIds.add(session.sessionId || session._id.toString());
-        const isRecent = session.lastActive && new Date(session.lastActive) > activeThreshold;
-        const isOnline = ['Online', 'Active', 'Warning', 'in-progress'].includes(session.status) || isRecent;
-        const computedStatus = (session.status === 'Terminated' && !isRecent) ? 'Terminated' : (isOnline ? (session.status === 'Terminated' ? 'Online' : (session.status || 'Online')) : 'Offline');
+        const isRecent = session.lastActive && (Date.now() - new Date(session.lastActive).getTime() < 10 * 60 * 1000);
+        const isOnline = ['Online', 'Active', 'Warning', 'in-progress'].includes(session.status) || isRecent || !!session.lastWebcamFrame;
+        const computedStatus = isOnline ? (session.status === 'Warning' ? 'Warning' : 'Online') : (session.status === 'Terminated' ? 'Offline' : (session.status || 'Offline'));
 
         return {
           sessionId: session.sessionId || session._id.toString(),
@@ -383,7 +383,7 @@ const getLiveStudents = async (req, res) => {
           tabSwitchingCount: session.tabSwitchingCount || 0,
           copyPasteAttempts: session.copyPasteAttempts || 0,
           warningsCount: session.warningsCount || 0,
-          riskLevel: computedStatus === 'Terminated' ? 'High Risk (50+)' : (session.riskLevel || (session.status === 'Warning' ? 'Medium (20-50)' : 'Safe (0-20)')),
+          riskLevel: session.status === 'Warning' ? 'Medium (20-50)' : (session.riskLevel || 'Safe (0-20)'),
           riskScore: session.riskScore || 5,
           startTime: session.startTime || session.createdAt || user.createdAt,
           remainingTime: session.remainingTime || '03:00:00',

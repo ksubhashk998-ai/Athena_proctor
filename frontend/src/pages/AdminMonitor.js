@@ -236,65 +236,63 @@ export default function AdminMonitor() {
 
       socket.on('student-updated', (data) => {
         if (!data) return;
-        setStudents(prev => {
-          const idx = prev.findIndex(s => s.studentId === data.studentId || s.usn === data.usn || (data.email && s.email === data.email));
-          if (idx !== -1) {
-            const updated = [...prev];
-            updated[idx] = { ...updated[idx], ...data, image: data.lastWebcamFrame || data.image || updated[idx].image };
-            return updated;
+        setStudents(prev => prev.map(s => {
+          const isMatch = (data.studentId && (s.studentId === data.studentId || s.usn === data.studentId)) ||
+                          (data.email && s.email && s.email.toLowerCase() === data.email.toLowerCase()) ||
+                          (data.usn && s.usn === data.usn);
+          if (isMatch) {
+            return {
+              ...s,
+              ...data,
+              image: data.lastWebcamFrame || data.image || s.image
+            };
           }
-          return [{ ...data, image: data.lastWebcamFrame || data.image || null }, ...prev];
-        });
+          return s;
+        }));
       });
 
       socket.on('video-stream', (data) => {
         if (!data) return;
-        setStudents(prev => {
-          const idx = prev.findIndex(s => s.studentId === data.studentId || s.usn === data.studentId || (data.usn && s.usn === data.usn) || (data.email && s.email === data.email));
-          if (idx !== -1) {
-            const updated = [...prev];
-            updated[idx] = {
-              ...updated[idx],
+        setStudents(prev => prev.map(s => {
+          const isMatch = (data.studentId && (s.studentId === data.studentId || s.usn === data.studentId)) ||
+                          (data.email && s.email && s.email.toLowerCase() === data.email.toLowerCase()) ||
+                          (data.usn && s.usn === data.usn);
+          if (isMatch) {
+            return {
+              ...s,
               image: data.image,
-              status: updated[idx].status === 'Offline' || updated[idx].status === 'Terminated' ? 'Online' : updated[idx].status
+              status: 'Online'
             };
-            return updated;
           }
-          return prev;
-        });
+          return s;
+        }));
       });
 
       socket.on('telemetry-update', (data) => {
         if (!data) return;
-        setStudents(prev => {
-          const idx = prev.findIndex(s => s.studentId === data.studentId || s.usn === data.usn || (data.email && s.email === data.email));
-          const studentObj = {
-            studentId: data.studentId,
-            studentName: data.studentName || data.fullName || 'Student',
-            usn: data.usn || data.studentId || 'STU_STUDENT',
-            email: data.email || 'student@gmail.com',
-            department: data.department || 'Computer Science',
-            verificationStatus: data.identityStatus || (data.faceDetected ? 'Verified' : 'Identity Failed'),
-            faceMatchConfidence: data.confidence || (data.faceDetected ? 98 : 35),
-            status: data.status || (data.examStatus === 'Terminated' ? 'Terminated' : 'Online'),
-            warningsCount: data.warningsCount || 0,
-            image: data.image || data.lastWebcamFrame || null,
-            faceDetected: data.faceDetected !== undefined ? data.faceDetected : true,
-            multipleFaces: data.multipleFaces || false,
-            mobilePhoneDetected: data.mobilePhoneDetected || false,
-            fullScreenStatus: data.fullScreenStatus || 'Active',
-            headPose: data.headPose || 'Looking Center',
-            eyeGaze: data.eyeGaze || 'Looking Center',
-            riskLevel: data.riskLevel || 'Safe (0-20)'
-          };
-
-          if (idx !== -1) {
-            const updated = [...prev];
-            updated[idx] = { ...updated[idx], ...studentObj, image: studentObj.image || updated[idx].image };
-            return updated;
+        setStudents(prev => prev.map(s => {
+          const isMatch = (data.studentId && (s.studentId === data.studentId || s.usn === data.studentId)) ||
+                          (data.email && s.email && s.email.toLowerCase() === data.email.toLowerCase()) ||
+                          (data.usn && s.usn === data.usn);
+          if (isMatch) {
+            return {
+              ...s,
+              studentName: data.studentName || s.studentName,
+              status: data.status || 'Online',
+              verificationStatus: data.identityStatus || s.verificationStatus,
+              faceMatchConfidence: data.confidence || s.faceMatchConfidence,
+              faceDetected: data.faceDetected !== undefined ? data.faceDetected : s.faceDetected,
+              multipleFaces: data.multipleFaces !== undefined ? data.multipleFaces : s.multipleFaces,
+              mobilePhoneDetected: data.mobilePhoneDetected !== undefined ? data.mobilePhoneDetected : s.mobilePhoneDetected,
+              fullScreenStatus: data.fullScreenStatus || s.fullScreenStatus,
+              headPose: data.headPose || s.headPose,
+              eyeGaze: data.eyeGaze || s.eyeGaze,
+              image: data.image || s.image,
+              riskLevel: data.riskLevel || s.riskLevel
+            };
           }
-          return [studentObj, ...prev];
-        });
+          return s;
+        }));
       });
 
       socket.on('violation', (data) => {
@@ -315,34 +313,31 @@ export default function AdminMonitor() {
 
       socket.on('student-finished', (data) => {
         setFinishedStudents(prev => [data, ...prev.filter(s => s.studentId !== data.studentId)]);
-        setStudents(prev => prev.filter(s => s.studentId !== data.studentId && s.email !== data.email));
+        setStudents(prev => prev.map(s => (s.studentId === data.studentId || s.email === data.email ? { ...s, status: 'Offline' } : s)));
       });
 
       socket.on('exam-finished', (data) => {
         setFinishedStudents(prev => [data, ...prev.filter(s => s.studentId !== data.studentId)]);
-        setStudents(prev => prev.filter(s => s.studentId !== data.studentId && s.email !== data.email));
+        setStudents(prev => prev.map(s => (s.studentId === data.studentId || s.email === data.email ? { ...s, status: 'Offline' } : s)));
       });
 
       socket.on('gaze-attention-update', (data) => {
         if (!data || !data.studentId) return;
-        setStudents(prev => {
-          const idx = prev.findIndex(s => s.studentId === data.studentId || s.usn === data.studentId || s.sessionId === data.sessionId);
-          if (idx !== -1) {
-            const updated = [...prev];
-            const curr = updated[idx];
-            updated[idx] = {
-              ...curr,
+        setStudents(prev => prev.map(s => {
+          const isMatch = s.studentId === data.studentId || s.usn === data.studentId || s.sessionId === data.sessionId;
+          if (isMatch) {
+            return {
+              ...s,
               attentionRiskLevel: data.riskLevel || 'NORMAL',
               lastGazeDirection: data.direction || 'CENTER',
               suspicionScore: data.suspicionScore || 0,
-              gazeDeviationsCount: (curr.gazeDeviationsCount || 0) + (data.eventType === 'GAZE_DEVIATION' ? 1 : 0),
-              longestGazeDeviation: Math.max(curr.longestGazeDeviation || 0, data.duration || 0),
-              recentGazeEvents: [data, ...(curr.recentGazeEvents || []).slice(0, 9)]
+              gazeDeviationsCount: (s.gazeDeviationsCount || 0) + (data.eventType === 'GAZE_DEVIATION' ? 1 : 0),
+              longestGazeDeviation: Math.max(s.longestGazeDeviation || 0, data.duration || 0),
+              recentGazeEvents: [data, ...(s.recentGazeEvents || []).slice(0, 9)]
             };
-            return updated;
           }
-          return prev;
-        });
+          return s;
+        }));
       });
 
       socket.on('student-status', (data) => {
@@ -367,11 +362,11 @@ export default function AdminMonitor() {
 
       socket.on('student-terminated', (data) => {
         setTerminatedStudents(prev => [data, ...prev.filter(s => s.studentId !== data.studentId)]);
-        setStudents(prev => prev.filter(s => s.studentId !== data.studentId && s.email !== data.email));
+        setStudents(prev => prev.map(s => (s.studentId === data.studentId || s.email === data.email ? { ...s, status: 'Terminated' } : s)));
       });
     }
 
-    const interval = setInterval(fetchData, 2500);
+    const interval = setInterval(fetchData, 8000);
     return () => clearInterval(interval);
   }, []);
 

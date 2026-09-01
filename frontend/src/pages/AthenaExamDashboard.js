@@ -463,6 +463,7 @@ function AthenaExamDashboard() {
     socket.on('student-terminated', handleProctorTermination);
 
     return () => {
+      socket.emit('student-disconnected', { studentId, usn: studentUsn, email: studentEmail, status: 'Offline' });
       socket.off('warning-issued', handleProctorWarning);
       socket.off('student-warning', handleProctorWarning);
       socket.off('student-terminated', handleProctorTermination);

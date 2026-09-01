@@ -246,6 +246,26 @@ export default function AdminMonitor() {
         });
       });
 
+      socket.on('student-status', (data) => {
+        if (!data || !data.studentId) return;
+        setStudents(prev => prev.map(s => {
+          if (s.studentId === data.studentId || s.usn === data.studentId || (data.email && s.email === data.email)) {
+            return { ...s, status: data.status };
+          }
+          return s;
+        }));
+      });
+
+      socket.on('student-disconnected', (data) => {
+        if (!data || !data.studentId) return;
+        setStudents(prev => prev.map(s => {
+          if (s.studentId === data.studentId || s.usn === data.studentId || (data.email && s.email === data.email)) {
+            return { ...s, status: 'Offline' };
+          }
+          return s;
+        }));
+      });
+
       socket.on('student-terminated', (data) => {
         setTerminatedStudents(prev => [data, ...prev.filter(s => s.studentId !== data.studentId)]);
         setStudents(prev => prev.filter(s => s.studentId !== data.studentId && s.email !== data.email));
@@ -875,9 +895,21 @@ export default function AdminMonitor() {
                       )}
 
                       {/* Online Live Badge Overlay */}
-                      <div style={styles.onlineBadge}>
-                        <div style={styles.pulsingDot}></div>
-                        <span>{isTerminated ? 'TERMINATED' : (isWarning ? 'WARNING' : 'ONLINE LIVE')}</span>
+                      <div style={{
+                        ...styles.onlineBadge,
+                        backgroundColor: s.status === 'Offline' ? 'rgba(239, 68, 68, 0.85)' : (isTerminated ? 'rgba(239, 68, 68, 0.85)' : (isWarning ? 'rgba(245, 158, 11, 0.85)' : 'rgba(16, 185, 129, 0.85)'))
+                      }}>
+                        <div style={{
+                          ...styles.pulsingDot,
+                          backgroundColor: s.status === 'Offline' ? '#ef4444' : (isTerminated ? '#ef4444' : (isWarning ? '#f59e0b' : '#34d399'))
+                        }}></div>
+                        <span>
+                          {s.status === 'Offline'
+                            ? '🔴 OFFLINE'
+                            : (isTerminated
+                                ? '🔴 TERMINATED'
+                                : (isWarning ? '⚠️ WARNING' : '🟢 LIVE'))}
+                        </span>
                       </div>
 
                       {/* Watch Stream Button Overlay */}

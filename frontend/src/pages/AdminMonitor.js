@@ -1001,6 +1001,7 @@ export default function AdminMonitor() {
             ) : (
               <div style={styles.grid}>
               {filteredStudents.map((s, idx) => {
+                const isTerminated = s.status === 'Terminated';
                 const isWarning = s.status === 'Warning';
 
                 const riskText = isWarning ? 'Medium (20-50)' : (s.riskLevel && !s.riskLevel.includes('High') ? s.riskLevel : 'Low');

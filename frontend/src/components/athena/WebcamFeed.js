@@ -179,16 +179,20 @@ function WebcamFeed({ isProctoringActive, onDetectionUpdate, onViolationTriggere
         });
       }
 
-      // Stream Real-Time Webcam Frame & Telemetry to Admin Monitor via Socket.IO (Throttled to ~1s to maintain maximum clarity and browser speed)
-      if (now - lastSocketStreamTimeRef.current >= 1000 && video && (video.readyState >= 2 || !video.paused) && video.videoWidth > 0 && video.videoHeight > 0) {
+      // Stream Real-Time High-Clarity Webcam Frame & Telemetry to Admin Monitor via Socket.IO
+      if (now - lastSocketStreamTimeRef.current >= 900 && video && (video.readyState >= 2 || !video.paused) && video.videoWidth > 0 && video.videoHeight > 0) {
         lastSocketStreamTimeRef.current = now;
         try {
           const sCanvas = streamCanvasRef.current || document.createElement('canvas');
-          sCanvas.width = 320;
-          sCanvas.height = 240;
+          const streamW = Math.min(video.videoWidth || 640, 640);
+          const streamH = Math.min(video.videoHeight || 480, 480);
+          sCanvas.width = streamW;
+          sCanvas.height = streamH;
           const sCtx = sCanvas.getContext('2d');
-          sCtx.drawImage(video, 0, 0, 320, 240);
-          const frameImg = sCanvas.toDataURL('image/jpeg', 0.7);
+          sCtx.imageSmoothingEnabled = true;
+          sCtx.imageSmoothingQuality = 'high';
+          sCtx.drawImage(video, 0, 0, streamW, streamH);
+          const frameImg = sCanvas.toDataURL('image/jpeg', 0.88);
           const email = activeStudent?.email || localStorage.getItem('registered_email') || 'student@university.edu';
           const studentId = activeStudent?.studentId || ('STU_' + email.replace(/[^a-z0-9]/gi, '_'));
           const studentUsn = activeStudent?.usn || studentId;

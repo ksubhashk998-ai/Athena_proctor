@@ -477,11 +477,15 @@ function AthenaExamDashboard() {
         const video = document.querySelector('video');
         if (video && (video.readyState >= 2 || !video.paused) && video.videoWidth > 0 && video.videoHeight > 0) {
           const canvas = document.createElement('canvas');
-          canvas.width = 320;
-          canvas.height = 240;
+          const streamW = Math.min(video.videoWidth || 640, 640);
+          const streamH = Math.min(video.videoHeight || 480, 480);
+          canvas.width = streamW;
+          canvas.height = streamH;
           const ctx = canvas.getContext('2d');
-          ctx.drawImage(video, 0, 0, 320, 240);
-          webcamBase64 = canvas.toDataURL('image/jpeg', 0.7);
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = 'high';
+          ctx.drawImage(video, 0, 0, streamW, streamH);
+          webcamBase64 = canvas.toDataURL('image/jpeg', 0.88);
         }
       } catch (e) {}
 

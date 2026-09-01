@@ -124,6 +124,56 @@ export default function AdminMonitor() {
 
   const lastAlertTimestampRef = React.useRef({});
 
+  // Proctored Violation Notification Audio Chime generator using Web Audio API
+  const playViolationNotificationSound = () => {
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      if (ctx.state === 'suspended') {
+        ctx.resume();
+      }
+
+      const now = ctx.currentTime;
+      
+      // High-Tech 2-Tone Proctor Alert Chime (880Hz -> 1174Hz & 659Hz -> 880Hz)
+      const osc1 = ctx.createOscillator();
+      const gain1 = ctx.createGain();
+
+      osc1.type = 'sine';
+      osc1.frequency.setValueAtTime(880, now);
+      osc1.frequency.exponentialRampToValueAtTime(1174.66, now + 0.12);
+
+      gain1.gain.setValueAtTime(0.35, now);
+      gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+
+      osc1.connect(gain1);
+      gain1.connect(ctx.destination);
+
+      osc1.start(now);
+      osc1.stop(now + 0.35);
+
+      const osc2 = ctx.createOscillator();
+      const gain2 = ctx.createGain();
+
+      osc2.type = 'triangle';
+      osc2.frequency.setValueAtTime(659.25, now + 0.1);
+      osc2.frequency.exponentialRampToValueAtTime(880, now + 0.25);
+
+      gain2.gain.setValueAtTime(0.001, now);
+      gain2.gain.setValueAtTime(0.28, now + 0.1);
+      gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+
+      osc2.connect(gain2);
+      gain2.connect(ctx.destination);
+
+      osc2.start(now + 0.1);
+      osc2.stop(now + 0.45);
+    } catch (e) {
+      console.warn('Proctor audio chime notification error:', e.message);
+    }
+  };
+
   useEffect(() => {
     fetchData();
     const socket = getSocket();
@@ -140,6 +190,9 @@ export default function AdminMonitor() {
         }
         lastAlertTimestampRef.current[key] = now;
 
+        // Play violation alert chime
+        playViolationNotificationSound();
+
         setNotifications(prev => [notif, ...prev.slice(0, 49)]);
         setAdminToasts(prev => [notif, ...prev]);
         setTimeout(() => {
@@ -153,6 +206,7 @@ export default function AdminMonitor() {
       });
       
       socket.on('multi-face-violation', (data) => {
+        playViolationNotificationSound();
         setViolations(prev => [{
           id: "VIO_" + Date.now(),
           studentName: data.studentName || data.studentId || 'Student',
@@ -226,6 +280,22 @@ export default function AdminMonitor() {
           }
           return [studentObj, ...prev];
         });
+      });
+
+      socket.on('violation', (data) => {
+        playViolationNotificationSound();
+      });
+
+      socket.on('violation-detected', (data) => {
+        playViolationNotificationSound();
+      });
+
+      socket.on('ai-alert', (data) => {
+        playViolationNotificationSound();
+      });
+
+      socket.on('tab-switch', (data) => {
+        playViolationNotificationSound();
       });
 
       socket.on('student-finished', (data) => {

@@ -70,6 +70,9 @@ function AthenaExamDashboard() {
 
   // Tab Switch Warning State
   const [tabSwitchWarning, setTabSwitchWarning] = useState({ open: false, count: 0, max: 3, message: '' });
+  // Admin / Proctor Remote Warning State
+  const [proctorWarning, setProctorWarning] = useState({ open: false, message: '' });
+  const lastSeenWarningCountRef = React.useRef(0);
 
   const [eyeTrackingState, setEyeTrackingState] = useState({
     status: 'green',
@@ -363,8 +366,10 @@ function AthenaExamDashboard() {
     };
   }, [isExamUnlocked, isExamTerminated, recordViolation]);
 
-  // Live Admin Monitoring & Socket Sync Effect
+  // Live Admin Monitoring & Socket Sync Effect (Triggered on unlock or discrete violation changes, not on raw frame ticks)
   useEffect(() => {
+    if (!isExamUnlocked) return;
+
     let activeUser = null;
     try {
       const stored = localStorage.getItem('user');
@@ -401,22 +406,70 @@ function AthenaExamDashboard() {
       body: JSON.stringify(payload)
     }).catch(() => {});
 
-    if (apiBase !== '/api' && apiBase !== '') {
-      fetch('/api/admin/live-session', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      }).catch(() => {});
-    }
-
     const socket = getSocket();
     if (socket) {
       socket.emit('student-connected', payload);
       socket.emit('exam-start', payload);
     }
-  }, [violationsCount, tabSwitchesCount, faceDetectionState, phoneDetectionState, headPoseState, eyeTrackingState]);
+  }, [isExamUnlocked, violationsCount, tabSwitchesCount]);
 
-  // Periodic 4-Second Live Heartbeat & Frame Sync for Admin Oversight
+  // Socket.IO Remote Proctoring Action Listener (Warn Student & Terminate Student)
+  useEffect(() => {
+    const socket = getSocket();
+    if (!socket) return;
+
+    let activeUser = null;
+    try {
+      const stored = localStorage.getItem('user');
+      if (stored) activeUser = JSON.parse(stored);
+    } catch (e) {}
+
+    const regEmail = localStorage.getItem('registered_email') || '';
+    const studentEmail = activeUser?.email || regEmail || 'student@proctor.com';
+    const studentId = activeUser?.studentId || ('STU_' + studentEmail.replace(/[^a-z0-9]/gi, '_'));
+    const studentUsn = activeUser?.usn || studentId;
+
+    // Join student socket rooms
+    socket.emit('join_student', studentId);
+    if (studentUsn && studentUsn !== studentId) {
+      socket.emit('join_student', studentUsn);
+    }
+
+    const handleProctorWarning = (data) => {
+      if (!data) return;
+      const target = data.studentId || data.usn || data.email;
+      if (target && target !== studentId && target !== studentUsn && target !== studentEmail) {
+        return;
+      }
+      const msg = data.message || '⚠️ Warning: Suspicious activity detected by the Proctor! Please focus on your exam.';
+      setProctorWarning({ open: true, message: msg });
+      recordViolation(`⚠️ PROCTOR WARNING: ${msg}`);
+    };
+
+    const handleProctorTermination = (data) => {
+      if (!data) return;
+      const target = data.studentId || data.usn || data.email;
+      if (target && target !== studentId && target !== studentUsn && target !== studentEmail) {
+        return;
+      }
+      const reason = data.reason || 'Exam Terminated by Proctor / Admin Command Center';
+      setIsExamTerminated(true);
+      setTerminationReason(reason);
+      recordViolation(`🔴 EXAM TERMINATED BY PROCTOR: ${reason}`);
+    };
+
+    socket.on('warning-issued', handleProctorWarning);
+    socket.on('student-warning', handleProctorWarning);
+    socket.on('student-terminated', handleProctorTermination);
+
+    return () => {
+      socket.off('warning-issued', handleProctorWarning);
+      socket.off('student-warning', handleProctorWarning);
+      socket.off('student-terminated', handleProctorTermination);
+    };
+  }, [recordViolation]);
+
+  // Periodic 2-Second Live Heartbeat & Frame Sync for Admin Oversight
   useEffect(() => {
     if (!isExamUnlocked) return;
 
@@ -424,7 +477,7 @@ function AthenaExamDashboard() {
       let webcamBase64 = null;
       try {
         const video = document.querySelector('video');
-        if (video && video.readyState === 4) {
+        if (video && (video.readyState >= 2 || !video.paused)) {
           const canvas = document.createElement('canvas');
           canvas.width = 320;
           canvas.height = 240;
@@ -467,10 +520,10 @@ function AthenaExamDashboard() {
         examId: 'CS-401',
         examName: 'Computer Science Final Assessment',
         department: 'Computer Science & Engineering',
-        status: 'Online',
-        faceDetected: true,
-        multipleFaces: false,
-        mobilePhoneDetected: false,
+        status: isExamTerminated ? 'Terminated' : 'Online',
+        faceDetected: faceDetectionState?.value?.includes('Detected') && !faceDetectionState?.value?.includes('No'),
+        multipleFaces: faceDetectionState?.detail?.includes('Faces: 2') || false,
+        mobilePhoneDetected: phoneDetectionState?.value?.includes('Detected') && !phoneDetectionState?.value?.includes('No'),
         headPose: headPoseState?.value || 'Looking Center',
         eyeGaze: eyeTrackingState?.value || 'Center',
         tabSwitchingCount: tabSwitchesCount,
@@ -485,6 +538,19 @@ function AthenaExamDashboard() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
+      }).then(res => res.json()).then(data => {
+        if (data?.session) {
+          if (data.session.status === 'Terminated' && !isExamTerminated) {
+            setIsExamTerminated(true);
+            setTerminationReason(data.session.terminationReason || 'Terminated by Admin Command Center');
+          } else if (data.session.status === 'Warning' && (data.session.warningsCount || 0) > (lastSeenWarningCountRef.current || 0)) {
+            lastSeenWarningCountRef.current = data.session.warningsCount;
+            setProctorWarning({
+              open: true,
+              message: '⚠️ Warning issued by Proctor: Suspicious activity detected. Please return focus to your exam.'
+            });
+          }
+        }
       }).catch(() => {});
 
       const socket = getSocket();
@@ -492,10 +558,10 @@ function AthenaExamDashboard() {
         socket.emit('video-stream', payload);
         socket.emit('telemetry-update', payload);
       }
-    }, 4000);
+    }, 2000);
 
     return () => clearInterval(heartbeatInterval);
-  }, [isExamUnlocked, violationsCount, tabSwitchesCount, headPoseState, eyeTrackingState]);
+  }, [isExamUnlocked, isExamTerminated, violationsCount, tabSwitchesCount, headPoseState, eyeTrackingState, faceDetectionState, phoneDetectionState]);
 
 
 
@@ -1155,6 +1221,89 @@ function AthenaExamDashboard() {
               }}
             >
               I Understand — Resume Exam ➔
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ⚠️ Official Proctor / Admin Warning Popup Modal */}
+      {proctorWarning.open && !isExamTerminated && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(15, 23, 42, 0.90)',
+          backdropFilter: 'blur(12px)',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          zIndex: 99999
+        }}>
+          <div style={{
+            background: 'linear-gradient(145deg, #1e293b, #0f172a)',
+            border: '2px solid #f59e0b',
+            borderRadius: '20px',
+            padding: '36px',
+            maxWidth: '520px',
+            width: '90%',
+            textAlign: 'center',
+            boxShadow: '0 25px 50px -12px rgba(245, 158, 11, 0.45)',
+            color: '#ffffff'
+          }}>
+            <div style={{
+              width: '70px',
+              height: '70px',
+              borderRadius: '50%',
+              backgroundColor: 'rgba(245, 158, 11, 0.2)',
+              border: '2px solid #f59e0b',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              margin: '0 auto 20px',
+              fontSize: '32px',
+              color: '#f59e0b'
+            }}>
+              ⚠️
+            </div>
+
+            <h2 style={{ fontSize: '1.6rem', fontWeight: 800, color: '#f59e0b', marginBottom: '12px' }}>
+              OFFICIAL PROCTOR WARNING
+            </h2>
+
+            <p style={{ color: '#cbd5e1', fontSize: '1rem', lineHeight: '1.6', marginBottom: '24px' }}>
+              {proctorWarning.message}
+            </p>
+
+            <div style={{
+              background: 'rgba(245, 158, 11, 0.1)',
+              border: '1px solid rgba(245, 158, 11, 0.3)',
+              borderRadius: '12px',
+              padding: '12px 16px',
+              marginBottom: '28px',
+              fontSize: '0.9rem',
+              color: '#fbbf24'
+            }}>
+              🚨 <strong>Notice:</strong> Continued non-compliance or suspicious behavior will result in immediate exam termination!
+            </div>
+
+            <button
+              onClick={() => setProctorWarning({ open: false, message: '' })}
+              style={{
+                width: '100%',
+                background: 'linear-gradient(135deg, #f59e0b, #d97706)',
+                color: '#ffffff',
+                border: 'none',
+                padding: '14px 24px',
+                borderRadius: '12px',
+                fontSize: '1rem',
+                fontWeight: 700,
+                cursor: 'pointer',
+                boxShadow: '0 4px 14px rgba(245, 158, 11, 0.4)'
+              }}
+            >
+              I Acknowledge — Return to Exam ➔
             </button>
           </div>
         </div>

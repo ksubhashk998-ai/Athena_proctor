@@ -155,9 +155,23 @@ export default function AdminMonitor() {
         }, ...prev]);
       });
 
-      socket.on('video-stream', (data) => {
+      socket.on('student-updated', (data) => {
+        if (!data) return;
         setStudents(prev => {
-          const idx = prev.findIndex(s => s.studentId === data.studentId || s.email === data.email);
+          const idx = prev.findIndex(s => s.studentId === data.studentId || s.usn === data.usn || (data.email && s.email === data.email));
+          if (idx !== -1) {
+            const updated = [...prev];
+            updated[idx] = { ...updated[idx], ...data, image: data.lastWebcamFrame || data.image || updated[idx].image };
+            return updated;
+          }
+          return [{ ...data, image: data.lastWebcamFrame || data.image || null }, ...prev];
+        });
+      });
+
+      socket.on('video-stream', (data) => {
+        if (!data) return;
+        setStudents(prev => {
+          const idx = prev.findIndex(s => s.studentId === data.studentId || s.usn === data.studentId || s.email === data.email);
           if (idx !== -1) {
             const updated = [...prev];
             updated[idx] = { ...updated[idx], image: data.image };
@@ -168,19 +182,20 @@ export default function AdminMonitor() {
       });
 
       socket.on('telemetry-update', (data) => {
+        if (!data) return;
         setStudents(prev => {
-          const idx = prev.findIndex(s => s.studentId === data.studentId || s.email === data.email);
+          const idx = prev.findIndex(s => s.studentId === data.studentId || s.usn === data.usn || (data.email && s.email === data.email));
           const studentObj = {
             studentId: data.studentId,
             studentName: data.studentName || data.fullName || 'Student',
-            usn: data.usn || 'STU_STUDENT',
+            usn: data.usn || data.studentId || 'STU_STUDENT',
             email: data.email || 'student@gmail.com',
             department: data.department || 'Computer Science',
             verificationStatus: data.identityStatus || (data.faceDetected ? 'Verified' : 'Identity Failed'),
             faceMatchConfidence: data.confidence || (data.faceDetected ? 98 : 35),
             status: data.status || (data.examStatus === 'Terminated' ? 'Terminated' : 'Online'),
             warningsCount: data.warningsCount || 0,
-            image: data.image || null,
+            image: data.image || data.lastWebcamFrame || null,
             faceDetected: data.faceDetected !== undefined ? data.faceDetected : true,
             multipleFaces: data.multipleFaces || false,
             mobilePhoneDetected: data.mobilePhoneDetected || false,
@@ -192,7 +207,7 @@ export default function AdminMonitor() {
 
           if (idx !== -1) {
             const updated = [...prev];
-            updated[idx] = { ...updated[idx], ...studentObj };
+            updated[idx] = { ...updated[idx], ...studentObj, image: studentObj.image || updated[idx].image };
             return updated;
           }
           return [studentObj, ...prev];
@@ -237,13 +252,24 @@ export default function AdminMonitor() {
       });
     }
 
-    const interval = setInterval(fetchData, 6000);
+    const interval = setInterval(fetchData, 2500);
     return () => clearInterval(interval);
   }, []);
 
-  const handleWarnStudent = (student) => {
+  const handleWarnStudent = async (studentOrId) => {
+    const studentId = typeof studentOrId === 'string' ? studentOrId : (studentOrId?.studentId || studentOrId?.usn);
+    const studentObj = typeof studentOrId === 'object' && studentOrId !== null
+      ? studentOrId
+      : (students.find(s => s.studentId === studentId || s.usn === studentId || s.email === studentId) || selectedStudentDetail);
+    const targetId = studentId || studentObj?.studentId || studentObj?.usn;
+    if (!targetId) return;
+
+    const warningMsg = '⚠️ Warning: Suspicious activity detected. Please return focus to your exam.';
+    const displayName = studentObj?.studentName || studentObj?.fullName || targetId;
+
+    // Optimistic UI state update
     setStudents(prev => prev.map(s => {
-      if (s.studentId === student.studentId || s.email === student.email) {
+      if (s.studentId === targetId || s.usn === targetId || (studentObj?.email && s.email === studentObj.email)) {
         const nextWarnings = (s.warningsCount || 0) + 1;
         return {
           ...s,
@@ -254,13 +280,62 @@ export default function AdminMonitor() {
       }
       return s;
     }));
-    setActionMessage(`⚠️ Warning issued to ${student.studentName} (${student.usn})`);
+
+    if (selectedStudentDetail && (selectedStudentDetail.studentId === targetId || selectedStudentDetail.usn === targetId || selectedStudentDetail.email === studentObj?.email)) {
+      setSelectedStudentDetail(prev => ({
+        ...prev,
+        warningsCount: (prev?.warningsCount || 0) + 1,
+        status: 'Warning'
+      }));
+    }
+
+    setActionMessage(`⚠️ Warning issued to ${displayName}`);
     setTimeout(() => setActionMessage(''), 4000);
+
+    // 1. Call Backend REST API
+    const apiBase = getApiBaseUrl();
+    const token = localStorage.getItem('adminToken') || 'dev_admin_token';
+    try {
+      await axios.post(`${apiBase}/api/admin/warn-student`, {
+        studentId: targetId,
+        message: warningMsg
+      }, { headers: { Authorization: `Bearer ${token}` } });
+    } catch (err) {
+      console.warn('Warn student API notice:', err.message);
+    }
+
+    // 2. Emit Socket.IO event
+    const socket = getSocket();
+    if (socket) {
+      socket.emit('warning-issued', {
+        studentId: targetId,
+        usn: studentObj?.usn || targetId,
+        message: warningMsg,
+        timestamp: new Date()
+      });
+      socket.emit('student-warning', {
+        studentId: targetId,
+        usn: studentObj?.usn || targetId,
+        message: warningMsg,
+        timestamp: new Date()
+      });
+    }
   };
 
-  const handleTerminateStudent = (student) => {
+  const handleTerminateStudent = async (studentOrId) => {
+    const studentId = typeof studentOrId === 'string' ? studentOrId : (studentOrId?.studentId || studentOrId?.usn);
+    const studentObj = typeof studentOrId === 'object' && studentOrId !== null
+      ? studentOrId
+      : (students.find(s => s.studentId === studentId || s.usn === studentId || s.email === studentId) || selectedStudentDetail);
+    const targetId = studentId || studentObj?.studentId || studentObj?.usn;
+    if (!targetId) return;
+
+    const terminationReason = 'Terminated by Admin Command Center';
+    const displayName = studentObj?.studentName || studentObj?.fullName || targetId;
+
+    // Optimistic UI state update
     setStudents(prev => prev.map(s => {
-      if (s.studentId === student.studentId || s.email === student.email) {
+      if (s.studentId === targetId || s.usn === targetId || (studentObj?.email && s.email === studentObj.email)) {
         return {
           ...s,
           status: 'Terminated',
@@ -270,8 +345,42 @@ export default function AdminMonitor() {
       }
       return s;
     }));
-    setActionMessage(`🔴 Exam session terminated for ${student.studentName} (${student.usn})`);
+
+    if (selectedStudentDetail && (selectedStudentDetail.studentId === targetId || selectedStudentDetail.usn === targetId || selectedStudentDetail.email === studentObj?.email)) {
+      setSelectedStudentDetail(prev => ({
+        ...prev,
+        status: 'Terminated',
+        verificationStatus: 'Identity Failed',
+        riskLevel: 'High Risk (50+)'
+      }));
+    }
+
+    setActionMessage(`🔴 Exam session terminated for ${displayName}`);
     setTimeout(() => setActionMessage(''), 4000);
+
+    // 1. Call Backend REST API
+    const apiBase = getApiBaseUrl();
+    const token = localStorage.getItem('adminToken') || 'dev_admin_token';
+    try {
+      await axios.post(`${apiBase}/api/admin/terminate-session`, {
+        studentId: targetId,
+        sessionId: studentObj?.sessionId,
+        reason: terminationReason
+      }, { headers: { Authorization: `Bearer ${token}` } });
+    } catch (err) {
+      console.warn('Terminate session API notice:', err.message);
+    }
+
+    // 2. Emit Socket.IO event
+    const socket = getSocket();
+    if (socket) {
+      socket.emit('student-terminated', {
+        studentId: targetId,
+        usn: studentObj?.usn || targetId,
+        reason: terminationReason,
+        timestamp: new Date()
+      });
+    }
   };
 
   const handleOpenStudentDetail = (student) => {
@@ -1028,7 +1137,9 @@ export default function AdminMonitor() {
         {/* -------------------------------------------------------------
             3. STUDENT DETAIL VIEW
            ------------------------------------------------------------- */}
-        {activeNav === 'studentDetail' && selectedStudentDetail && (
+        {activeNav === 'studentDetail' && selectedStudentDetail && (() => {
+          const currentDetail = students.find(s => s.studentId === selectedStudentDetail.studentId || s.usn === selectedStudentDetail.usn || (s.email && s.email === selectedStudentDetail.email)) || selectedStudentDetail;
+          return (
           <div style={{ padding: '24px' }}>
             {/* Student Header Card */}
             <div style={styles.detailHeaderCard}>
@@ -1042,26 +1153,26 @@ export default function AdminMonitor() {
                       ← Back to Live
                     </button>
                     <h2 style={{ fontSize: '1.6rem', fontWeight: 900, color: '#ffffff', margin: 0 }}>
-                      {selectedStudentDetail?.studentName || 'Examinee'}
+                      {currentDetail?.studentName || 'Examinee'}
                     </h2>
                   </div>
                   <div style={{ fontSize: '0.85rem', color: '#94a3b8', marginTop: '6px' }}>
-                    USN: <strong>{selectedStudentDetail?.usn || 'N/A'}</strong> | Email: <strong>{selectedStudentDetail?.email || 'N/A'}</strong>
+                    USN: <strong>{currentDetail?.usn || 'N/A'}</strong> | Email: <strong>{currentDetail?.email || 'N/A'}</strong>
                   </div>
                   <div style={{ fontSize: '0.8rem', color: '#818cf8', marginTop: '2px', fontWeight: 700 }}>
-                    Department: {selectedStudentDetail?.department || 'General Science'}
+                    Department: {currentDetail?.department || 'General Science'}
                   </div>
                 </div>
 
                 <div style={{ textAlign: 'right' }}>
                   <div style={{ fontSize: '0.8rem', color: '#94a3b8' }}>
-                    Exam Name: <strong style={{ color: '#ffffff' }}>{selectedStudentDetail?.examName || 'Computer Science Final Assessment'}</strong>
+                    Exam Name: <strong style={{ color: '#ffffff' }}>{currentDetail?.examName || 'Computer Science Final Assessment'}</strong>
                   </div>
                   <div style={{ fontSize: '0.8rem', color: '#94a3b8', marginTop: '2px' }}>
-                    Status: <strong style={{ color: selectedStudentDetail?.status === 'Terminated' ? '#ef4444' : '#34d399' }}>{selectedStudentDetail?.status || 'Online'}</strong>
+                    Status: <strong style={{ color: currentDetail?.status === 'Terminated' ? '#ef4444' : '#34d399' }}>{currentDetail?.status || 'Online'}</strong>
                   </div>
                   <div style={{ fontSize: '0.8rem', color: '#f59e0b', marginTop: '2px', fontWeight: 700 }}>
-                    Suspicious Count: {violations.filter(v => (v.usn && selectedStudentDetail.usn && v.usn === selectedStudentDetail.usn) || (v.email && selectedStudentDetail.email && v.email === selectedStudentDetail.email)).length || selectedStudentDetail?.warningsCount || 0} Events
+                    Suspicious Count: {violations.filter(v => (v.usn && currentDetail.usn && v.usn === currentDetail.usn) || (v.email && currentDetail.email && v.email === currentDetail.email)).length || currentDetail?.warningsCount || 0} Events
                   </div>
                 </div>
               </div>
@@ -1072,21 +1183,21 @@ export default function AdminMonitor() {
               {/* Left Column: Bounding Box Evidence Inspector */}
               <div style={styles.inspectorCard}>
                 <div style={styles.inspectorVideoContainer}>
-                  {selectedStudentDetail.image ? (
+                  {currentDetail.image ? (
                     <div style={{ position: 'relative' }}>
                       <div style={styles.evidenceOverlayHeader}>
-                        ● {selectedStudentDetail.status?.toUpperCase() || 'ONLINE'} • HEAD POSE: {selectedStudentDetail.headPose || 'Looking Center'}
+                        ● {currentDetail.status?.toUpperCase() || 'ONLINE'} • HEAD POSE: {currentDetail.headPose || 'Looking Center'}
                       </div>
                       <div style={styles.evidenceOverlayGaze}>
-                        GAZE: {selectedStudentDetail.eyeGaze || 'Looking Center'}
+                        GAZE: {currentDetail.eyeGaze || 'Looking Center'}
                       </div>
                       <img
-                        src={selectedStudentDetail.image}
+                        src={currentDetail.image}
                         alt="Live Student Frame"
                         style={{ width: '100%', height: '340px', objectFit: 'cover' }}
                       />
                       <div style={styles.confidenceOverlayBadge}>
-                        Face Detection Confidence: <strong>{selectedStudentDetail.faceMatchConfidence || 98}% Match</strong>
+                        Face Detection Confidence: <strong>{currentDetail.faceMatchConfidence || 98}% Match</strong>
                       </div>
                     </div>
                   ) : (
@@ -1095,10 +1206,10 @@ export default function AdminMonitor() {
                       <div style={{ color: '#ffffff', fontWeight: 800, fontSize: '1rem' }}>Webcam Standby</div>
                       <div style={{ color: '#64748b', fontSize: '0.8rem', marginTop: '4px' }}>Awaiting live camera video feed from candidate</div>
                       <div style={styles.evidenceOverlayHeader}>
-                        ● {selectedStudentDetail.status?.toUpperCase() || 'ONLINE'} • HEAD POSE: {selectedStudentDetail.headPose || 'Center'}
+                        ● {currentDetail.status?.toUpperCase() || 'ONLINE'} • HEAD POSE: {currentDetail.headPose || 'Center'}
                       </div>
                       <div style={styles.confidenceOverlayBadge}>
-                        Face Match Confidence: <strong>{selectedStudentDetail.faceMatchConfidence || 95}%</strong>
+                        Face Match Confidence: <strong>{currentDetail.faceMatchConfidence || 95}%</strong>
                       </div>
                     </div>
                   )}
@@ -1111,20 +1222,20 @@ export default function AdminMonitor() {
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px' }}>
                     <div style={styles.miniTelemetryCard}>
                       <span style={{ fontSize: '0.7rem', color: '#94a3b8' }}>Face Verification</span>
-                      <strong style={{ color: selectedStudentDetail.faceDetected ? '#34d399' : '#ef4444', fontSize: '0.85rem' }}>
-                        {selectedStudentDetail.faceDetected ? `Verified (${selectedStudentDetail.faceMatchConfidence || 98}%)` : 'No Face'}
+                      <strong style={{ color: currentDetail.faceDetected ? '#34d399' : '#ef4444', fontSize: '0.85rem' }}>
+                        {currentDetail.faceDetected ? `Verified (${currentDetail.faceMatchConfidence || 98}%)` : 'No Face'}
                       </strong>
                     </div>
                     <div style={styles.miniTelemetryCard}>
                       <span style={{ fontSize: '0.7rem', color: '#94a3b8' }}>Multiple Faces</span>
-                      <strong style={{ color: !selectedStudentDetail.multipleFaces ? '#34d399' : '#ef4444', fontSize: '0.85rem' }}>
-                        {!selectedStudentDetail.multipleFaces ? 'Single Face' : 'Multiple Faces'}
+                      <strong style={{ color: !currentDetail.multipleFaces ? '#34d399' : '#ef4444', fontSize: '0.85rem' }}>
+                        {!currentDetail.multipleFaces ? 'Single Face' : 'Multiple Faces'}
                       </strong>
                     </div>
                     <div style={styles.miniTelemetryCard}>
                       <span style={{ fontSize: '0.7rem', color: '#94a3b8' }}>Phone Status</span>
-                      <strong style={{ color: !selectedStudentDetail.mobilePhoneDetected ? '#34d399' : '#ef4444', fontSize: '0.85rem' }}>
-                        {!selectedStudentDetail.mobilePhoneDetected ? 'No Phone' : 'Phone Detected'}
+                      <strong style={{ color: !currentDetail.mobilePhoneDetected ? '#34d399' : '#ef4444', fontSize: '0.85rem' }}>
+                        {!currentDetail.mobilePhoneDetected ? 'No Phone' : 'Phone Detected'}
                       </strong>
                     </div>
                   </div>
@@ -1142,19 +1253,19 @@ export default function AdminMonitor() {
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', fontSize: '0.82rem' }}>
                     <div>
                       <span style={{ color: '#94a3b8', fontSize: '0.72rem' }}>CANDIDATE NAME</span>
-                      <div style={{ fontWeight: 800, color: '#ffffff' }}>{selectedStudentDetail.studentName}</div>
+                      <div style={{ fontWeight: 800, color: '#ffffff' }}>{currentDetail.studentName}</div>
                     </div>
                     <div>
                       <span style={{ color: '#94a3b8', fontSize: '0.72rem' }}>USN / STUDENT ID</span>
-                      <div style={{ fontWeight: 800, color: '#38bdf8' }}>{selectedStudentDetail.usn || selectedStudentDetail.studentId}</div>
+                      <div style={{ fontWeight: 800, color: '#38bdf8' }}>{currentDetail.usn || currentDetail.studentId}</div>
                     </div>
                     <div>
                       <span style={{ color: '#94a3b8', fontSize: '0.72rem' }}>EMAIL ADDRESS</span>
-                      <div style={{ fontWeight: 600, color: '#cbd5e1' }}>{selectedStudentDetail.email || 'student@university.edu'}</div>
+                      <div style={{ fontWeight: 600, color: '#cbd5e1' }}>{currentDetail.email || 'student@university.edu'}</div>
                     </div>
                     <div>
                       <span style={{ color: '#94a3b8', fontSize: '0.72rem' }}>DEPARTMENT</span>
-                      <div style={{ fontWeight: 700, color: '#a78bfa' }}>{selectedStudentDetail.department || 'Computer Science & Engineering'}</div>
+                      <div style={{ fontWeight: 700, color: '#a78bfa' }}>{currentDetail.department || 'Computer Science & Engineering'}</div>
                     </div>
                   </div>
                 </div>
@@ -1167,18 +1278,18 @@ export default function AdminMonitor() {
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', fontSize: '0.8rem' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', color: '#cbd5e1' }}>
                       <span>Fullscreen Lock:</span>
-                      <strong style={{ color: '#34d399' }}>{selectedStudentDetail.fullScreenStatus || 'Active'}</strong>
+                      <strong style={{ color: '#34d399' }}>{currentDetail.fullScreenStatus || 'Active'}</strong>
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', color: '#cbd5e1' }}>
                       <span>Tab Switches:</span>
-                      <strong style={{ color: (selectedStudentDetail.tabSwitchingCount || 0) > 0 ? '#fbbf24' : '#34d399' }}>
-                        {selectedStudentDetail.tabSwitchingCount || 0} times
+                      <strong style={{ color: (currentDetail.tabSwitchingCount || 0) > 0 ? '#fbbf24' : '#34d399' }}>
+                        {currentDetail.tabSwitchingCount || 0} times
                       </strong>
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', color: '#cbd5e1' }}>
                       <span>Copy/Paste Attempts:</span>
-                      <strong style={{ color: (selectedStudentDetail.copyPasteAttempts || 0) > 0 ? '#ef4444' : '#34d399' }}>
-                        {selectedStudentDetail.copyPasteAttempts || 0}
+                      <strong style={{ color: (currentDetail.copyPasteAttempts || 0) > 0 ? '#ef4444' : '#34d399' }}>
+                        {currentDetail.copyPasteAttempts || 0}
                       </strong>
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', color: '#cbd5e1' }}>
@@ -1191,7 +1302,7 @@ export default function AdminMonitor() {
                 {/* Quick Admin Intervention Controls */}
                 <div style={{ display: 'flex', gap: '10px', marginBottom: '16px' }}>
                   <button
-                    onClick={() => handleWarnStudent(selectedStudentDetail.studentId)}
+                    onClick={() => handleWarnStudent(currentDetail)}
                     style={{
                       flex: 1,
                       padding: '10px',
@@ -1207,7 +1318,7 @@ export default function AdminMonitor() {
                     ⚠️ Issue Warning
                   </button>
                   <button
-                    onClick={() => handleTerminateStudent(selectedStudentDetail.studentId)}
+                    onClick={() => handleTerminateStudent(currentDetail)}
                     style={{
                       flex: 1,
                       padding: '10px',
@@ -1231,9 +1342,9 @@ export default function AdminMonitor() {
 
                 {(() => {
                   const studentViolations = violations.filter(v =>
-                    (v.usn && selectedStudentDetail.usn && v.usn === selectedStudentDetail.usn) ||
-                    (v.email && selectedStudentDetail.email && v.email === selectedStudentDetail.email) ||
-                    (v.studentId && selectedStudentDetail.studentId && v.studentId === selectedStudentDetail.studentId)
+                    (v.usn && currentDetail.usn && v.usn === currentDetail.usn) ||
+                    (v.email && currentDetail.email && v.email === currentDetail.email) ||
+                    (v.studentId && currentDetail.studentId && v.studentId === currentDetail.studentId)
                   );
 
                   if (studentViolations.length === 0) {
@@ -1272,7 +1383,8 @@ export default function AdminMonitor() {
               </div>
             </div>
           </div>
-        )}
+          );
+        })()}
 
         {/* -------------------------------------------------------------
             4. SYSTEM ADMIN COMMAND CENTER DASHBOARD VIEW

@@ -804,7 +804,12 @@ const terminateSession = async (req, res) => {
     }
 
     let session = await LiveSession.findOne({
-      $or: [{ sessionId }, { studentId }]
+      $or: [
+        { sessionId: sessionId || '___none___' },
+        { studentId: studentId || '___none___' },
+        { usn: studentId || '___none___' },
+        { email: studentId ? String(studentId).toLowerCase() : '___none___' }
+      ]
     });
 
     if (!session) {
@@ -822,13 +827,20 @@ const terminateSession = async (req, res) => {
     if (io) {
       const payload = {
         studentId: session.studentId,
+        usn: session.usn,
+        email: session.email,
         sessionId: session.sessionId,
         reason: terminationReason,
+        status: 'Terminated',
         timestamp: new Date()
       };
 
       io.to(`student_${session.studentId}`).emit('student-terminated', payload);
+      if (studentId && studentId !== session.studentId) {
+        io.to(`student_${studentId}`).emit('student-terminated', payload);
+      }
       io.to('admin_room').emit('student-terminated', payload);
+      io.to('admin_room').emit('student-status', { studentId: session.studentId, status: 'Terminated' });
       io.to('admin_room').emit('student-updated', session);
     }
 
@@ -859,20 +871,41 @@ const warnStudent = async (req, res) => {
 
     const warningMsg = message || '⚠️ Warning: Suspicious activity detected. Please return focus to your exam.';
 
-    let session = await LiveSession.findOne({ studentId });
+    let session = await LiveSession.findOne({
+      $or: [
+        { studentId },
+        { usn: studentId },
+        { email: String(studentId).toLowerCase() }
+      ]
+    });
+
     if (session) {
       session.status = 'Warning';
+      session.warningsCount = (session.warningsCount || 0) + 1;
       session.suspiciousActivityCount = (session.suspiciousActivityCount || 0) + 1;
+      session.lastActive = new Date();
       await session.save();
     }
 
     const io = req.app.get('io');
     if (io) {
-      io.to(`student_${studentId}`).emit('warning-issued', {
-        studentId,
+      const payload = {
+        studentId: session?.studentId || studentId,
+        usn: session?.usn || studentId,
+        email: session?.email,
         message: warningMsg,
+        warningsCount: session?.warningsCount || 1,
         timestamp: new Date()
-      });
+      };
+
+      io.to(`student_${studentId}`).emit('warning-issued', payload);
+      io.to(`student_${studentId}`).emit('student-warning', payload);
+      if (session && session.studentId !== studentId) {
+        io.to(`student_${session.studentId}`).emit('warning-issued', payload);
+        io.to(`student_${session.studentId}`).emit('student-warning', payload);
+      }
+      io.to('admin_room').emit('warning-issued', payload);
+      io.to('admin_room').emit('student-warning', payload);
       if (session) {
         io.to('admin_room').emit('student-updated', session);
       }
@@ -880,7 +913,8 @@ const warnStudent = async (req, res) => {
 
     res.json({
       success: true,
-      message: `Warning issued to student ${studentId}`
+      message: `Warning issued to student ${studentId}`,
+      session
     });
   } catch (error) {
     console.error('Error in warnStudent:', error);

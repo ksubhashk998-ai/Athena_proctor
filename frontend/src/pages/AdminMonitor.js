@@ -171,7 +171,7 @@ export default function AdminMonitor() {
       socket.on('video-stream', (data) => {
         if (!data) return;
         setStudents(prev => {
-          const idx = prev.findIndex(s => s.studentId === data.studentId || s.usn === data.studentId || s.email === data.email);
+          const idx = prev.findIndex(s => s.studentId === data.studentId || s.usn === data.studentId || (data.usn && s.usn === data.usn) || (data.email && s.email === data.email));
           if (idx !== -1) {
             const updated = [...prev];
             updated[idx] = { ...updated[idx], image: data.image };
@@ -390,7 +390,7 @@ export default function AdminMonitor() {
 
   const filteredStudents = students.filter((s) => {
     const statusStr = String(s.status || 'Online').toLowerCase();
-    const isOnline = !['offline', 'finished', 'completed', 'terminated'].includes(statusStr);
+    const isOnline = !['finished', 'completed'].includes(statusStr);
 
     const matchesSearch =
       !searchTerm.trim() ||

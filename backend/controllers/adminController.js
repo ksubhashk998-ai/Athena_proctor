@@ -300,24 +300,12 @@ const getLiveStudents = async (req, res) => {
   try {
     const { search, riskLevel, status, department } = req.query;
 
-    // Heartbeat liveness timeout: students with no activity for > 90 seconds are Offline
-    const activeThreshold = new Date(Date.now() - 90 * 1000);
-
-    // Auto-mark stale "Online"/"Active" sessions as "Offline"
-    await LiveSession.updateMany(
-      {
-        status: { $in: ['Online', 'Active', 'Warning', 'in-progress'] },
-        $or: [
-          { lastActive: { $lt: activeThreshold } },
-          { lastActive: { $exists: false } }
-        ]
-      },
-      { $set: { status: 'Offline' } }
-    );
-
-    const query = {
-      status: status || { $in: ['Online', 'Active', 'Warning', 'in-progress'] }
-    };
+    const query = {};
+    if (status) {
+      query.status = status;
+    } else {
+      query.status = { $nin: ['Finished', 'Completed', 'Terminated'] };
+    }
     if (riskLevel) query.riskLevel = riskLevel;
     if (department) query.department = department;
     if (search) {
@@ -329,7 +317,7 @@ const getLiveStudents = async (req, res) => {
       ];
     }
 
-    let sessions = await LiveSession.find(query).sort({ updatedAt: -1, lastActive: -1 });
+    let sessions = await LiveSession.find(query).sort({ updatedAt: -1, lastActive: -1, createdAt: -1 });
 
     const liveStudents = sessions.map(s => ({
       sessionId: s.sessionId || s._id.toString(),

@@ -471,7 +471,6 @@ function AthenaExamDashboard() {
 
   // Periodic 2-Second Live Heartbeat & Frame Sync for Admin Oversight
   useEffect(() => {
-    if (!isExamUnlocked) return;
 
     const heartbeatInterval = setInterval(() => {
       let webcamBase64 = null;

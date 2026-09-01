@@ -98,8 +98,16 @@ function WebcamFeed({ isProctoringActive, onDetectionUpdate, onViolationTriggere
   };
 
   // ── 4. Frame Detection Loop (every 300ms) ────────────────────
+  const lastSocketStreamTimeRef = useRef(0);
+  const streamCanvasRef = useRef(null);
+
   useEffect(() => {
-    if (!isProctoringActive) return;
+    if (!streamCanvasRef.current) {
+      const c = document.createElement('canvas');
+      c.width = 320;
+      c.height = 240;
+      streamCanvasRef.current = c;
+    }
 
     const intervalId = setInterval(async () => {
       const video = videoRef.current;
@@ -112,7 +120,7 @@ function WebcamFeed({ isProctoringActive, onDetectionUpdate, onViolationTriggere
       lastFrameTimeRef.current = now;
       if (delta > 0) {
         const calculatedFps = Math.round(1000 / delta);
-        setFps(Math.min(60, Math.max(15, calculatedFps)));
+        setFps(prev => Math.abs(prev - calculatedFps) > 3 ? Math.min(60, Math.max(15, calculatedFps)) : prev);
       }
 
       const studentInfo = {
@@ -126,10 +134,13 @@ function WebcamFeed({ isProctoringActive, onDetectionUpdate, onViolationTriggere
       const t = await proctoringPipeline.processFrame(video, canvas, studentInfo);
 
       if (t) {
-        setPersonCount(t.personCount || 0);
+        const newCount = t.personCount || 0;
+        setPersonCount(prev => prev !== newCount ? newCount : prev);
         if (t.faceConfidence) setFaceConfidence(t.faceConfidence);
-        setIsFaceCentered(t.isFaceCentered || false);
-        setFaceGuideMsg(t.faceGuideMessage || (t.isFaceCentered ? '✓ Face Centered' : 'Center Your Face'));
+        const newCentered = t.isFaceCentered || false;
+        setIsFaceCentered(prev => prev !== newCentered ? newCentered : prev);
+        const newGuide = t.faceGuideMessage || (newCentered ? '✓ Face Centered' : 'Center Your Face');
+        setFaceGuideMsg(prev => prev !== newGuide ? newGuide : prev);
       }
 
       // Violations
@@ -168,44 +179,46 @@ function WebcamFeed({ isProctoringActive, onDetectionUpdate, onViolationTriggere
         });
       }
 
-      // Stream Real-Time High-Definition Webcam Frame & Telemetry to Admin Monitor via Socket.IO
-      if (canvas && video && video.readyState === 4) {
+      // Stream Real-Time Webcam Frame & Telemetry to Admin Monitor via Socket.IO (Throttled to ~1.2s to maintain maximum browser speed)
+      if (now - lastSocketStreamTimeRef.current >= 1200 && video && video.readyState >= 2) {
+        lastSocketStreamTimeRef.current = now;
         try {
-          if (canvas.width !== (video.videoWidth || 640) && video.videoWidth > 0) {
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-          }
-          const frameImg = canvas.toDataURL('image/jpeg', 0.85);
-          const email = activeStudent?.email || 'student@university.edu';
-          const studentId = activeStudent?.studentId || `STU_${email.replace(/[^a-z0-9]/g, '_')}`;
+          const sCanvas = streamCanvasRef.current;
+          if (sCanvas) {
+            const sCtx = sCanvas.getContext('2d');
+            sCtx.drawImage(video, 0, 0, 320, 240);
+            const frameImg = sCanvas.toDataURL('image/jpeg', 0.5);
+            const email = activeStudent?.email || 'student@university.edu';
+            const studentId = activeStudent?.studentId || `STU_${email.replace(/[^a-z0-9]/g, '_')}`;
 
-          const socket = getSocket();
-          if (socket) {
-            socket.emit('video-stream', {
-              studentId,
-              studentName,
-              email,
-              image: frameImg,
-              timestamp: Date.now()
-            });
+            const socket = getSocket();
+            if (socket) {
+              socket.emit('video-stream', {
+                studentId,
+                studentName,
+                email,
+                image: frameImg,
+                timestamp: now
+              });
 
-            socket.emit('telemetry-update', {
-              studentId,
-              studentName: isVerified ? studentName : 'Unknown Person Detected',
-              email,
-              usn: activeStudent?.usn || studentId,
-              department: activeStudent?.course || 'Computer Science',
-              examName: 'Computer Science Final Assessment',
-              status: isVerified ? 'Online' : 'Identity Failed',
-              identityStatus: isVerified ? 'Verified' : 'Identity Failed',
-              confidence,
-              faceDetected: !t.faceMissingTrigger,
-              multipleFaces: !!t.multiFaceTrigger,
-              mobilePhoneDetected: !!t.phoneTrigger,
-              headPose: t.headPoseLabel || 'Normal',
-              eyeGaze: t.gazeDirection || 'Center',
-              image: frameImg
-            });
+              socket.emit('telemetry-update', {
+                studentId,
+                studentName: isVerified ? studentName : 'Unknown Person Detected',
+                email,
+                usn: activeStudent?.usn || studentId,
+                department: activeStudent?.course || 'Computer Science',
+                examName: 'Computer Science Final Assessment',
+                status: isVerified ? 'Online' : 'Identity Failed',
+                identityStatus: isVerified ? 'Verified' : 'Identity Failed',
+                confidence,
+                faceDetected: !t.faceMissingTrigger,
+                multipleFaces: !!t.multiFaceTrigger,
+                mobilePhoneDetected: !!t.phoneTrigger,
+                headPose: t.headPoseLabel || 'Normal',
+                eyeGaze: t.gazeDirection || 'Center',
+                image: frameImg
+              });
+            }
           }
         } catch (e) {}
       }

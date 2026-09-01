@@ -2,6 +2,7 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const Admin = require('../models/Admin');
 const LiveSession = require('../models/LiveSession');
+const User = require('../models/User');
 const ExamReport = require('../models/ExamReport');
 const Violation = require('../models/Violation');
 const Alert = require('../models/Alert');
@@ -300,59 +301,160 @@ const getLiveStudents = async (req, res) => {
   try {
     const { search, riskLevel, status, department } = req.query;
 
-    const query = {};
-    if (status) {
-      query.status = status;
-    } else {
-      query.status = { $nin: ['Finished', 'Completed', 'Terminated'] };
-    }
-    if (riskLevel) query.riskLevel = riskLevel;
-    if (department) query.department = department;
+    const [registeredUsers, activeSessions] = await Promise.all([
+      User.find({}, '-password -faceEmbeddings').sort({ createdAt: -1 }).lean().catch(() => []),
+      LiveSession.find({}).sort({ updatedAt: -1, lastActive: -1 }).lean().catch(() => [])
+    ]);
+
+    const activeThreshold = new Date(Date.now() - 5 * 60 * 1000); // 5 minutes grace period
+    const matchedSessionIds = new Set();
+
+    const mergedStudents = (registeredUsers || []).map(user => {
+      const studentId = 'STU_' + (user.email ? user.email.replace(/[^a-z0-9]/gi, '_') : user._id.toString());
+      const userUsn = user.usn || studentId;
+
+      // Find matching session by studentId, usn, or email
+      const session = (activeSessions || []).find(s =>
+        (s.studentId && s.studentId === studentId) ||
+        (s.email && user.email && s.email.toLowerCase() === user.email.toLowerCase()) ||
+        (s.usn && userUsn && s.usn === userUsn)
+      );
+
+      if (session) {
+        matchedSessionIds.add(session.sessionId || session._id.toString());
+        const isRecent = session.lastActive && new Date(session.lastActive) > activeThreshold;
+        const isOnline = ['Online', 'Active', 'Warning', 'in-progress'].includes(session.status) || isRecent;
+
+        return {
+          sessionId: session.sessionId || session._id.toString(),
+          studentId: session.studentId || studentId,
+          studentName: user.name || session.studentName || 'Student',
+          usn: userUsn,
+          email: user.email,
+          department: session.department || 'Computer Science & Engineering',
+          examName: session.examName || 'Computer Science Final Assessment',
+          status: session.status === 'Terminated' ? 'Terminated' : (isOnline ? (session.status || 'Online') : 'Offline'),
+          verificationStatus: session.verificationStatus || (user.faceEnrolled ? 'Verified' : 'Pending'),
+          faceMatchConfidence: session.faceMatchConfidence || (user.faceEnrolled ? 98 : 0),
+          faceDetected: session.faceDetected !== undefined ? session.faceDetected : isOnline,
+          multipleFaces: session.multipleFaces || false,
+          mobilePhoneDetected: session.mobilePhoneDetected || false,
+          fullScreenStatus: session.fullScreenStatus || (isOnline ? 'Active' : 'N/A'),
+          headPose: session.headPose || (isOnline ? 'Looking Center' : 'N/A'),
+          eyeGaze: session.eyeGaze || (isOnline ? 'Looking Center' : 'N/A'),
+          tabSwitchingCount: session.tabSwitchingCount || 0,
+          copyPasteAttempts: session.copyPasteAttempts || 0,
+          warningsCount: session.warningsCount || 0,
+          riskLevel: session.riskLevel || (session.status === 'Terminated' ? 'High Risk (50+)' : (session.status === 'Warning' ? 'Medium (20-50)' : 'Safe (0-20)')),
+          riskScore: session.riskScore || 5,
+          startTime: session.startTime || session.createdAt || user.createdAt,
+          remainingTime: session.remainingTime || '03:00:00',
+          image: session.lastWebcamFrame || null,
+          micStatus: session.micStatus || (isOnline ? 'Active' : 'N/A'),
+          noiseLevel: session.noiseLevel || (isOnline ? '24 dB SPL' : 'N/A'),
+          audioConfidence: session.audioConfidence || (isOnline ? '98% Confidence' : 'N/A'),
+          lastSeen: session.lastActive || session.updatedAt || user.updatedAt
+        };
+      }
+
+      // Offline Registered Student
+      return {
+        sessionId: `SESS_${studentId}`,
+        studentId: studentId,
+        studentName: user.name || 'Student',
+        usn: userUsn,
+        email: user.email,
+        department: 'Computer Science & Engineering',
+        examName: 'Computer Science Final Assessment',
+        status: 'Offline',
+        verificationStatus: user.faceEnrolled ? 'Verified' : 'Pending Enrollment',
+        faceMatchConfidence: user.faceEnrolled ? 98 : 0,
+        faceDetected: false,
+        multipleFaces: false,
+        mobilePhoneDetected: false,
+        fullScreenStatus: 'N/A',
+        headPose: 'N/A',
+        eyeGaze: 'N/A',
+        tabSwitchingCount: 0,
+        copyPasteAttempts: 0,
+        warningsCount: 0,
+        riskLevel: 'Safe (0-20)',
+        riskScore: 0,
+        startTime: 'N/A',
+        remainingTime: 'N/A',
+        image: null,
+        micStatus: 'N/A',
+        noiseLevel: 'N/A',
+        audioConfidence: 'N/A',
+        lastSeen: user.updatedAt || user.createdAt
+      };
+    });
+
+    // Also include any active live sessions that might not have a matching User record
+    (activeSessions || []).forEach(session => {
+      const sessKey = session.sessionId || session._id.toString();
+      if (!matchedSessionIds.has(sessKey)) {
+        mergedStudents.push({
+          sessionId: sessKey,
+          studentId: session.studentId || `STU_${session.email ? session.email.replace(/[^a-z0-9]/gi, '_') : '1001'}`,
+          studentName: session.studentName || 'Student',
+          usn: session.usn || session.studentId || 'STU_USER',
+          email: session.email || 'student@university.edu',
+          department: session.department || 'Computer Science & Engineering',
+          examName: session.examName || 'Computer Science Final Assessment',
+          status: session.status || 'Online',
+          verificationStatus: session.verificationStatus || 'Verified',
+          faceMatchConfidence: session.faceMatchConfidence || 95,
+          faceDetected: session.faceDetected !== undefined ? session.faceDetected : true,
+          multipleFaces: session.multipleFaces || false,
+          mobilePhoneDetected: session.mobilePhoneDetected || false,
+          fullScreenStatus: session.fullScreenStatus || 'Active',
+          headPose: session.headPose || 'Looking Center',
+          eyeGaze: session.eyeGaze || 'Looking Center',
+          tabSwitchingCount: session.tabSwitchingCount || 0,
+          copyPasteAttempts: session.copyPasteAttempts || 0,
+          warningsCount: session.warningsCount || 0,
+          riskLevel: session.riskLevel || 'Safe (0-20)',
+          riskScore: session.riskScore || 5,
+          startTime: session.startTime || session.createdAt,
+          remainingTime: session.remainingTime || '03:00:00',
+          image: session.lastWebcamFrame || null,
+          micStatus: session.micStatus || 'Active',
+          noiseLevel: session.noiseLevel || '24 dB SPL',
+          audioConfidence: session.audioConfidence || '98% Confidence',
+          lastSeen: session.lastActive || session.updatedAt
+        });
+      }
+    });
+
+    let results = mergedStudents;
     if (search) {
-      query.$or = [
-        { studentName: { $regex: search, $options: 'i' } },
-        { usn: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } },
-        { examName: { $regex: search, $options: 'i' } }
-      ];
+      const q = search.toLowerCase();
+      results = results.filter(s =>
+        (s.studentName && s.studentName.toLowerCase().includes(q)) ||
+        (s.usn && s.usn.toLowerCase().includes(q)) ||
+        (s.email && s.email.toLowerCase().includes(q)) ||
+        (s.examName && s.examName.toLowerCase().includes(q))
+      );
     }
 
-    let sessions = await LiveSession.find(query).sort({ updatedAt: -1, lastActive: -1, createdAt: -1 });
+    if (riskLevel && riskLevel !== 'ALL') {
+      const r = riskLevel.toLowerCase();
+      results = results.filter(s => s.riskLevel && s.riskLevel.toLowerCase().includes(r));
+    }
 
-    const liveStudents = sessions.map(s => ({
-      sessionId: s.sessionId || s._id.toString(),
-      studentId: s.studentId,
-      studentName: s.studentName || s.fullName || 'Student',
-      usn: s.usn || s.studentId || 'STU_USER',
-      email: s.email,
-      department: s.department || 'General Science',
-      examName: s.examName || 'Computer Science Final Assessment',
-      status: s.status || 'Online',
-      verificationStatus: s.verificationStatus || 'Verified',
-      faceMatchConfidence: s.faceMatchConfidence || 95,
-      faceDetected: s.faceDetected !== undefined ? s.faceDetected : true,
-      multipleFaces: s.multipleFaces || false,
-      mobilePhoneDetected: s.mobilePhoneDetected || false,
-      fullScreenStatus: s.fullScreenStatus || 'Active',
-      headPose: s.headPose || 'Looking Center',
-      eyeGaze: s.eyeGaze || 'Looking Center',
-      tabSwitchingCount: s.tabSwitchingCount || 0,
-      copyPasteAttempts: s.copyPasteAttempts || 0,
-      warningsCount: s.warningsCount || 0,
-      riskLevel: s.riskLevel || 'Safe (0-20)',
-      riskScore: s.riskScore || 5,
-      startTime: s.startTime || s.createdAt || new Date().toISOString(),
-      remainingTime: s.remainingTime || '03:00:00',
-      image: s.lastWebcamFrame || null,
-      micStatus: s.micStatus || 'Active',
-      noiseLevel: s.noiseLevel || '24 dB SPL',
-      audioConfidence: s.audioConfidence || '98% Confidence'
-    }));
+    if (department) {
+      results = results.filter(s => s.department && s.department.toLowerCase().includes(department.toLowerCase()));
+    }
+
+    if (status) {
+      results = results.filter(s => s.status && s.status.toLowerCase() === status.toLowerCase());
+    }
 
     res.json({
       success: true,
-      count: liveStudents.length,
-      students: liveStudents
+      count: results.length,
+      students: results
     });
   } catch (error) {
     console.error('Error in getLiveStudents:', error);

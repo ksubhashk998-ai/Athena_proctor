@@ -70,7 +70,21 @@ export default function AdminMonitor() {
       ]);
 
       if (studentsRes?.data?.success) {
-        setStudents(studentsRes.data.students || []);
+        setStudents(prev => {
+          const incoming = studentsRes.data.students || [];
+          if (prev.length === 0) return incoming;
+          return incoming.map(inc => {
+            const existing = prev.find(p => p.studentId === inc.studentId || p.usn === inc.usn || (inc.email && p.email === inc.email));
+            if (!existing) return inc;
+            return {
+              ...inc,
+              image: inc.image || existing.image || null,
+              status: (existing.status === 'Online' && inc.status === 'Offline' && existing.image) ? 'Online' : inc.status,
+              headPose: inc.headPose && inc.headPose !== 'N/A' ? inc.headPose : (existing.headPose || inc.headPose),
+              eyeGaze: inc.eyeGaze && inc.eyeGaze !== 'N/A' ? inc.eyeGaze : (existing.eyeGaze || inc.eyeGaze)
+            };
+          });
+        });
       }
 
       if (analyticsRes?.data?.success && analyticsRes.data.metrics) {
@@ -409,8 +423,9 @@ export default function AdminMonitor() {
   };
 
   const filteredStudents = students.filter((s) => {
-    const statusStr = String(s.status || 'Online').toLowerCase();
-    const isOnline = !['finished', 'completed'].includes(statusStr);
+    const statusStr = String(s.status || 'Offline').toLowerCase();
+    const isTerminated = statusStr === 'terminated';
+    const isWarning = statusStr === 'warning';
 
     const matchesSearch =
       !searchTerm.trim() ||
@@ -421,11 +436,11 @@ export default function AdminMonitor() {
 
     const matchesRisk =
       riskFilter === 'ALL' ||
-      (riskFilter === 'SAFE' && (s.riskLevel?.toLowerCase().includes('safe') || s.riskLevel?.toLowerCase().includes('low') || s.riskLevel?.toLowerCase().includes('normal'))) ||
-      (riskFilter === 'MEDIUM' && (s.riskLevel?.toLowerCase().includes('medium') || s.riskLevel?.toLowerCase().includes('suspicious') || s.riskLevel?.toLowerCase().includes('warning') || statusStr === 'warning')) ||
-      (riskFilter === 'HIGH' && (s.riskLevel?.toLowerCase().includes('high') || statusStr === 'terminated'));
+      (riskFilter === 'SAFE' && (s.riskLevel?.toLowerCase().includes('safe') || s.riskLevel?.toLowerCase().includes('low') || s.riskLevel?.toLowerCase().includes('normal') || statusStr === 'offline')) ||
+      (riskFilter === 'MEDIUM' && (s.riskLevel?.toLowerCase().includes('medium') || s.riskLevel?.toLowerCase().includes('suspicious') || isWarning)) ||
+      (riskFilter === 'HIGH' && (s.riskLevel?.toLowerCase().includes('high') || isTerminated));
 
-    return isOnline && matchesSearch && matchesRisk;
+    return matchesSearch && matchesRisk;
   });
 
   return (
@@ -828,10 +843,14 @@ export default function AdminMonitor() {
             {/* Live Student Cards Grid / Empty State */}
             {filteredStudents.length === 0 ? (
               <div style={styles.emptyStateContainer}>
-                <div style={styles.emptyStateIcon}>📡</div>
-                <h3 style={styles.emptyStateTitle}>No Students Currently Online</h3>
+                <div style={styles.emptyStateIcon}>👥</div>
+                <h3 style={styles.emptyStateTitle}>
+                  {students.length === 0 ? 'No Registered Students Found' : 'No Students Matching Filter'}
+                </h3>
                 <p style={styles.emptyStateSubtitle}>
-                  There are currently no students logged into an active exam. Live webcam feeds and AI proctoring telemetry cards will automatically appear here in real-time as examinees log in and begin their test session.
+                  {students.length === 0
+                    ? 'There are currently no registered student accounts in the database.'
+                    : 'Try clearing your search or risk filter to view all examinees.'}
                 </p>
                 <button onClick={fetchData} style={styles.refreshBtn}>
                   🔄 Refresh Status
@@ -844,14 +863,17 @@ export default function AdminMonitor() {
                 const isWarning = s.status === 'Warning';
 
                 const riskText = isTerminated ? 'High Risk (50+)' : (isWarning ? 'Medium (20-50)' : (s.riskLevel || 'Safe (0-20)'));
-                const riskColor = isTerminated ? '#ef4444' : (isWarning ? '#f59e0b' : '#10b981');
+                const riskColor = isTerminated ? '#ef4444' : (isWarning ? '#f59e0b' : (s.status === 'Offline' ? '#94a3b8' : '#10b981'));
 
                 return (
                   <div key={s.sessionId || s.studentId || idx} style={styles.studentCard}>
                     {/* Card Header: Avatar + Student Name + USN + Risk Badge */}
                     <div style={styles.cardHeader}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                        <div style={styles.avatarCircle}>
+                        <div style={{
+                          ...styles.avatarCircle,
+                          backgroundColor: s.status === 'Offline' ? '#334155' : '#4f46e5'
+                        }}>
                           {s.studentName ? s.studentName.charAt(0).toUpperCase() : 'S'}
                         </div>
                         <div>
@@ -877,19 +899,28 @@ export default function AdminMonitor() {
                         gap: '6px'
                       }}>
                         <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: riskColor }}></div>
-                        <span>{riskText}</span>
+                        <span>{s.status === 'Offline' ? 'Registered' : riskText}</span>
                       </div>
                     </div>
 
                     {/* Live Video Box */}
                     <div style={styles.videoBox}>
-                      {s.image ? (
-                        <img src={s.image} alt="Live Stream" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                      {s.image && (s.status === 'Online' || s.status === 'Warning' || s.status === 'in-progress' || s.status === 'Active') ? (
+                        <img
+                          src={s.image}
+                          alt={`${s.studentName || 'Student'} Live Stream`}
+                          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                        />
                       ) : (
-                        <div style={{ textAlign: 'center', color: '#64748b' }}>
-                          <div style={{ fontSize: '1.6rem', marginBottom: '4px' }}>📹</div>
-                          <div style={{ fontSize: '0.8rem', fontWeight: 700, color: '#94a3b8' }}>
-                            Webcam Standby
+                        <div style={{ textAlign: 'center', color: '#64748b', padding: '16px' }}>
+                          <div style={{ fontSize: '1.8rem', marginBottom: '6px' }}>
+                            {s.status === 'Offline' ? '⚫' : '📹'}
+                          </div>
+                          <div style={{ fontSize: '0.85rem', fontWeight: 800, color: s.status === 'Offline' ? '#94a3b8' : '#ffffff' }}>
+                            {s.status === 'Offline' ? 'Candidate Offline' : 'Webcam Standby'}
+                          </div>
+                          <div style={{ fontSize: '0.72rem', color: '#64748b', marginTop: '4px' }}>
+                            {s.status === 'Offline' ? 'Camera unavailable • Student not in exam' : 'Awaiting live camera video feed'}
                           </div>
                         </div>
                       )}
@@ -897,28 +928,30 @@ export default function AdminMonitor() {
                       {/* Online Live Badge Overlay */}
                       <div style={{
                         ...styles.onlineBadge,
-                        backgroundColor: s.status === 'Offline' ? 'rgba(239, 68, 68, 0.85)' : (isTerminated ? 'rgba(239, 68, 68, 0.85)' : (isWarning ? 'rgba(245, 158, 11, 0.85)' : 'rgba(16, 185, 129, 0.85)'))
+                        backgroundColor: s.status === 'Offline' ? 'rgba(71, 85, 105, 0.85)' : (isTerminated ? 'rgba(239, 68, 68, 0.85)' : (isWarning ? 'rgba(245, 158, 11, 0.85)' : 'rgba(16, 185, 129, 0.85)'))
                       }}>
                         <div style={{
                           ...styles.pulsingDot,
-                          backgroundColor: s.status === 'Offline' ? '#ef4444' : (isTerminated ? '#ef4444' : (isWarning ? '#f59e0b' : '#34d399'))
+                          backgroundColor: s.status === 'Offline' ? '#94a3b8' : (isTerminated ? '#ef4444' : (isWarning ? '#f59e0b' : '#34d399'))
                         }}></div>
                         <span>
                           {s.status === 'Offline'
-                            ? '🔴 OFFLINE'
+                            ? '⚫ OFFLINE'
                             : (isTerminated
                                 ? '🔴 TERMINATED'
-                                : (isWarning ? '⚠️ WARNING' : '🟢 LIVE'))}
+                                : (isWarning ? '⚠️ WARNING' : '🟢 ONLINE'))}
                         </span>
                       </div>
 
                       {/* Watch Stream Button Overlay */}
-                      <button
-                        onClick={() => setWatchingStudent(s)}
-                        style={styles.watchStreamBtn}
-                      >
-                        🎥 Watch Stream
-                      </button>
+                      {s.status !== 'Offline' && (
+                        <button
+                          onClick={() => setWatchingStudent(s)}
+                          style={styles.watchStreamBtn}
+                        >
+                          🎥 Watch Stream
+                        </button>
+                      )}
                     </div>
 
                     {/* Exam Name & Start/Remaining Times */}

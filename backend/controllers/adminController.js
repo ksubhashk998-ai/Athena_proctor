@@ -324,6 +324,7 @@ const getLiveStudents = async (req, res) => {
         matchedSessionIds.add(session.sessionId || session._id.toString());
         const isRecent = session.lastActive && new Date(session.lastActive) > activeThreshold;
         const isOnline = ['Online', 'Active', 'Warning', 'in-progress'].includes(session.status) || isRecent;
+        const computedStatus = (session.status === 'Terminated' && !isRecent) ? 'Terminated' : (isOnline ? (session.status === 'Terminated' ? 'Online' : (session.status || 'Online')) : 'Offline');
 
         return {
           sessionId: session.sessionId || session._id.toString(),
@@ -333,26 +334,26 @@ const getLiveStudents = async (req, res) => {
           email: user.email,
           department: session.department || 'Computer Science & Engineering',
           examName: session.examName || 'Computer Science Final Assessment',
-          status: session.status === 'Terminated' ? 'Terminated' : (isOnline ? (session.status || 'Online') : 'Offline'),
+          status: computedStatus,
           verificationStatus: session.verificationStatus || (user.faceEnrolled ? 'Verified' : 'Pending'),
           faceMatchConfidence: session.faceMatchConfidence || (user.faceEnrolled ? 98 : 0),
-          faceDetected: session.faceDetected !== undefined ? session.faceDetected : isOnline,
+          faceDetected: session.faceDetected !== undefined ? session.faceDetected : (computedStatus !== 'Offline'),
           multipleFaces: session.multipleFaces || false,
           mobilePhoneDetected: session.mobilePhoneDetected || false,
-          fullScreenStatus: session.fullScreenStatus || (isOnline ? 'Active' : 'N/A'),
-          headPose: session.headPose || (isOnline ? 'Looking Center' : 'N/A'),
-          eyeGaze: session.eyeGaze || (isOnline ? 'Looking Center' : 'N/A'),
+          fullScreenStatus: session.fullScreenStatus || (computedStatus !== 'Offline' ? 'Active' : 'N/A'),
+          headPose: session.headPose || (computedStatus !== 'Offline' ? 'Looking Center' : 'N/A'),
+          eyeGaze: session.eyeGaze || (computedStatus !== 'Offline' ? 'Looking Center' : 'N/A'),
           tabSwitchingCount: session.tabSwitchingCount || 0,
           copyPasteAttempts: session.copyPasteAttempts || 0,
           warningsCount: session.warningsCount || 0,
-          riskLevel: session.riskLevel || (session.status === 'Terminated' ? 'High Risk (50+)' : (session.status === 'Warning' ? 'Medium (20-50)' : 'Safe (0-20)')),
+          riskLevel: computedStatus === 'Terminated' ? 'High Risk (50+)' : (session.riskLevel || (session.status === 'Warning' ? 'Medium (20-50)' : 'Safe (0-20)')),
           riskScore: session.riskScore || 5,
           startTime: session.startTime || session.createdAt || user.createdAt,
           remainingTime: session.remainingTime || '03:00:00',
           image: session.lastWebcamFrame || null,
-          micStatus: session.micStatus || (isOnline ? 'Active' : 'N/A'),
-          noiseLevel: session.noiseLevel || (isOnline ? '24 dB SPL' : 'N/A'),
-          audioConfidence: session.audioConfidence || (isOnline ? '98% Confidence' : 'N/A'),
+          micStatus: session.micStatus || (computedStatus !== 'Offline' ? 'Active' : 'N/A'),
+          noiseLevel: session.noiseLevel || (computedStatus !== 'Offline' ? '24 dB SPL' : 'N/A'),
+          audioConfidence: session.audioConfidence || (computedStatus !== 'Offline' ? '98% Confidence' : 'N/A'),
           lastSeen: session.lastActive || session.updatedAt || user.updatedAt
         };
       }

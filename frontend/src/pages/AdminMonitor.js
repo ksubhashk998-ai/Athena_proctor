@@ -124,8 +124,8 @@ export default function AdminMonitor() {
 
   const lastAlertTimestampRef = React.useRef({});
 
-  // Proctored Violation Notification Audio Chime generator using Web Audio API
-  const playViolationNotificationSound = () => {
+  // Mobile Notification Sound Generator (Authentic Modern Smartphone Tri-Tone Chime)
+  const playMobileNotificationSound = () => {
     try {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
       if (!AudioCtx) return;
@@ -134,43 +134,54 @@ export default function AdminMonitor() {
         ctx.resume();
       }
 
-      const now = ctx.currentTime;
-      
-      // High-Tech 2-Tone Proctor Alert Chime (880Hz -> 1174Hz & 659Hz -> 880Hz)
-      const osc1 = ctx.createOscillator();
-      const gain1 = ctx.createGain();
+      const startTime = ctx.currentTime;
 
-      osc1.type = 'sine';
-      osc1.frequency.setValueAtTime(880, now);
-      osc1.frequency.exponentialRampToValueAtTime(1174.66, now + 0.12);
+      // Authentic mobile chime triad (C6 -> E6 -> G6)
+      const notes = [
+        { freq: 1046.50, start: 0, duration: 0.12, gain: 0.35 },    // C6
+        { freq: 1318.51, start: 0.08, duration: 0.14, gain: 0.38 }, // E6
+        { freq: 1567.98, start: 0.16, duration: 0.32, gain: 0.42 }  // G6
+      ];
 
-      gain1.gain.setValueAtTime(0.35, now);
-      gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+      notes.forEach(({ freq, start, duration, gain }) => {
+        const noteStart = startTime + start;
 
-      osc1.connect(gain1);
-      gain1.connect(ctx.destination);
+        // Primary bell tone
+        const osc = ctx.createOscillator();
+        const gainNode = ctx.createGain();
 
-      osc1.start(now);
-      osc1.stop(now + 0.35);
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(freq, noteStart);
 
-      const osc2 = ctx.createOscillator();
-      const gain2 = ctx.createGain();
+        gainNode.gain.setValueAtTime(0.001, noteStart);
+        gainNode.gain.exponentialRampToValueAtTime(gain, noteStart + 0.015);
+        gainNode.gain.exponentialRampToValueAtTime(0.001, noteStart + duration);
 
-      osc2.type = 'triangle';
-      osc2.frequency.setValueAtTime(659.25, now + 0.1);
-      osc2.frequency.exponentialRampToValueAtTime(880, now + 0.25);
+        osc.connect(gainNode);
+        gainNode.connect(ctx.destination);
 
-      gain2.gain.setValueAtTime(0.001, now);
-      gain2.gain.setValueAtTime(0.28, now + 0.1);
-      gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+        osc.start(noteStart);
+        osc.stop(noteStart + duration);
 
-      osc2.connect(gain2);
-      gain2.connect(ctx.destination);
+        // Soft harmonic overtone for warm acoustic phone resonance
+        const harmonic = ctx.createOscillator();
+        const harmonicGain = ctx.createGain();
 
-      osc2.start(now + 0.1);
-      osc2.stop(now + 0.45);
+        harmonic.type = 'triangle';
+        harmonic.frequency.setValueAtTime(freq * 2, noteStart);
+
+        harmonicGain.gain.setValueAtTime(0.001, noteStart);
+        harmonicGain.gain.exponentialRampToValueAtTime(gain * 0.22, noteStart + 0.01);
+        harmonicGain.gain.exponentialRampToValueAtTime(0.001, noteStart + (duration * 0.65));
+
+        harmonic.connect(harmonicGain);
+        harmonicGain.connect(ctx.destination);
+
+        harmonic.start(noteStart);
+        harmonic.stop(noteStart + (duration * 0.65));
+      });
     } catch (e) {
-      console.warn('Proctor audio chime notification error:', e.message);
+      console.warn('Mobile notification audio chime error:', e.message);
     }
   };
 
@@ -190,8 +201,8 @@ export default function AdminMonitor() {
         }
         lastAlertTimestampRef.current[key] = now;
 
-        // Play violation alert chime
-        playViolationNotificationSound();
+        // Play authentic mobile notification sound
+        playMobileNotificationSound();
 
         setNotifications(prev => [notif, ...prev.slice(0, 49)]);
         setAdminToasts(prev => [notif, ...prev]);
@@ -206,7 +217,7 @@ export default function AdminMonitor() {
       });
       
       socket.on('multi-face-violation', (data) => {
-        playViolationNotificationSound();
+        playMobileNotificationSound();
         setViolations(prev => [{
           id: "VIO_" + Date.now(),
           studentName: data.studentName || data.studentId || 'Student',
@@ -242,7 +253,11 @@ export default function AdminMonitor() {
           const idx = prev.findIndex(s => s.studentId === data.studentId || s.usn === data.studentId || (data.usn && s.usn === data.usn) || (data.email && s.email === data.email));
           if (idx !== -1) {
             const updated = [...prev];
-            updated[idx] = { ...updated[idx], image: data.image };
+            updated[idx] = {
+              ...updated[idx],
+              image: data.image,
+              status: updated[idx].status === 'Offline' || updated[idx].status === 'Terminated' ? 'Online' : updated[idx].status
+            };
             return updated;
           }
           return prev;
@@ -283,19 +298,19 @@ export default function AdminMonitor() {
       });
 
       socket.on('violation', (data) => {
-        playViolationNotificationSound();
+        playMobileNotificationSound();
       });
 
       socket.on('violation-detected', (data) => {
-        playViolationNotificationSound();
+        playMobileNotificationSound();
       });
 
       socket.on('ai-alert', (data) => {
-        playViolationNotificationSound();
+        playMobileNotificationSound();
       });
 
       socket.on('tab-switch', (data) => {
-        playViolationNotificationSound();
+        playMobileNotificationSound();
       });
 
       socket.on('student-finished', (data) => {
@@ -975,7 +990,7 @@ export default function AdminMonitor() {
 
                     {/* Live Video Box */}
                     <div style={styles.videoBox}>
-                      {s.image && (s.status === 'Online' || s.status === 'Warning' || s.status === 'in-progress' || s.status === 'Active') ? (
+                      {s.image && s.status !== 'Offline' ? (
                         <img
                           src={s.image}
                           alt={`${s.studentName || 'Student'} Live Stream`}

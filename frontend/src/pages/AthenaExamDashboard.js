@@ -539,10 +539,7 @@ function AthenaExamDashboard() {
         body: JSON.stringify(payload)
       }).then(res => res.json()).then(data => {
         if (data?.session) {
-          if (data.session.status === 'Terminated' && !isExamTerminated) {
-            setIsExamTerminated(true);
-            setTerminationReason(data.session.terminationReason || 'Terminated by Admin Command Center');
-          } else if (data.session.status === 'Warning' && (data.session.warningsCount || 0) > (lastSeenWarningCountRef.current || 0)) {
+          if (data.session.status === 'Warning' && (data.session.warningsCount || 0) > (lastSeenWarningCountRef.current || 0)) {
             lastSeenWarningCountRef.current = data.session.warningsCount;
             setProctorWarning({
               open: true,

@@ -1089,9 +1089,11 @@ const upsertLiveSession = async (req, res) => {
     });
 
     if (session) {
-      // If session is already finished or terminated, do not revert to Online from generic heartbeat
-      if (['Finished', 'Completed', 'Terminated'].includes(session.status) && (!status || status === 'Online')) {
-        return res.json({ success: true, message: 'Session already completed', session });
+      if (status === 'Online' && ['Finished', 'Completed', 'Terminated'].includes(session.status)) {
+        session.status = 'Online';
+        session.terminationReason = null;
+        session.warningsCount = 0;
+        session.tabSwitchingCount = 0;
       }
     } else {
       session = new LiveSession({

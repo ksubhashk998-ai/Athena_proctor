@@ -191,7 +191,9 @@ class ProctoringPipeline {
 
   async _initCocoSsd() {
     try {
-      // COCO-SSD is already a dependency; tf is loaded by face-api.js
+      if (!window.tf && !window.cocoSsd) {
+        await this._loadScript('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js').catch(() => {});
+      }
       if (!window.cocoSsd) {
         await this._loadScript('https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@latest/dist/coco-ssd.min.js');
       }

@@ -11,6 +11,7 @@
 - **Camera Distance:** Allow verification from longer camera distances.
 
 ## Cheating Detection
+- **eye movement >10 sec**
 - **Multiple Faces Detection**
 - **Phone Detection**
 - **Tab Switching Detection**

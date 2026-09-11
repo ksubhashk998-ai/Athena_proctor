@@ -122,17 +122,86 @@ function AthenaExamDashboard() {
     setLogs(prev => [...prev.slice(-49), newEntry]); // Keep last 50 entries
   }, []);
 
-  // Trigger Violation Helper
-  const recordViolation = useCallback((message) => {
+  // Trigger Violation Helper & MongoDB Persistence
+  const recordViolation = useCallback((message, violationType = 'PROCTOR_ALERT', extra = {}) => {
     setViolationsCount(prev => prev + 1);
     addLog(message, 'danger');
+
+    try {
+      let activeUser = null;
+      try {
+        const stored = localStorage.getItem('user');
+        if (stored) activeUser = JSON.parse(stored);
+      } catch (e) {}
+      const regEmail = localStorage.getItem('registered_email') || '';
+      const email = activeUser?.email || regEmail || 'student@proctor.com';
+      const studentId = activeUser?.studentId || ('STU_' + email.replace(/[^a-z0-9]/gi, '_'));
+      const studentName = activeUser?.fullName || activeUser?.name || 'Student';
+      const usn = activeUser?.usn || studentId;
+
+      let screenshot = extra?.screenshot || extra?.screenshotBase64 || null;
+      if (!screenshot) {
+        try {
+          const video = document.querySelector('video');
+          if (video && (video.readyState >= 2 || !video.paused) && video.videoWidth > 0) {
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.min(video.videoWidth || 640, 640);
+            canvas.height = Math.min(video.videoHeight || 480, 480);
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            screenshot = canvas.toDataURL('image/jpeg', 0.85);
+          }
+        } catch (e) {}
+      }
+
+      const effectiveType = violationType !== 'PROCTOR_ALERT' ? violationType : (
+        message.includes('Phone') ? 'PHONE_DETECTED' : (
+          message.includes('Multiple') ? 'MULTIPLE_FACES' : (
+            message.includes('Face is not visible') || message.includes('Face Missing') || message.includes('No Face') ? 'FACE_MISSING' : (
+              message.includes('Tab') ? 'TAB_SWITCH' : (
+                message.includes('Looking') || message.includes('Head') ? 'LOOKING_AWAY' : (
+                  message.includes('Gaze') ? 'GAZE_DEVIATION' : (
+                    message.includes('Audio') || message.includes('Voice') ? 'AUDIO_ANOMALY' : (
+                      message.includes('TERMINAT') ? 'EXAM_TERMINATED' : 'SUSPICIOUS_BEHAVIOR'
+                    )
+                  )
+                )
+              )
+            )
+          )
+        )
+      );
+
+      const apiBase = getApiBaseUrl();
+      fetch(`${apiBase}/api/violations/log`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
+        },
+        body: JSON.stringify({
+          studentId,
+          studentName,
+          studentEmail: email,
+          usn,
+          examId: 'CS-401',
+          examName: 'Computer Science Final Assessment',
+          type: effectiveType,
+          description: message,
+          severity: extra?.severity || (message.includes('TERMINAT') ? 'critical' : (message.includes('WARNING') || message.includes('Multiple') || message.includes('Phone') ? 'high' : 'medium')),
+          confidence: extra?.confidence || 0.95,
+          screenshotBase64: screenshot,
+          metadata: extra
+        })
+      }).catch(err => console.warn('Violation log API notice:', err));
+    } catch (e) {}
   }, [addLog]);
 
   // Auto-Termination Helper Function (Requirement 7)
   const handleAutoTermination = useCallback(async (videoEl, studentId, fullName, email, reason) => {
     setIsExamTerminated(true);
     setTerminationReason(reason);
-    recordViolation(`🔴 AUTO-TERMINATION: ${reason}`);
+    recordViolation(`🔴 AUTO-TERMINATION: ${reason}`, 'EXAM_TERMINATED', { severity: 'critical' });
 
     let screenshotBase64 = null;
     if (videoEl) {
@@ -141,17 +210,21 @@ function AthenaExamDashboard() {
         canvas.width = videoEl.videoWidth || 640;
         canvas.height = videoEl.videoHeight || 480;
         canvas.getContext('2d').drawImage(videoEl, 0, 0);
-        screenshotBase64 = canvas.toDataURL('image/jpeg', 0.5);
+        screenshotBase64 = canvas.toDataURL('image/jpeg', 0.85);
       } catch (e) {}
     }
 
+    const apiBase = getApiBaseUrl();
+
     // 1. Send termination to Admin Backend REST API
     try {
-      await fetch('/api/admin/terminate-session', {
+      await fetch(`${apiBase}/api/admin/terminate-session`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           studentId,
+          studentName: fullName,
+          email,
           reason: reason || 'Exceeded maximum proctoring violation threshold',
           status: 'Terminated'
         })
@@ -160,7 +233,7 @@ function AthenaExamDashboard() {
 
     // 2. Save Incident to Database
     try {
-      await fetch('/api/incidents/log', {
+      await fetch(`${apiBase}/api/incidents/log`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -168,7 +241,7 @@ function AthenaExamDashboard() {
           fullName,
           email,
           screenshot: screenshotBase64,
-          reason: reason || 'Face Mismatch',
+          reason: reason || 'Face Mismatch / Auto-Terminated',
           confidence: 0,
           timestamp: new Date()
         })

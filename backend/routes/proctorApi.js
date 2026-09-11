@@ -907,11 +907,43 @@ router.post('/violations/log', authenticateToken, async (req, res) => {
             }).save().catch(() => {});
         }
 
-        // Update in-memory session violation count
+        // Update in-memory session violation count & MongoDB LiveSession
         if (activity.sessionId) {
             const session = activeSessions.get(activity.sessionId);
             if (session) session.violationCount++;
         }
+
+        try {
+            let liveSession = await LiveSession.findOne({
+                $or: [
+                    { studentId: activity.studentId },
+                    { email: activity.studentEmail },
+                    { sessionId: activity.sessionId }
+                ].filter(c => Object.values(c)[0])
+            });
+            if (liveSession) {
+                liveSession.suspiciousActivityCount = (liveSession.suspiciousActivityCount || 0) + 1;
+                const ut = (effectiveType || '').toUpperCase();
+                if (ut.includes('PHONE')) liveSession.mobilePhoneDetected = true;
+                if (ut.includes('MULTI')) liveSession.multipleFaces = true;
+                if (ut.includes('MISSING') || ut.includes('NO_FACE')) liveSession.faceDetected = false;
+                if (ut.includes('TAB')) liveSession.tabSwitchingCount = (liveSession.tabSwitchingCount || 0) + 1;
+                if (ut.includes('LOOK') || ut.includes('HEAD') || ut.includes('GAZE')) {
+                    liveSession.headPose = 'Looking Away';
+                    liveSession.eyeGaze = 'Away';
+                }
+                if (effectiveScreenshot) liveSession.lastWebcamFrame = effectiveScreenshot;
+                liveSession.lastActive = new Date();
+                liveSession.riskLevel = liveSession.suspiciousActivityCount >= 4 ? 'High' : (liveSession.suspiciousActivityCount >= 2 ? 'Medium' : 'Low');
+                await liveSession.save();
+
+                const io = req.app?.get('io');
+                if (io) {
+                    io.to('admin_room').emit('student-updated', liveSession);
+                    io.to('admin_room').emit('dashboard-updated', { studentId: liveSession.studentId });
+                }
+            }
+        } catch (sErr) {}
 
         // Broadcast via Socket.IO (Requirement 4 & 6)
         const io = req.app.get('io');

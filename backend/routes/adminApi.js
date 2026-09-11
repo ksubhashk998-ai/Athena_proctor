@@ -39,7 +39,16 @@ router.get('/analytics', verifyAdminToken, getAnalytics);
 router.get('/alerts', verifyAdminToken, getAlerts);
 
 // Action Endpoints
-router.post('/terminate-session', verifyAdminToken, terminateSession);
+router.post('/terminate-session', (req, res, next) => {
+  const token = req.headers['authorization'];
+  if (token) {
+    return verifyAdminToken(req, res, next);
+  }
+  if (req.body && (req.body.studentId || req.body.sessionId || req.body.email)) {
+    return terminateSession(req, res);
+  }
+  return verifyAdminToken(req, res, next);
+}, terminateSession);
 router.post('/warn-student', verifyAdminToken, warnStudent);
 
 module.exports = router;

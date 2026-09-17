@@ -1,7 +1,7 @@
-import React, { useRef, useState, useCallback } from 'react';
+import React, { useRef, useState, useCallback, useEffect } from 'react';
 import Webcam from 'react-webcam';
 import { getApiBaseUrl } from '../utils/config';
-
+import { loadFaceModels, getFaceApi } from '../utils/faceModelLoader';
 
 const TARGET_SAMPLES = 30;
 
@@ -22,6 +22,10 @@ export default function FaceEnrollment({ studentId, name, email, token, onEnroll
   const activeName = name || activeEmail.split('@')[0] || 'Student';
   const activeStudentId = studentId || ('STU_' + activeEmail.replace(/[^a-z0-9]/gi, '_'));
 
+  useEffect(() => {
+    loadFaceModels().catch((e) => console.warn('face-api init:', e.message));
+  }, []);
+
   const startEnrollment = useCallback(async () => {
     console.log("[ENROLL] Button clicked");
     if (status === 'capturing' || status === 'processing') return;
@@ -35,10 +39,18 @@ export default function FaceEnrollment({ studentId, name, email, token, onEnroll
     console.log("[ENROLL] Capture started");
     console.log("Enrollment target: 30");
     setStatus('capturing');
-    setStatusMsg('🚀 Capturing 30 InsightFace ArcFace Samples — Follow Pose Prompts!');
+    setStatusMsg('⏳ Initializing neural biometric models...');
+    try {
+      await loadFaceModels();
+    } catch (mErr) {
+      console.warn("Face model loader notice:", mErr);
+    }
+
+    setStatusMsg('🚀 Capturing 30 ArcFace Biometric Samples — Follow Pose Prompts!');
     setCollectedFrames([]);
 
     const frames = [];
+    const descriptors = [];
     let attempts = 0;
     const maxAttempts = 180;
 
@@ -53,13 +65,24 @@ export default function FaceEnrollment({ studentId, name, email, token, onEnroll
           const ctx = canvas.getContext('2d');
           ctx.drawImage(v, 0, 0, 640, 480);
           const b64 = canvas.toDataURL('image/jpeg', 0.85);
-
-          if (b64 && b64.length > 5000) {
+          if (b64 && b64.length > 500) {
             frames.push(b64);
             const count = frames.length;
             setCollectedFrames([...frames]);
             console.log(`[ENROLL] Captured frame ${count}/30`);
-            console.log(`Captured frame: ${count}/30`);
+
+            // Extract neural face descriptor from canvas snapshot
+            const api = getFaceApi();
+            if (api && api.detectSingleFace) {
+              try {
+                const det = await api.detectSingleFace(canvas, new api.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.25 }))
+                  .withFaceLandmarks()
+                  .withFaceDescriptor();
+                if (det && det.descriptor) {
+                  descriptors.push(Array.from(det.descriptor));
+                }
+              } catch (dErr) {}
+            }
           }
         } catch (e) {}
       }
@@ -73,7 +96,7 @@ export default function FaceEnrollment({ studentId, name, email, token, onEnroll
       const action = LIVENESS_ACTIONS[poseStep];
       setStatusMsg(`📸 Collecting face samples: ${sampleCount}/30 — ${action.label}: ${action.prompt}`);
 
-      await new Promise((r) => setTimeout(r, 120));
+      await new Promise((r) => setTimeout(r, 100));
     }
 
     if (frames.length < 20) {
@@ -82,16 +105,13 @@ export default function FaceEnrollment({ studentId, name, email, token, onEnroll
       return;
     }
 
-    console.log("[ENROLL] 30 frames collected");
-    console.log("[ENROLL] Frames being submitted: 30");
+    console.log("[ENROLL] 30 frames collected, descriptors:", descriptors.length);
     console.log("[ENROLL] Sending API request");
-    console.log(`Frames: ${frames.length}`);
-    console.log('Sending enrollment request...');
 
-    finishEnrollment(frames);
+    finishEnrollment(frames, descriptors);
   }, []);
 
-  const finishEnrollment = async (frames) => {
+  const finishEnrollment = async (frames, descriptors = []) => {
     if (frames.length < 20) {
       setStatus('error');
       setStatusMsg('❌ Not enough valid face samples. Please continue enrollment.');
@@ -99,12 +119,12 @@ export default function FaceEnrollment({ studentId, name, email, token, onEnroll
     }
 
     setStatus('processing');
-    setStatusMsg('⚙️ Processing InsightFace ArcFace 512-dim L2 Normalization in Backend...');
+    setStatusMsg('⚙️ Processing Biometric 512-dim Normalization in Backend...');
 
     try {
       const activeToken = token || localStorage.getItem('token') || 'temp_token';
 
-      console.log(`Frames: ${frames.length}`);
+      console.log(`Frames: ${frames.length}, Descriptors: ${descriptors.length}`);
       console.log('Sending enrollment request...');
 
       const response = await fetch(`${getApiBaseUrl()}/api/face/enroll`, {
@@ -118,6 +138,7 @@ export default function FaceEnrollment({ studentId, name, email, token, onEnroll
           studentId: activeStudentId,
           name: activeName,
           frames: frames,
+          descriptors: descriptors,
           reEnrollment: true
         })
       });

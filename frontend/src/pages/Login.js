@@ -7,8 +7,8 @@ import { detectPhone, showPhoneWarning } from "../utils/deviceDetection";
 import { captureFaceDescriptor, compareDescriptors } from "../services/faceVerificationService";
 import FaceEnrollment from "../components/FaceEnrollment";
 import OtpSixBoxInput from "../components/athena/OtpSixBoxInput";
-
 import { getApiBaseUrl } from "../utils/config";
+import { getFaceApi, loadFaceModels } from "../utils/faceModelLoader";
 
 // Student Authentication Page
 
@@ -414,7 +414,13 @@ function Login() {
       return;
     }
     setFaceVerifying(true);
-    setFaceStatusMsg("🔄 Initializing Biometric Face Verification...");
+    setFaceStatusMsg("🔄 Initializing Biometric Face Models...");
+    try {
+      await loadFaceModels();
+    } catch (mErr) {
+      console.warn("Face models loader notice:", mErr);
+    }
+    setFaceStatusMsg("🔄 Starting 30-frame Face Verification...");
 
     const TOTAL_LOGIN_FRAMES = 30;
     const FRAME_INTERVAL_MS = 60;
@@ -428,30 +434,43 @@ function Login() {
       }
 
       const activeStudent = tempStudent || { studentId: 'STU_' + Date.now(), name: 'Student', email: 'student@proctor.com' };
-      const activeToken = tempToken || "jwt_token_" + Date.now();
+      const activeToken = tempToken || localStorage.getItem('token') || 'temp_token';
       const apiBase = getApiBaseUrl();
 
-      // === PHASE 1: Capture 30 frames per PROJECT_RULES.md ===
+      // === PHASE 1: Capture 30 frames and neural face descriptors ===
       const capturedFrames = [];
+      const capturedDescriptors = [];
 
       for (let frameIndex = 0; frameIndex < TOTAL_LOGIN_FRAMES; frameIndex++) {
         const pct = Math.round(((frameIndex + 1) / TOTAL_LOGIN_FRAMES) * 100);
         setFaceStatusMsg(`Verifying Face... Frame ${frameIndex + 1}/${TOTAL_LOGIN_FRAMES} (${pct}%)`);
 
         let b64Frame = null;
+        let frameCanvas = null;
         try {
-          const canvas = document.createElement('canvas');
-          canvas.width = 640;
-          canvas.height = 480;
-          const ctx = canvas.getContext('2d');
+          frameCanvas = document.createElement('canvas');
+          frameCanvas.width = 640;
+          frameCanvas.height = 480;
+          const ctx = frameCanvas.getContext('2d');
           ctx.drawImage(video, 0, 0, 640, 480);
-          b64Frame = canvas.toDataURL('image/jpeg', 0.75);
+          b64Frame = frameCanvas.toDataURL('image/jpeg', 0.75);
         } catch (err) {
           console.warn("Frame capture error:", err);
         }
 
         if (b64Frame) {
           capturedFrames.push(b64Frame);
+          const api = getFaceApi();
+          if (api && api.detectSingleFace && frameCanvas) {
+            try {
+              const det = await api.detectSingleFace(frameCanvas, new api.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.25 }))
+                .withFaceLandmarks()
+                .withFaceDescriptor();
+              if (det && det.descriptor) {
+                capturedDescriptors.push(Array.from(det.descriptor));
+              }
+            } catch (dErr) {}
+          }
         }
 
         await new Promise(r => setTimeout(r, FRAME_INTERVAL_MS));
@@ -469,7 +488,8 @@ function Login() {
       const finalRes = await axios.post(`${apiBase}/api/face/verify`, {
         studentId: activeStudent.studentId,
         email: activeStudent.email,
-        frames: capturedFrames
+        frames: capturedFrames,
+        descriptors: capturedDescriptors
       }, {
         headers: { Authorization: `Bearer ${activeToken}` },
         timeout: 90000

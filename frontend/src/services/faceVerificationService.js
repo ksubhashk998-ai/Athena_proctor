@@ -1,4 +1,5 @@
 import { getApiBaseUrl } from '../utils/config';
+import { getFaceApi as getFaceModelApi } from '../utils/faceModelLoader';
 
 /**
  * Load face models (Clean session authentication - models bypass)
@@ -142,6 +143,7 @@ export async function verifyFaceAgainstBackend(videoElement, studentId, token, f
     // Capture 30 frames per PROJECT_RULES.md
     const FRAME_COUNT = 30;
     const frames = [];
+    const descriptors = [];
     const startTime = Date.now();
     const canvas = document.createElement('canvas');
     canvas.width = 640;
@@ -155,6 +157,19 @@ export async function verifyFaceAgainstBackend(videoElement, studentId, token, f
         try {
           ctx.drawImage(video, 0, 0, 640, 480);
           frames.push(canvas.toDataURL('image/jpeg', 0.75));
+
+          const api = getFaceModelApi();
+          if (api && api.detectSingleFace) {
+            try {
+              const det = await api.detectSingleFace(canvas, new api.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.25 }))
+                .withFaceLandmarks()
+                .withFaceDescriptor();
+              if (det && det.descriptor) {
+                descriptors.push(Array.from(det.descriptor));
+              }
+            } catch (dErr) {}
+          }
+
           if (onProgress) {
             const currentFrame = frames.length;
             const pct = Math.round((currentFrame / FRAME_COUNT) * 100);
@@ -179,7 +194,7 @@ export async function verifyFaceAgainstBackend(videoElement, studentId, token, f
       };
     }
 
-    console.log(`📤 Sending ${frames.length} frames for verification (studentId: ${studentId || 'STU_CURRENT'})...`);
+    console.log(`📤 Sending ${frames.length} frames (${descriptors.length} descriptors) for verification (studentId: ${studentId || 'STU_CURRENT'})...`);
 
     const response = await fetch(`${apiBase}/api/face/verify`, {
       method: 'POST',
@@ -190,7 +205,8 @@ export async function verifyFaceAgainstBackend(videoElement, studentId, token, f
       body: JSON.stringify({
         studentId: studentId || ('STU_' + (activeEmail || 'current').replace(/[^a-z0-9]/gi, '_')),
         email: activeEmail,
-        frames: frames
+        frames: frames,
+        descriptors: descriptors
       })
     });
 

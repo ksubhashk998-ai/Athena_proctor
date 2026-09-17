@@ -58,8 +58,8 @@ GOOD_QUALITY = 55.0
 MIN_VALID_EMBEDDINGS = 30
 MAX_CANDIDATE_FRAMES = 40
 MIN_VERIFICATION_FRAMES = 20
-SIMILARITY_THRESHOLD = 0.58
-FRAME_MATCH_THRESHOLD = 0.58
+SIMILARITY_THRESHOLD = 0.63
+FRAME_MATCH_THRESHOLD = 0.63
 TARGET_VERIFICATION_FRAMES = 30
 ENABLE_DIAGNOSTIC_MODE = True
 
@@ -679,19 +679,22 @@ def arcface_verify(request: ArcFaceVerifyRequest):
                 continue
 
             similarities = np.dot(enrolled_matrix, live_vector)
-            best_sim = float(np.max(similarities))
+            sorted_sims = np.sort(similarities)[::-1]
+            top3_sim = float(np.mean(sorted_sims[:3])) if len(sorted_sims) >= 3 else float(sorted_sims[0])
 
             if average_vector is not None:
                 sim_to_avg = float(np.dot(average_vector, live_vector))
-                best_sim = float(max(best_sim, sim_to_avg))
+                effective_sim = float(0.6 * sim_to_avg + 0.4 * top3_sim)
+            else:
+                effective_sim = top3_sim
 
-            best_sim_clamped = round(float(np.clip(best_sim, 0.0, 1.0)), 4)
-            frame_similarities.append(best_sim_clamped)
+            sim_clamped = round(float(np.clip(effective_sim, 0.0, 1.0)), 4)
+            frame_similarities.append(sim_clamped)
 
-            # Cosine similarity matching threshold for ArcFace (>= 0.58)
-            if best_sim_clamped >= FRAME_MATCH_THRESHOLD:
+            # Cosine similarity matching threshold for ArcFace (>= 0.63)
+            if sim_clamped >= FRAME_MATCH_THRESHOLD:
                 verified_count += 1
-            elif best_sim_clamped >= 0.45:
+            elif sim_clamped >= 0.50:
                 suspicious_count += 1
             else:
                 rejected_count += 1

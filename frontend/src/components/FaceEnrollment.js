@@ -66,22 +66,29 @@ export default function FaceEnrollment({ studentId, name, email, token, onEnroll
           ctx.drawImage(v, 0, 0, 640, 480);
           const b64 = canvas.toDataURL('image/jpeg', 0.85);
           if (b64 && b64.length > 500) {
-            frames.push(b64);
-            const count = frames.length;
-            setCollectedFrames([...frames]);
-            console.log(`[ENROLL] Captured frame ${count}/30`);
-
             // Extract neural face descriptor from canvas snapshot
             const api = getFaceApi();
+            let faceDescriptor = null;
             if (api && api.detectSingleFace) {
               try {
                 const det = await api.detectSingleFace(canvas, new api.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.25 }))
                   .withFaceLandmarks()
                   .withFaceDescriptor();
                 if (det && det.descriptor) {
-                  descriptors.push(Array.from(det.descriptor));
+                  faceDescriptor = Array.from(det.descriptor);
                 }
               } catch (dErr) {}
+            }
+
+            // Only accept frame if face model confirmed a valid face (or fallback when api is not yet loaded)
+            if (!api || !api.detectSingleFace || faceDescriptor) {
+              frames.push(b64);
+              if (faceDescriptor) {
+                descriptors.push(faceDescriptor);
+              }
+              const count = frames.length;
+              setCollectedFrames([...frames]);
+              console.log(`[ENROLL] Captured clean face frame ${count}/30 (Descriptors: ${descriptors.length})`);
             }
           }
         } catch (e) {}
@@ -146,7 +153,6 @@ export default function FaceEnrollment({ studentId, name, email, token, onEnroll
       const data = await response.json();
 
       if (response.ok && data.success) {
-        localStorage.setItem("faceVerified", "true");
         setStatus('success');
         setStatusMsg('✅ Enrollment successful — 30 valid face samples captured.');
         setTimeout(() => {

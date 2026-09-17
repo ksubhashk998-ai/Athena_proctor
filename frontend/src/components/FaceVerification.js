@@ -59,18 +59,6 @@ export default function FaceVerification({
     const video = webcamRef.current?.video || webcamRef.current;
     if (!video || video.paused || video.ended || video.readyState < 2) return;
 
-    // Requirement 3: Skip verification if already verified
-    const alreadyVerified = localStorage.getItem("faceVerified") === "true";
-    if (alreadyVerified) {
-      console.log("Face already verified");
-      console.log("Verification skipped");
-      setStatusMsg("✅ InsightFace ArcFace Verified! (Already Verified)");
-      const verifiedData = { verified: true, result: 'VERIFIED', bestSimilarity: 0.96, averageSimilarity: 0.96 };
-      if (onVerificationSuccess) onVerificationSuccess(verifiedData);
-      if (onVerified) onVerified(verifiedData);
-      return;
-    }
-
     if (!isBackgroundCheck) {
       setVerifying(true);
       setStatusMsg('🔄 Capturing 10 camera frames for InsightFace ArcFace verification...');

@@ -40,10 +40,10 @@ class FaceService {
                 }
                 return response.data;
             }
-            return { verified: true, match: true, confidence: 0.95, message: "Face verified" };
+            return { verified: false, match: false, confidence: 0, message: "No face embedding found" };
         } catch (error) {
-            console.warn('Face verification fallback:', error.message);
-            return { verified: true, match: true, confidence: 0.95, message: "Face verified (demo mode)" };
+            console.warn('Face verification error:', error.message);
+            return { verified: false, match: false, confidence: 0, message: "Face verification service offline" };
         }
     }
 

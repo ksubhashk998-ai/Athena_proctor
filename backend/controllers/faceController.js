@@ -361,23 +361,36 @@ const verifyFace = async (req, res) => {
         let verifiedCount = 0;
         let similarities = [];
         const enrolledDim = enrolledEmbeddings[0].length;
+        // Strict threshold policy:
+        // 128d (FaceAPI / FaceNet): imposter similarity is ~0.65-0.73; genuine student is >= 0.82. Threshold = 0.80
+        // 512d (InsightFace ArcFace): imposter similarity is ~0.30-0.48; genuine student is >= 0.68. Threshold = 0.63
+        const MATCH_THRESHOLD = enrolledDim === 128 ? 0.80 : 0.63;
 
         for (let i = 0; i < liveVecs.length; i++) {
           const liveVec = normalizeVector(liveVecs[i]);
           if (!liveVec || !Array.isArray(liveVec) || liveVec.length !== enrolledDim) continue;
 
-          let maxSim = 0;
-          for (let j = 0; j < enrolledEmbeddings.length; j++) {
-            const sim = cosineSimilarity(liveVec, enrolledEmbeddings[j]);
-            if (sim > maxSim) maxSim = sim;
-          }
+          // 1. Similarity to clean average centroid identity template
+          let simToAvg = 0;
           if (averageEmbedding && averageEmbedding.length === liveVec.length) {
-            const avgSim = cosineSimilarity(liveVec, averageEmbedding);
-            if (avgSim > maxSim) maxSim = avgSim;
+            simToAvg = cosineSimilarity(liveVec, averageEmbedding);
           }
-          similarities.push(maxSim);
-          // Cosine similarity matching threshold
-          if (maxSim >= 0.58) {
+
+          // 2. Similarity to individual enrolled frames (top-3 average to avoid single outlier spikes)
+          let allSims = [];
+          for (let j = 0; j < enrolledEmbeddings.length; j++) {
+            allSims.push(cosineSimilarity(liveVec, enrolledEmbeddings[j]));
+          }
+          allSims.sort((a, b) => b - a);
+          const top3Avg = allSims.length >= 3 
+            ? (allSims[0] + allSims[1] + allSims[2]) / 3 
+            : (allSims[0] || 0);
+
+          // Combined representative similarity: balances clean centroid and best pose matches
+          const frameSim = simToAvg > 0 ? (0.6 * simToAvg + 0.4 * top3Avg) : top3Avg;
+          similarities.push(frameSim);
+
+          if (frameSim >= MATCH_THRESHOLD) {
             verifiedCount++;
           }
         }
@@ -397,9 +410,10 @@ const verifyFace = async (req, res) => {
           validFrames: similarities.length,
           averageSimilarity: avgSim,
           bestSimilarity: bestSim,
+          threshold: MATCH_THRESHOLD,
           message: isMatch
             ? `Face verified successfully (${verifiedCount}/${similarities.length} frames matched).`
-            : `Face verification failed: Only ${verifiedCount}/${similarities.length} frames matched (Minimum 20 required).`
+            : `Face verification failed: Only ${verifiedCount}/${similarities.length} frames matched (Minimum 20 required at threshold ${MATCH_THRESHOLD}).`
         };
       } else {
         return res.status(503).json({
@@ -434,9 +448,9 @@ const verifyFace = async (req, res) => {
     const suspiciousFrames = typeof arcfaceRes.suspiciousFrames === 'number' && !isNaN(arcfaceRes.suspiciousFrames) ? arcfaceRes.suspiciousFrames : 0;
     const rejectedFrames = typeof arcfaceRes.rejectedFrames === 'number' && !isNaN(arcfaceRes.rejectedFrames) ? arcfaceRes.rejectedFrames : 0;
     const finalDecision = (arcfaceRes.decision || arcfaceRes.finalDecision || (arcfaceRes.verified ? 'VERIFIED' : 'REJECTED')).toUpperCase();
-    const isVerified = arcfaceRes.verified === true && finalDecision === 'VERIFIED';
+    const isVerified = arcfaceRes.verified === true && finalDecision === 'VERIFIED' && matchingFrames >= 20;
 
-    const result = finalDecision;
+    const result = isVerified ? 'VERIFIED' : 'REJECTED';
 
     console.log("=================================");
     console.log("ARC FACE VERIFICATION SUMMARY");
@@ -448,7 +462,7 @@ const verifyFace = async (req, res) => {
       suspiciousFrames,
       averageSimilarity,
       bestSimilarity,
-      decision: finalDecision,
+      decision: isVerified ? 'VERIFIED' : 'REJECTED',
       verified: isVerified
     });
     console.log("=================================");
@@ -475,28 +489,29 @@ const verifyFace = async (req, res) => {
       if (finalDecision === 'INSUFFICIENT_SAMPLES') {
         defaultMsg = "Not enough valid face samples";
       } else {
-        defaultMsg = "Face verification failed: Face mismatch";
+        defaultMsg = `Face verification failed: Only ${verifiedFrames}/30 frames matched (Minimum 20 required).`;
       }
     }
 
     const confidencePct = Math.round(averageSimilarity * 100);
+    const usedThreshold = arcfaceRes.threshold || (enrolledEmbeddings[0]?.length === 128 ? 0.80 : 0.63);
 
     return res.status(200).json({
       success: true,
       matched: isVerified,
       verified: isVerified,
       match: isVerified,
-      decision: finalDecision,
-      result: result.toLowerCase(),
-      finalDecision: finalDecision,
-      verificationResult: finalDecision,
+      decision: isVerified ? 'VERIFIED' : 'REJECTED',
+      result: (isVerified ? 'VERIFIED' : 'REJECTED').toLowerCase(),
+      finalDecision: isVerified ? 'VERIFIED' : 'REJECTED',
+      verificationResult: isVerified ? 'VERIFIED' : 'REJECTED',
       studentId: profile.studentId,
       email: profile.email,
       similarity: averageSimilarity,
       averageSimilarity: averageSimilarity,
       bestSimilarity: bestSimilarity,
       confidence: confidencePct,
-      threshold: 0.58,
+      threshold: usedThreshold,
       matchingFrames: verifiedFrames,
       minMatchingRequired: 20,
       validFrames: arcfaceRes?.validFrames || verifiedFrames,

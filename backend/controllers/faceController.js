@@ -98,46 +98,28 @@ const enrollFace = async (req, res) => {
       console.log("Enrollment response:", response.data);
       arcfaceRes = response.data;
     } catch (pyErr) {
-      console.warn("⚠️ Python ArcFace detector unavailable:", pyErr.message);
-      console.log("Generating serverless biometric template from", inputFrames.length, "face frames...");
-      
-      const sampleCount = Math.min(inputFrames.length, 30);
-      const fallbackEmbeddings = [];
-      for (let i = 0; i < sampleCount; i++) {
-        const vec = new Array(512).fill(0).map((_, idx) => Math.sin((idx + 1) * (i + 1)) * 0.05);
-        fallbackEmbeddings.push(normalizeVector(vec));
-      }
-      const fallbackAvg = normalizeVector(new Array(512).fill(0).map((_, idx) => Math.sin(idx + 1) * 0.05));
-      arcfaceRes = {
-        success: true,
-        embeddings: fallbackEmbeddings,
-        averageEmbedding: fallbackAvg,
-        modelVersion: 'ArcFace-Serverless-Cloud'
-      };
+      console.error("❌ Python ArcFace detector error:", pyErr.message);
+      return res.status(503).json({
+        success: false,
+        error: 'Biometric AI enrollment service is unavailable. Please ensure the Python detector service is running on port 8001.'
+      });
     }
 
-    let embeddings = [];
-    let averageEmbedding = [];
-    let modelVersion = 'InsightFace-ArcFace';
-
-    if (arcfaceRes && arcfaceRes.success && Array.isArray(arcfaceRes.embeddings)) {
-      embeddings = arcfaceRes.embeddings.map(normalizeVector);
-      averageEmbedding = normalizeVector(arcfaceRes.averageEmbedding || []);
-      modelVersion = arcfaceRes.modelVersion || 'InsightFace-ArcFace';
-    } else {
-      const sampleCount = Math.min(inputFrames.length, 30);
-      embeddings = [];
-      for (let i = 0; i < sampleCount; i++) {
-        embeddings.push(normalizeVector(new Array(512).fill(0).map((_, idx) => Math.sin(idx * (i + 1)) * 0.05)));
-      }
-      averageEmbedding = normalizeVector(new Array(512).fill(0).map((_, idx) => Math.sin(idx) * 0.05));
-      modelVersion = 'ArcFace-Serverless-Cloud';
+    if (!arcfaceRes || !arcfaceRes.success || !Array.isArray(arcfaceRes.embeddings)) {
+      return res.status(400).json({
+        success: false,
+        error: arcfaceRes?.error || 'Failed to extract face embeddings. Ensure your face is centered with clear lighting.'
+      });
     }
+
+    let embeddings = arcfaceRes.embeddings.map(normalizeVector);
+    let averageEmbedding = normalizeVector(arcfaceRes.averageEmbedding || []);
+    let modelVersion = arcfaceRes.modelVersion || 'InsightFace-ArcFace';
 
     if (embeddings.length < 20) {
       return res.status(400).json({
         success: false,
-        error: `Enrollment requires at least 20 valid high-quality face samples. Only ${embeddings.length} valid samples were generated.`
+        error: `Enrollment requires at least 20 valid high-quality face samples. Only ${embeddings.length} valid samples were captured.`
       });
     }
 
@@ -321,7 +303,7 @@ const verifyFace = async (req, res) => {
     console.log(`🔍 [ArcFace Verification] Verifying ${inputFrames.length} frames for student: ${cleanStudentId || cleanEmail} against ${enrolledEmbeddings.length} enrolled 512d embeddings...`);
 
     let arcfaceRes = null;
-    const verificationFrames = Array.isArray(inputFrames) ? inputFrames.slice(0, 10) : [];
+    const verificationFrames = Array.isArray(inputFrames) ? inputFrames.slice(0, 30) : [];
 
     try {
       const response = await axios.post(`${PYTHON_SERVICE_URL}/api/arcface/verify`, {
@@ -340,36 +322,38 @@ const verifyFace = async (req, res) => {
       console.error("PYTHON ERROR DATA:", JSON.stringify(pyErr.response?.data, null, 2));
       console.error("PYTHON ERROR MESSAGE:", pyErr.message);
       console.error("=================================");
+      return res.status(503).json({
+        success: false,
+        verified: false,
+        match: false,
+        result: 'rejected',
+        finalDecision: 'REJECTED',
+        verificationResult: 'REJECTED',
+        error: 'Biometric AI verification service is offline. Ensure Python detector service is running on port 8001.',
+        message: 'Face verification service unavailable. Please retry shortly.'
+      });
     }
 
-    let verifiedFrames = 0;
-    let suspiciousFrames = 0;
-    let rejectedFrames = 0;
-    let bestSimilarity = 0.0;
-    let averageSimilarity = 0.0;
-    let finalDecision = 'REJECTED';
-    let isVerified = false;
-
-    if (arcfaceRes) {
-      bestSimilarity = typeof arcfaceRes.bestSimilarity === 'number' && !isNaN(arcfaceRes.bestSimilarity) ? arcfaceRes.bestSimilarity : 0.0;
-      averageSimilarity = typeof arcfaceRes.averageSimilarity === 'number' && !isNaN(arcfaceRes.averageSimilarity) ? arcfaceRes.averageSimilarity : 0.0;
-      verifiedFrames = typeof arcfaceRes.validFrames === 'number' ? arcfaceRes.validFrames : (typeof arcfaceRes.verifiedFrames === 'number' ? arcfaceRes.verifiedFrames : 0);
-      suspiciousFrames = typeof arcfaceRes.suspiciousFrames === 'number' && !isNaN(arcfaceRes.suspiciousFrames) ? arcfaceRes.suspiciousFrames : 0;
-      rejectedFrames = typeof arcfaceRes.rejectedFrames === 'number' && !isNaN(arcfaceRes.rejectedFrames) ? arcfaceRes.rejectedFrames : 0;
-      finalDecision = (arcfaceRes.decision || arcfaceRes.finalDecision || arcfaceRes.result || 'SUSPICIOUS').toUpperCase();
-      isVerified = arcfaceRes.verified === true || finalDecision === 'VERIFIED';
-    } else {
-      if (verificationFrames && verificationFrames.length > 0) {
-        finalDecision = 'VERIFIED';
-        isVerified = true;
-        averageSimilarity = 0.95;
-        bestSimilarity = 0.98;
-        verifiedFrames = verificationFrames.length;
-      } else {
-        finalDecision = 'SUSPICIOUS';
-        isVerified = false;
-      }
+    if (!arcfaceRes) {
+      return res.status(503).json({
+        success: false,
+        verified: false,
+        match: false,
+        result: 'rejected',
+        finalDecision: 'REJECTED',
+        verificationResult: 'REJECTED',
+        error: 'No response received from Biometric AI service.'
+      });
     }
+
+    const bestSimilarity = typeof arcfaceRes.bestSimilarity === 'number' && !isNaN(arcfaceRes.bestSimilarity) ? arcfaceRes.bestSimilarity : 0.0;
+    const averageSimilarity = typeof arcfaceRes.averageSimilarity === 'number' && !isNaN(arcfaceRes.averageSimilarity) ? arcfaceRes.averageSimilarity : 0.0;
+    const matchingFrames = typeof arcfaceRes.matchingFrames === 'number' ? arcfaceRes.matchingFrames : (typeof arcfaceRes.verifiedFrames === 'number' ? arcfaceRes.verifiedFrames : 0);
+    const verifiedFrames = matchingFrames;
+    const suspiciousFrames = typeof arcfaceRes.suspiciousFrames === 'number' && !isNaN(arcfaceRes.suspiciousFrames) ? arcfaceRes.suspiciousFrames : 0;
+    const rejectedFrames = typeof arcfaceRes.rejectedFrames === 'number' && !isNaN(arcfaceRes.rejectedFrames) ? arcfaceRes.rejectedFrames : 0;
+    const finalDecision = (arcfaceRes.decision || arcfaceRes.finalDecision || (arcfaceRes.verified ? 'VERIFIED' : 'REJECTED')).toUpperCase();
+    const isVerified = arcfaceRes.verified === true && finalDecision === 'VERIFIED';
 
     const result = finalDecision;
 
@@ -431,8 +415,10 @@ const verifyFace = async (req, res) => {
       averageSimilarity: averageSimilarity,
       bestSimilarity: bestSimilarity,
       confidence: confidencePct,
-      threshold: 0.65,
-      validFrames: verifiedFrames,
+      threshold: 0.58,
+      matchingFrames: verifiedFrames,
+      minMatchingRequired: 20,
+      validFrames: arcfaceRes?.validFrames || verifiedFrames,
       totalFrames: verificationFrames.length,
       totalFramesProcessed: verificationFrames.length,
       message: arcfaceRes?.message || defaultMsg,

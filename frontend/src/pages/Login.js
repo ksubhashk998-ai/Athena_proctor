@@ -416,8 +416,8 @@ function Login() {
     setFaceVerifying(true);
     setFaceStatusMsg("🔄 Initializing Biometric Face Verification...");
 
-    const TOTAL_LOGIN_FRAMES = 8;
-    const FRAME_INTERVAL_MS = 120;
+    const TOTAL_LOGIN_FRAMES = 30;
+    const FRAME_INTERVAL_MS = 60;
 
     try {
       const video = webcamRef.current.video;
@@ -431,7 +431,7 @@ function Login() {
       const activeToken = tempToken || "jwt_token_" + Date.now();
       const apiBase = getApiBaseUrl();
 
-      // === PHASE 1: Capture frames only — ZERO API calls inside this loop ===
+      // === PHASE 1: Capture 30 frames per PROJECT_RULES.md ===
       const capturedFrames = [];
 
       for (let frameIndex = 0; frameIndex < TOTAL_LOGIN_FRAMES; frameIndex++) {
@@ -445,7 +445,7 @@ function Login() {
           canvas.height = 480;
           const ctx = canvas.getContext('2d');
           ctx.drawImage(video, 0, 0, 640, 480);
-          b64Frame = canvas.toDataURL('image/jpeg', 0.7);
+          b64Frame = canvas.toDataURL('image/jpeg', 0.75);
         } catch (err) {
           console.warn("Frame capture error:", err);
         }
@@ -457,14 +457,14 @@ function Login() {
         await new Promise(r => setTimeout(r, FRAME_INTERVAL_MS));
       }
 
-      if (capturedFrames.length < 3) {
-        setFaceStatusMsg("🔴 Verification failed: Insufficient face frames captured. Please ensure good lighting.");
+      if (capturedFrames.length < 20) {
+        setFaceStatusMsg("🔴 Verification failed: At least 20 clear face frames required. Please ensure good lighting and face visibility.");
         setFaceVerifying(false);
         return;
       }
 
-      // === PHASE 2: ONE single final verification request ===
-      setFaceStatusMsg("Checking Identity...");
+      // === PHASE 2: ONE single final verification request (30 frames) ===
+      setFaceStatusMsg("Evaluating 30 biometric frames against enrolled identity...");
 
       const finalRes = await axios.post(`${apiBase}/api/face/verify`, {
         studentId: activeStudent.studentId,
@@ -486,16 +486,17 @@ function Login() {
 
       const simPct = Math.round((data.bestSimilarity || data.averageSimilarity || 0) * 100);
       const decision = (data.decision || data.finalDecision || data.verificationResult || '').toUpperCase();
-      const isVerified = (data.verified === true || data.matched === true) && decision === 'VERIFIED';
+      const matchingCount = typeof data.matchingFrames === 'number' ? data.matchingFrames : (typeof data.verifiedFrames === 'number' ? data.verifiedFrames : 0);
+      const isVerified = (data.verified === true || data.matched === true) && decision === 'VERIFIED' && matchingCount >= 20;
 
       if (isVerified) {
         localStorage.setItem("faceVerified", "true");
-        setFaceStatusMsg(`✓ Identity Verified — Average Similarity: ${simPct}% | Identity Confirmed`);
+        setFaceStatusMsg(`✓ Identity Confirmed (${matchingCount}/30 frames matched — ${simPct}% similarity)`);
         setTimeout(() => {
           completeLogin(activeToken, activeStudent);
         }, 800);
       } else {
-        setFaceStatusMsg(`🔴 Face not matched (${simPct}% similarity). Please center your face and retry.`);
+        setFaceStatusMsg(`🔴 Face not matched (${matchingCount}/30 matching frames, min 20 required). Please ensure registered student is in view.`);
       }
 
     } catch (e) {
@@ -1178,7 +1179,7 @@ function Login() {
                 disabled={faceVerifying}
                 style={{ ...styles.loginButton, flex: 2 }}
               >
-                {faceVerifying ? "Verifying 10-Frame ArcFace..." : "📸 Verify Face"}
+                {faceVerifying ? "Verifying 30-Frame ArcFace..." : "📸 Verify Face"}
               </button>
 
               <button

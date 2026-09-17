@@ -127,28 +127,6 @@ export async function verifyFaceAgainstBackend(videoElement, studentId, token, f
   verificationRunning = true;
 
   try {
-    // Fix 1 & Requirement 3: Skip verification if already verified (unless forceReverify is true)
-    const alreadyVerified = localStorage.getItem("faceVerified") === "true";
-    if (alreadyVerified && !forceReverify) {
-      console.log("Face already verified");
-      console.log("Verification skipped");
-      if (onProgress) onProgress({ currentFrame: 8, totalFrames: 8, progressPct: 100 });
-      return {
-        verified: true,
-        match: true,
-        verificationResult: 'VERIFIED',
-        result: 'verified',
-        finalDecision: 'VERIFIED',
-        confidence: 96,
-        similarityScore: 0.96,
-        bestSimilarity: 0.96,
-        averageSimilarity: 0.96,
-        verifiedFrames: 8,
-        totalFramesProcessed: 8,
-        message: 'Face already verified — ✓ Verification skipped'
-      };
-    }
-
     const apiBase = getApiBaseUrl();
     const stored = localStorage.getItem('user');
     let email = '';
@@ -161,8 +139,8 @@ export async function verifyFaceAgainstBackend(videoElement, studentId, token, f
 
     const activeEmail = email || localStorage.getItem('registered_email') || studentId;
 
-    // Fix E: Fast verification using 8 frames (captures in ~1 second)
-    const FRAME_COUNT = 8;
+    // Capture 30 frames per PROJECT_RULES.md
+    const FRAME_COUNT = 30;
     const frames = [];
     const startTime = Date.now();
     const canvas = document.createElement('canvas');
@@ -172,11 +150,11 @@ export async function verifyFaceAgainstBackend(videoElement, studentId, token, f
 
     const video = videoElement?.current?.video || videoElement?.current || videoElement;
 
-    while (Date.now() - startTime < 2000 && frames.length < FRAME_COUNT) {
+    while (Date.now() - startTime < 3500 && frames.length < FRAME_COUNT) {
       if (video && video.readyState >= 2) {
         try {
           ctx.drawImage(video, 0, 0, 640, 480);
-          frames.push(canvas.toDataURL('image/jpeg', 0.85));
+          frames.push(canvas.toDataURL('image/jpeg', 0.75));
           if (onProgress) {
             const currentFrame = frames.length;
             const pct = Math.round((currentFrame / FRAME_COUNT) * 100);
@@ -184,7 +162,7 @@ export async function verifyFaceAgainstBackend(videoElement, studentId, token, f
           }
         } catch (e) {}
       }
-      await new Promise(resolve => setTimeout(resolve, 120));
+      await new Promise(resolve => setTimeout(resolve, 60));
     }
 
     // Fix B: Empty Payload Guard
@@ -217,8 +195,9 @@ export async function verifyFaceAgainstBackend(videoElement, studentId, token, f
     });
 
     const data = await response.json();
-    const dec = (data.decision || data.finalDecision || (data.verified ? 'VERIFIED' : 'SUSPICIOUS')).toUpperCase();
-    const isVerified = data.verified === true || dec === 'VERIFIED';
+    const dec = (data.decision || data.finalDecision || (data.verified ? 'VERIFIED' : 'REJECTED')).toUpperCase();
+    const matchingCount = typeof data.matchingFrames === 'number' ? data.matchingFrames : (typeof data.verifiedFrames === 'number' ? data.verifiedFrames : 0);
+    const isVerified = (data.verified === true || data.match === true) && dec === 'VERIFIED' && matchingCount >= 20;
     const similarityScore = typeof data.averageSimilarity === 'number' ? data.averageSimilarity : (data.bestSimilarity || 0.0);
 
     if (isVerified) {

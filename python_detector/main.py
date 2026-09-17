@@ -52,16 +52,15 @@ PERSON_CLASS_ID = 0
 PHONE_CLASS_ID = 67
 HEADPHONE_KEYWORDS = ["earphone", "headphone", "earbud", "airpod", "headset"]
 
-# Quality & Verification Constants
-MIN_ACCEPTABLE_QUALITY = 45.0
-GOOD_QUALITY = 60.0
-MIN_VALID_EMBEDDINGS = 20
+# Quality & Verification Constants (Adheres to PROJECT_RULES.md)
+MIN_ACCEPTABLE_QUALITY = 35.0
+GOOD_QUALITY = 55.0
+MIN_VALID_EMBEDDINGS = 30
 MAX_CANDIDATE_FRAMES = 40
-MIN_VERIFICATION_FRAMES = 2
-SIMILARITY_THRESHOLD = 0.65
-SUSPICIOUS_THRESHOLD = 0.65
-VERIFIED_THRESHOLD = 0.65
-TARGET_VERIFICATION_FRAMES = 8
+MIN_VERIFICATION_FRAMES = 20
+SIMILARITY_THRESHOLD = 0.58
+FRAME_MATCH_THRESHOLD = 0.58
+TARGET_VERIFICATION_FRAMES = 30
 ENABLE_DIAGNOSTIC_MODE = True
 
 app = FastAPI(
@@ -226,11 +225,11 @@ def compute_iou(box1, box2):
         return 0.0
     return float(intersection / union)
 
-def filter_real_faces(raw_faces, img_shape, min_conf=0.45, min_size=30):
+def filter_real_faces(raw_faces, img_shape, min_conf=0.35, min_size=20):
     """
     Filter raw InsightFace detections to distinct real faces:
     - Filters low-confidence artifacts
-    - Filters tiny background noise
+    - Allows faces from longer camera distances (min_size=20)
     - Deduplicates overlapping boxes on the same face (IoU >= 0.40)
     """
     if not raw_faces:
@@ -266,10 +265,10 @@ def filter_real_faces(raw_faces, img_shape, min_conf=0.45, min_size=30):
 
 def validate_face_quality(bgr_img: np.ndarray, face) -> dict:
     """
-    Validate face sample quality:
-    - Min face resolution: 100x100
-    - Brightness range: 35.0-230.0
-    - Blur (Laplacian Variance): >= 20.0
+    Validate face sample quality (supports longer camera distances):
+    - Min face resolution: relaxed to 50x50 / 80x80 baseline for distance
+    - Brightness range: 30.0-235.0
+    - Blur (Laplacian Variance): >= 15.0
     """
     bbox = face.bbox.astype(int) if hasattr(face.bbox, 'astype') else [int(b) for b in face.bbox]
     x1, y1, x2, y2 = max(0, bbox[0]), max(0, bbox[1]), min(bgr_img.shape[1], bbox[2]), min(bgr_img.shape[0], bbox[3])
@@ -285,24 +284,24 @@ def validate_face_quality(bgr_img: np.ndarray, face) -> dict:
 
     gray_crop = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
 
-    # 1. Resolution Check
-    res_score = min(100.0, (face_w * face_h / (180.0 * 180.0)) * 100.0)
+    # 1. Resolution Check (80x80 standard to permit longer camera distances)
+    res_score = min(100.0, (face_w * face_h / (80.0 * 80.0)) * 100.0)
 
     # 2. Brightness Check
     mean_brightness = float(np.mean(gray_crop))
-    brightness_pass = 35.0 <= mean_brightness <= 230.0
+    brightness_pass = 30.0 <= mean_brightness <= 235.0
     brightness_score = 100.0 if brightness_pass else max(0.0, 100.0 - abs(mean_brightness - 130.0))
 
     # 3. Blur Check (Laplacian Variance)
     blur_var = float(cv2.Laplacian(gray_crop, cv2.CV_64F).var())
-    blur_pass = blur_var >= 20.0
-    blur_score = min(100.0, (blur_var / 40.0) * 100.0)
+    blur_pass = blur_var >= 15.0
+    blur_score = min(100.0, (blur_var / 30.0) * 100.0)
 
     # 4. Centering Check
     cx = (x1 + x2) / 2.0
     cy = (y1 + y2) / 2.0
     center_dist = np.sqrt(((cx - img_w / 2.0) / (img_w / 2.0)) ** 2 + ((cy - img_h / 2.0) / (img_h / 2.0)) ** 2)
-    centering_pass = center_dist <= 0.6
+    centering_pass = center_dist <= 0.75
     centering_score = max(0.0, 100.0 * (1.0 - center_dist))
 
     overall_score = round(0.3 * res_score + 0.3 * blur_score + 0.2 * brightness_score + 0.2 * centering_score, 2)
@@ -475,7 +474,7 @@ def arcface_enroll(request: ArcFaceEnrollRequest):
                 continue
 
             raw_faces = app_face.get(bgr_img)
-            faces = filter_real_faces(raw_faces, bgr_img.shape, min_conf=0.50, min_size=40)
+            faces = filter_real_faces(raw_faces, bgr_img.shape, min_conf=0.35, min_size=20)
 
             if len(faces) == 0:
                 rejected_reasons.append(f"Frame {idx+1}: No face detected")
@@ -652,7 +651,7 @@ def arcface_verify(request: ArcFaceVerifyRequest):
                 bgr_img = preprocess_image_np(item, target_max_dim=640)
                 if bgr_img is not None and bgr_img.size > 0:
                     raw_faces = app_face.get(bgr_img)
-                    faces = filter_real_faces(raw_faces, bgr_img.shape, min_conf=0.50, min_size=40)
+                    faces = filter_real_faces(raw_faces, bgr_img.shape, min_conf=0.35, min_size=20)
 
                     if len(faces) == 0:
                         rejected_count += 1
@@ -689,17 +688,13 @@ def arcface_verify(request: ArcFaceVerifyRequest):
             best_sim_clamped = round(float(np.clip(best_sim, 0.0, 1.0)), 4)
             frame_similarities.append(best_sim_clamped)
 
-            if best_sim_clamped >= VERIFIED_THRESHOLD:
+            # Cosine similarity matching threshold for ArcFace (>= 0.58)
+            if best_sim_clamped >= FRAME_MATCH_THRESHOLD:
                 verified_count += 1
-            elif best_sim_clamped >= SUSPICIOUS_THRESHOLD:
+            elif best_sim_clamped >= 0.45:
                 suspicious_count += 1
             else:
                 rejected_count += 1
-
-            if len(frame_similarities) >= 5:
-                current_avg = float(np.mean(frame_similarities))
-                if current_avg >= 0.68:
-                    break
 
         except Exception as err:
             logger.error(f"Error processing frame {idx+1}: {err}")
@@ -717,7 +712,7 @@ def arcface_verify(request: ArcFaceVerifyRequest):
     # Garbage collection
     gc.collect()
 
-    if valid_count < MIN_VERIFICATION_FRAMES:
+    if valid_count < 20:
         return {
             "success": True,
             "verified": False,
@@ -725,31 +720,34 @@ def arcface_verify(request: ArcFaceVerifyRequest):
             "decision": "INSUFFICIENT_SAMPLES",
             "finalDecision": "INSUFFICIENT_SAMPLES",
             "result": "insufficient_samples",
-            "message": f"Only {valid_count} valid face frames received. At least {MIN_VERIFICATION_FRAMES} are required.",
+            "message": f"Only {valid_count} valid face frames received. At least 20 are required for verification.",
             "bestSimilarity": best_similarity,
             "averageSimilarity": average_similarity,
+            "matchingFrames": verified_count,
+            "verifiedFrames": verified_count,
             "validFrames": valid_count,
             "totalFrames": total_requested,
             "totalFramesProcessed": total_requested,
             "elapsedSeconds": total_elapsed
         }
 
+    # PROJECT_RULES.md: Verification Rule: Minimum 20 out of 30 matching frames
     if multi_face_triggered and valid_count < 3:
         decision = "MULTIPLE_FACES_DETECTED"
         verified = False
-    elif average_similarity >= SIMILARITY_THRESHOLD or best_similarity >= 0.70:
+    elif verified_count >= 20:
         verified = True
         decision = "VERIFIED"
     else:
         verified = False
-        decision = "SUSPICIOUS"
+        decision = "REJECTED"
 
-    logger.info(f"[ArcFace Verify] {request.studentId} -> {decision} (Avg: {average_similarity}, Best: {best_similarity})")
+    logger.info(f"[ArcFace Verify] {request.studentId} -> {decision} (Matching: {verified_count}/{valid_count}, Avg: {average_similarity}, Best: {best_similarity})")
 
     msg_str = (
-        "Face verified successfully."
+        f"Face verified successfully ({verified_count}/{valid_count} frames matched)."
         if verified
-        else ("Multiple faces detected." if decision == "MULTIPLE_FACES_DETECTED" else "Face verification failed. Face does not sufficiently match the enrolled identity.")
+        else ("Multiple faces detected." if decision == "MULTIPLE_FACES_DETECTED" else f"Face verification failed. Only {verified_count}/{valid_count} frames matched (Minimum 20 required).")
     )
 
     response = {

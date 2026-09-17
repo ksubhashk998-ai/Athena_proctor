@@ -6,6 +6,5 @@ echo.
 echo Installing dependencies...
 "C:\Users\ksubh\AppData\Local\Programs\Python\Python311\python.exe" -m pip install -r requirements.txt
 echo.
-echo Starting detector service on port 8001...
-"C:\Users\ksubh\AppData\Local\Programs\Python\Python311\python.exe" -m uvicorn main:app --host 0.0.0.0 --port 8001
+python -m uvicorn main:app --host 0.0.0.0 --port 8001
 pause

@@ -41,23 +41,47 @@ router.post('/face/cheating-log', saveCheatingLog);
 router.get('/status/:email', async (req, res) => {
   try {
     const FaceProfile = require('../models/FaceProfile');
+    const FaceEmbedding = require('../models/FaceEmbedding');
+    const Student = require('../models/Student');
     const User = require('../models/User');
-    const cleanEmail = req.params.email.toLowerCase();
+    const cleanEmail = req.params.email.toLowerCase().trim();
 
     let profile = await FaceProfile.findOne({ email: cleanEmail });
-    if (profile) {
+    if (profile && profile.embeddings && profile.embeddings.length > 0) {
       return res.json({
         enrolled: true,
-        descriptorsCount: profile.embeddings ? profile.embeddings.length : 0,
+        descriptorsCount: profile.embeddings.length,
+        embeddingDim: profile.embeddings[0] ? profile.embeddings[0].length : 512,
         name: profile.name,
         studentId: profile.studentId
+      });
+    }
+
+    let faceEmb = await FaceEmbedding.findOne({ email: cleanEmail });
+    if (faceEmb && faceEmb.embeddings && faceEmb.embeddings.length > 0) {
+      return res.json({
+        enrolled: true,
+        descriptorsCount: faceEmb.embeddings.length,
+        embeddingDim: faceEmb.embeddings[0] ? faceEmb.embeddings[0].length : 512,
+        name: faceEmb.name,
+        studentId: faceEmb.studentId
+      });
+    }
+
+    const student = await Student.findOne({ email: cleanEmail });
+    if (student && student.faceEnrolled) {
+      return res.json({
+        enrolled: true,
+        descriptorsCount: student.faceEmbeddings ? (Array.isArray(student.faceEmbeddings[0]) ? student.faceEmbeddings.length : 1) : 0,
+        name: student.fullName || student.name,
+        studentId: student.studentId
       });
     }
 
     const user = await User.findOne({ email: cleanEmail });
     res.json({
       enrolled: !!(user && user.faceEnrolled),
-      descriptorsCount: user && user.faceEmbeddings ? user.faceEmbeddings.length : 0,
+      descriptorsCount: user && user.faceEmbeddings ? (Array.isArray(user.faceEmbeddings[0]) ? user.faceEmbeddings.length : 1) : 0,
       name: user ? user.name : ''
     });
   } catch (e) {

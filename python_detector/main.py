@@ -60,6 +60,7 @@ MAX_CANDIDATE_FRAMES = 40
 MIN_VERIFICATION_FRAMES = 20
 SIMILARITY_THRESHOLD = 0.63
 FRAME_MATCH_THRESHOLD = 0.63
+SUSPICIOUS_THRESHOLD = 0.50
 TARGET_VERIFICATION_FRAMES = 30
 ENABLE_DIAGNOSTIC_MODE = True
 
@@ -694,7 +695,7 @@ def arcface_verify(request: ArcFaceVerifyRequest):
             # Cosine similarity matching threshold for ArcFace (>= 0.63)
             if sim_clamped >= FRAME_MATCH_THRESHOLD:
                 verified_count += 1
-            elif sim_clamped >= 0.50:
+            elif sim_clamped >= SUSPICIOUS_THRESHOLD:
                 suspicious_count += 1
             else:
                 rejected_count += 1

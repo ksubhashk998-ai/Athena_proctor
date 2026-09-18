@@ -5,6 +5,7 @@ const axios = require('axios');
 
 // Top level model imports
 const FaceProfile = require('../models/FaceProfile');
+const FaceEmbedding = require('../models/FaceEmbedding');
 const VerificationLog = require('../models/VerificationLog');
 const User = require('../models/User');
 const Student = require('../models/Student');
@@ -211,6 +212,68 @@ const enrollFace = async (req, res) => {
       }
       console.log(`✅ FaceProfile saved successfully for ${cleanStudentId} with ${embeddings.length} embeddings`);
 
+      // Persist 512D ArcFace embeddings to FaceEmbedding model
+      try {
+        await FaceEmbedding.findOneAndUpdate(
+          { $or: [{ studentId: cleanStudentId }, { email: cleanEmail }] },
+          {
+            $set: {
+              studentId: cleanStudentId,
+              name: studentName,
+              email: cleanEmail,
+              faceEnrolled: true,
+              enrollmentImages: savedImageUrls,
+              embeddings: embeddings,
+              embedding: averageEmbedding,
+              imageSnapshot: savedImageUrls[0] || null,
+              isActive: true
+            }
+          },
+          { upsert: true, new: true }
+        );
+        console.log(`✅ FaceEmbedding saved with ${embeddings.length} 512-d embeddings for ${cleanStudentId}`);
+      } catch (feErr) {
+        console.warn('⚠️ FaceEmbedding save notice:', feErr.message);
+      }
+
+      // Persist faceEnrolled: true and embeddings to Student model
+      try {
+        await Student.findOneAndUpdate(
+          { $or: [{ studentId: cleanStudentId }, { email: cleanEmail }] },
+          {
+            $set: {
+              faceEnrolled: true,
+              faceEnrolledAt: new Date(),
+              faceEmbeddings: embeddings,
+              verificationStatus: 'Enrolled'
+            }
+          },
+          { new: true }
+        );
+        console.log(`✅ Student model updated with faceEnrolled: true for ${cleanEmail}`);
+      } catch (stErr) {
+        console.warn('⚠️ Student faceEnrolled update notice:', stErr.message);
+      }
+
+      // Persist faceEnrolled: true to User model
+      try {
+        await User.findOneAndUpdate(
+          { email: cleanEmail },
+          {
+            $set: {
+              faceEnrolled: true,
+              enrollmentDate: new Date(),
+              faceEmbeddings: embeddings,
+              enrolledImageSnapshot: savedImageUrls[0] || null
+            }
+          },
+          { new: true }
+        );
+        console.log(`✅ User model updated with faceEnrolled: true for ${cleanEmail}`);
+      } catch (uErr) {
+        console.warn('⚠️ User faceEnrolled update notice:', uErr.message);
+      }
+
       return res.status(200).json({
         success: true,
         message: 'InsightFace ArcFace 512-d face profile enrolled successfully.',
@@ -284,6 +347,20 @@ const verifyFace = async (req, res) => {
     if (cleanEmail) profile = await FaceProfile.findOne({ email: cleanEmail });
     if (!profile && cleanStudentId) profile = await FaceProfile.findOne({ studentId: cleanStudentId });
 
+    // Fallback: check FaceEmbedding model if not found in FaceProfile
+    if (!profile && cleanEmail) {
+      const fe = await FaceEmbedding.findOne({ email: cleanEmail });
+      if (fe && fe.embeddings && fe.embeddings.length > 0) {
+        profile = {
+          studentId: fe.studentId,
+          email: fe.email,
+          name: fe.name,
+          embeddings: fe.embeddings,
+          averageEmbedding: fe.embedding || fe.embeddings[0]
+        };
+      }
+    }
+
     if (!profile) {
       return res.status(200).json({
         verified: false,
@@ -346,15 +423,15 @@ const verifyFace = async (req, res) => {
       if (liveVecs && Array.isArray(liveVecs) && liveVecs.length > 0) {
         console.log(`[Biometric Verification] Evaluating ${liveVecs.length} client neural face descriptors against ${enrolledEmbeddings.length} enrolled templates...`);
         if (enrolledEmbeddings.length > 0 && liveVecs.length > 0 && enrolledEmbeddings[0].length !== liveVecs[0].length) {
-          console.warn(`[Biometric Verification] Dimension mismatch: enrolled=${enrolledEmbeddings[0].length}d, live=${liveVecs[0].length}d. Prompting re-enrollment.`);
-          return res.status(200).json({
+          console.warn(`[Biometric Verification] Dimension mismatch: enrolled=${enrolledEmbeddings[0].length}d, live=${liveVecs[0].length}d. Python service error: ${pyErr.message}`);
+          return res.status(503).json({
             success: false,
-            needsEnrollment: true,
+            needsEnrollment: false,
             verified: false,
             match: false,
-            decision: 'NEEDS_REENROLLMENT',
+            decision: 'SERVICE_ERROR',
             finalDecision: 'REJECTED',
-            message: 'Biometric template updated. Please re-enroll your face.'
+            message: `Biometric verification service error (${pyErr.message}). Please ensure Python ArcFace service is running on port 8001.`
           });
         }
 
@@ -480,6 +557,20 @@ const verifyFace = async (req, res) => {
         bestSimilarity: Number(bestSimilarity) || 0
       });
       console.log("[VerificationLog] Saved successfully");
+
+      if (isVerified) {
+        await Student.findOneAndUpdate(
+          { $or: [{ studentId: profile.studentId }, { email: profile.email }] },
+          {
+            $set: {
+              lastVerification: new Date(),
+              verificationStatus: 'Verified',
+              updatedAt: new Date()
+            }
+          }
+        ).catch(e => console.warn('Student lastVerification update notice:', e.message));
+        console.log(`[Student] lastVerification timestamp updated for ${profile.email}`);
+      }
     } catch (logErr) {
       console.error("⚠️ [VerificationLog] Non-critical log creation warning:", logErr.message);
     }

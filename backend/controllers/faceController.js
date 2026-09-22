@@ -508,33 +508,62 @@ const verifyFace = async (req, res) => {
 
         let verifiedCount = 0;
         let similarities = [];
-        const MATCH_THRESHOLD = currentEnrolledDim === 128 ? 0.68 : 0.63;
+        // Calibrated threshold policy per PROJECT_RULES.md:
+        // 128d (FaceAPI): genuine student scores 0.83 - 0.96. Friends/imposters score 0.65 - 0.76.
+        // Threshold = 0.80 strictly blocks imposters while reliably verifying genuine candidate.
+        // 512d (InsightFace ArcFace): genuine student scores 0.65 - 0.85. Imposters score < 0.35. Threshold = 0.64.
+        const MATCH_THRESHOLD = currentEnrolledDim === 128 ? 0.80 : 0.64;
+        const MIN_AVG_THRESHOLD = currentEnrolledDim === 128 ? 0.78 : 0.60;
+
+        // Ensure clean normalized centroid vector is always available
+        let effectiveAvgEmb = averageEmbedding;
+        if (!effectiveAvgEmb || !Array.isArray(effectiveAvgEmb) || effectiveAvgEmb.length !== currentEnrolledDim) {
+          const dim = currentEnrolledDim;
+          const sum = new Array(dim).fill(0);
+          let count = 0;
+          for (let k = 0; k < enrolledEmbeddings.length; k++) {
+            if (enrolledEmbeddings[k] && enrolledEmbeddings[k].length === dim) {
+              for (let d = 0; d < dim; d++) sum[d] += enrolledEmbeddings[k][d];
+              count++;
+            }
+          }
+          if (count > 0) {
+            effectiveAvgEmb = normalizeVector(sum.map(v => v / count));
+          }
+        }
 
         for (let i = 0; i < liveVecs.length; i++) {
           const liveVec = normalizeVector(liveVecs[i]);
           if (!liveVec || !Array.isArray(liveVec) || liveVec.length !== currentEnrolledDim) continue;
 
-          // 1. Similarity to clean average centroid identity template
+          // 1. Primary similarity to clean average centroid identity template
           let simToAvg = 0;
-          if (averageEmbedding && averageEmbedding.length === liveVec.length) {
-            simToAvg = cosineSimilarity(liveVec, averageEmbedding);
+          if (effectiveAvgEmb && effectiveAvgEmb.length === liveVec.length) {
+            simToAvg = cosineSimilarity(liveVec, effectiveAvgEmb);
           }
 
-          // 2. Similarity to individual enrolled frames (top-3 average to avoid single outlier spikes)
+          // 2. Similarity to individual enrolled frames
           let allSims = [];
           for (let j = 0; j < enrolledEmbeddings.length; j++) {
-            allSims.push(cosineSimilarity(liveVec, enrolledEmbeddings[j]));
+            if (enrolledEmbeddings[j] && enrolledEmbeddings[j].length === currentEnrolledDim) {
+              allSims.push(cosineSimilarity(liveVec, enrolledEmbeddings[j]));
+            }
           }
           allSims.sort((a, b) => b - a);
           const top3Avg = allSims.length >= 3 
             ? (allSims[0] + allSims[1] + allSims[2]) / 3 
-            : (allSims[0] || 0);
+            : (allSims[0] || simToAvg);
 
-          // Combined representative similarity: balances clean centroid and best pose matches
-          const frameSim = simToAvg > 0 ? (0.6 * simToAvg + 0.4 * top3Avg) : top3Avg;
+          // Weight 75% on centroid identity + 25% on best matching pose
+          const frameSim = simToAvg > 0 ? (0.75 * simToAvg + 0.25 * top3Avg) : top3Avg;
           similarities.push(frameSim);
 
-          if (frameSim >= MATCH_THRESHOLD) {
+          // For 128d, frame must meet MATCH_THRESHOLD and cannot severely deviate from centroid
+          const meetsThreshold = currentEnrolledDim === 128
+            ? (frameSim >= MATCH_THRESHOLD && (simToAvg === 0 || simToAvg >= 0.77))
+            : (frameSim >= MATCH_THRESHOLD);
+
+          if (meetsThreshold) {
             verifiedCount++;
           }
         }
@@ -543,7 +572,8 @@ const verifyFace = async (req, res) => {
         const bestSim = similarities.length > 0 ? Math.max(...similarities) : 0;
 
         // PROJECT_RULES.md: Verification Rule: Minimum 20 out of 30 matching frames
-        const isMatch = verifiedCount >= 20;
+        // Additionally verify collective average similarity to prevent imposter boundary false positives
+        const isMatch = verifiedCount >= 20 && avgSim >= MIN_AVG_THRESHOLD;
         arcfaceRes = {
           success: true,
           verified: isMatch,
@@ -556,8 +586,8 @@ const verifyFace = async (req, res) => {
           bestSimilarity: bestSim,
           threshold: MATCH_THRESHOLD,
           message: isMatch
-            ? `Face verified successfully (${verifiedCount}/${similarities.length} frames matched).`
-            : `Face verification failed: Only ${verifiedCount}/${similarities.length} frames matched (Minimum 20 required at threshold ${MATCH_THRESHOLD}).`
+            ? `Face verified successfully (${verifiedCount}/${similarities.length} frames matched — ${Math.round(avgSim * 100)}% similarity).`
+            : `Face verification failed: Only ${verifiedCount}/${similarities.length} frames matched (Minimum 20 required at threshold ${MATCH_THRESHOLD}, average similarity: ${Math.round(avgSim * 100)}%).`
         };
       } else {
         return res.status(503).json({

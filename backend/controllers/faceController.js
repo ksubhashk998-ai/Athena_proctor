@@ -347,16 +347,36 @@ const verifyFace = async (req, res) => {
     if (cleanEmail) profile = await FaceProfile.findOne({ email: cleanEmail });
     if (!profile && cleanStudentId) profile = await FaceProfile.findOne({ studentId: cleanStudentId });
 
-    // Fallback: check FaceEmbedding model if not found in FaceProfile
+    // Fallback 1: check FaceEmbedding model if not found in FaceProfile
     if (!profile && cleanEmail) {
-      const fe = await FaceEmbedding.findOne({ email: cleanEmail });
-      if (fe && fe.embeddings && fe.embeddings.length > 0) {
+      const fe = await FaceEmbedding.findOne({ $or: [{ email: cleanEmail }, { studentId: cleanStudentId }] });
+      if (fe) {
+        const feList = (fe.embeddings && fe.embeddings.length > 0)
+          ? fe.embeddings
+          : (fe.embedding && fe.embedding.length > 0 ? [fe.embedding] : []);
+        if (feList.length > 0) {
+          profile = {
+            studentId: fe.studentId || cleanStudentId,
+            email: fe.email || cleanEmail,
+            name: fe.name || 'Student',
+            embeddings: feList,
+            averageEmbedding: fe.embedding || feList[0]
+          };
+        }
+      }
+    }
+
+    // Fallback 2: check Student model if not found
+    if (!profile && (cleanEmail || cleanStudentId)) {
+      const st = await Student.findOne({ $or: [{ email: cleanEmail }, { studentId: cleanStudentId }] });
+      if (st && st.faceEmbeddings && st.faceEmbeddings.length > 0) {
+        const stList = Array.isArray(st.faceEmbeddings[0]) ? st.faceEmbeddings : [st.faceEmbeddings];
         profile = {
-          studentId: fe.studentId,
-          email: fe.email,
-          name: fe.name,
-          embeddings: fe.embeddings,
-          averageEmbedding: fe.embedding || fe.embeddings[0]
+          studentId: st.studentId || cleanStudentId,
+          email: st.email || cleanEmail,
+          name: st.fullName || st.name || 'Student',
+          embeddings: stList,
+          averageEmbedding: stList[0]
         };
       }
     }
@@ -469,7 +489,8 @@ const verifyFace = async (req, res) => {
     if (!arcfaceRes) {
       const liveVecs = descriptors || liveEmbeddings || (descriptor || liveDescriptor || embedding ? [descriptor || liveDescriptor || embedding] : null);
       if (liveVecs && Array.isArray(liveVecs) && liveVecs.length > 0) {
-        console.log(`[Biometric Verification] Evaluating ${liveVecs.length} client neural face descriptors against ${enrolledEmbeddings.length} enrolled ${enrolledDim}d templates...`);
+        const currentEnrolledDim = (enrolledEmbeddings && enrolledEmbeddings[0] && enrolledEmbeddings[0].length) || enrolledDim;
+        console.log(`[Biometric Verification] Evaluating ${liveVecs.length} client neural face descriptors against ${enrolledEmbeddings.length} enrolled ${currentEnrolledDim}d templates...`);
         if (enrolledEmbeddings.length > 0 && liveVecs.length > 0 && enrolledEmbeddings[0].length !== liveVecs[0].length) {
           console.warn(`[Biometric Verification] Dimension mismatch: enrolled=${enrolledEmbeddings[0].length}d, live=${liveVecs[0].length}d.`);
           return res.status(200).json({
@@ -487,17 +508,11 @@ const verifyFace = async (req, res) => {
 
         let verifiedCount = 0;
         let similarities = [];
-        const enrolledDim = enrolledEmbeddings[0].length;
-        // Calibrated threshold policy per PROJECT_RULES.md:
-        // - Allow verification from longer camera distances
-        // - Do not use distance thresholds (using normalized cosine similarity)
-        // 128d (FaceAPI): genuine student at standard/longer distance has cosine similarity 0.68 - 0.88. Imposters score < 0.48. Threshold = 0.68
-        // 512d (InsightFace ArcFace): genuine student has cosine similarity 0.63 - 0.85. Imposters score < 0.40. Threshold = 0.63
-        const MATCH_THRESHOLD = enrolledDim === 128 ? 0.68 : 0.63;
+        const MATCH_THRESHOLD = currentEnrolledDim === 128 ? 0.68 : 0.63;
 
         for (let i = 0; i < liveVecs.length; i++) {
           const liveVec = normalizeVector(liveVecs[i]);
-          if (!liveVec || !Array.isArray(liveVec) || liveVec.length !== enrolledDim) continue;
+          if (!liveVec || !Array.isArray(liveVec) || liveVec.length !== currentEnrolledDim) continue;
 
           // 1. Similarity to clean average centroid identity template
           let simToAvg = 0;
@@ -682,13 +697,59 @@ const verifyFace = async (req, res) => {
  */
 const getFaceProfile = async (req, res) => {
   try {
-    const param = req.params.id;
+    const param = (req.params.id || '').trim();
+    const cleanEmail = param.toLowerCase();
+
     let profile = await FaceProfile.findOne({
       $or: [
         { studentId: param },
-        { email: param.toLowerCase() }
+        { email: cleanEmail }
       ]
     });
+
+    if (!profile) {
+      const fe = await FaceEmbedding.findOne({
+        $or: [
+          { studentId: param },
+          { email: cleanEmail }
+        ]
+      });
+      if (fe) {
+        const feList = (fe.embeddings && fe.embeddings.length > 0)
+          ? fe.embeddings
+          : (fe.embedding && fe.embedding.length > 0 ? [fe.embedding] : []);
+        if (feList.length > 0) {
+          profile = {
+            studentId: fe.studentId || param,
+            email: fe.email || cleanEmail,
+            name: fe.name || 'Student',
+            embeddings: feList,
+            averageEmbedding: fe.embedding || feList[0],
+            modelVersion: 'FaceAPI-Cloud'
+          };
+        }
+      }
+    }
+
+    if (!profile) {
+      const st = await Student.findOne({
+        $or: [
+          { studentId: param },
+          { email: cleanEmail }
+        ]
+      });
+      if (st && st.faceEmbeddings && st.faceEmbeddings.length > 0) {
+        const stList = Array.isArray(st.faceEmbeddings[0]) ? st.faceEmbeddings : [st.faceEmbeddings];
+        profile = {
+          studentId: st.studentId || param,
+          email: st.email || cleanEmail,
+          name: st.fullName || st.name || 'Student',
+          embeddings: stList,
+          averageEmbedding: stList[0],
+          modelVersion: 'FaceAPI-Cloud'
+        };
+      }
+    }
 
     if (!profile) {
       return res.status(200).json({
@@ -712,43 +773,67 @@ const getFaceProfile = async (req, res) => {
 };
 
 /**
+ * DELETE /api/face/enrollment/:id
+ */
+const deleteFaceEnrollment = async (req, res) => {
+  try {
+    const studentId = req.params.studentId || req.params.id;
+    const email = (req.query.email || studentId || '').toLowerCase().trim();
+
+    await FaceProfile.deleteMany({
+      $or: [{ studentId }, { email }]
+    }).catch(() => {});
+
+    await FaceEmbedding.deleteMany({
+      $or: [{ studentId }, { email }]
+    }).catch(() => {});
+
+    await Student.updateMany(
+      { $or: [{ studentId }, { email }] },
+      { $set: { faceEnrolled: false, faceEmbeddings: [], faceEnrolledAt: null, verificationStatus: 'Pending' } }
+    ).catch(() => {});
+
+    return res.json({
+      success: true,
+      message: 'Face profile successfully reset for re-enrollment.'
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+/**
  * POST /api/face/cheating-log
  */
 const saveCheatingLog = async (req, res) => {
   try {
     const { studentId, studentEmail, eventType, severity, details, snapshot, imageSnapshot, examId, timestamp } = req.body;
     const cleanEmail = (studentEmail || '').trim().toLowerCase() || 'unknown@proctor.com';
-    const cleanStudentId = (studentId || '').trim() || ('STU_' + cleanEmail.replace(/[^a-z0-9]/gi, '_'));
+    const cleanStudentId = (studentId || '').trim() || 'STU_' + cleanEmail.replace(/[^a-z0-9]/gi, '_');
 
-    let savedSnapshotUrl = null;
-    const b64 = snapshot || imageSnapshot;
-    if (b64 && typeof b64 === 'string' && b64.startsWith('data:image')) {
-      savedSnapshotUrl = saveImageToDisk(b64, `violation_${eventType || 'anomaly'}`, cleanStudentId);
+    let savedImageUrl = null;
+    const frame = snapshot || imageSnapshot;
+    if (frame && typeof frame === 'string' && frame.startsWith('data:image')) {
+      savedImageUrl = saveImageToDisk(frame, `violation_${(eventType || 'anomaly').toLowerCase()}`, cleanStudentId);
     }
 
-    const logEntry = new VerificationLog({
+    const log = await VerificationLog.create({
       studentId: cleanStudentId,
       email: cleanEmail,
-      eventType: eventType || 'PROCTOR_ANOMALY',
-      status: severity === 'HIGH' || severity === 'CRITICAL' ? 'VIOLATION' : 'WARNING',
-      verificationResult: severity === 'CRITICAL' ? 'TERMINATED' : 'FLAGGED',
-      reason: details || eventType || 'Proctoring violation detected',
-      snapshotUrl: savedSnapshotUrl || b64,
       examId: examId || 'EXAM_MAIN',
+      eventType: eventType || 'SUSPICIOUS_BEHAVIOR',
+      severity: severity || 'MEDIUM',
+      details: details || {},
+      snapshotUrl: savedImageUrl || frame,
+      result: 'REJECTED',
       timestamp: timestamp ? new Date(timestamp) : new Date()
     });
 
-    await logEntry.save();
-    return res.status(200).json({
-      success: true,
-      message: 'Violation log saved to database.',
-      log: logEntry
-    });
+    console.log(`🚨 [Cheating Log] Recorded ${eventType} for ${cleanEmail}`);
+    return res.status(201).json({ success: true, log });
   } catch (err) {
-    return res.status(500).json({
-      success: false,
-      error: err.message || 'Failed to record proctoring violation.'
-    });
+    console.error('Save cheating log error:', err);
+    return res.status(500).json({ success: false, error: err.message });
   }
 };
 
@@ -757,17 +842,18 @@ const saveCheatingLog = async (req, res) => {
  */
 const getCheatingLogs = async (req, res) => {
   try {
-    const { studentId, email, examId } = req.query;
-    let query = {};
-    if (studentId) query.studentId = studentId;
-    if (email) query.email = email.toLowerCase();
-    if (examId) query.examId = examId;
+    const limit = parseInt(req.query.limit) || 50;
+    const studentId = req.query.studentId;
+    const filter = studentId ? { studentId } : {};
 
-    const logs = await VerificationLog.find(query).sort({ timestamp: -1 }).limit(100);
+    const logs = await VerificationLog.find(filter)
+      .sort({ timestamp: -1 })
+      .limit(limit);
+
     return res.status(200).json({
       success: true,
       count: logs.length,
-      logs: logs
+      logs
     });
   } catch (err) {
     return res.status(500).json({
@@ -800,6 +886,7 @@ module.exports = {
   enrollFace,
   verifyFace,
   getFaceProfile,
+  deleteFaceEnrollment,
   saveCheatingLog,
   getCheatingLogs,
   getFaceDebug

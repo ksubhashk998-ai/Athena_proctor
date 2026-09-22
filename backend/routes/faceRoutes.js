@@ -4,6 +4,7 @@ const {
   enrollFace, 
   verifyFace, 
   getFaceProfile, 
+  deleteFaceEnrollment,
   saveCheatingLog, 
   getCheatingLogs,
   getFaceDebug 
@@ -15,6 +16,11 @@ const {
 router.post('/enroll', enrollFace);
 router.post('/face/enroll', enrollFace);
 router.post('/face/register', enrollFace);
+
+// DELETE /api/face/enrollment/:studentId
+router.delete('/enrollment/:studentId', deleteFaceEnrollment);
+router.delete('/enroll/:studentId', deleteFaceEnrollment);
+router.delete('/face/enrollment/:studentId', deleteFaceEnrollment);
 
 // POST /api/face/verify
 router.post('/verify', verifyFace);

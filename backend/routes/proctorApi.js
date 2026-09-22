@@ -642,6 +642,14 @@ router.delete('/face/enrollment/:studentId', async (req, res) => {
         let deletedFromDb = false;
 
         if (mongoose.connection.readyState === 1) {
+            try {
+                const FaceProfile = require('../models/FaceProfile');
+                if (FaceProfile) {
+                    await FaceProfile.deleteMany({
+                        $or: [{ studentId }, { email: email.toLowerCase() }]
+                    }).catch(() => {});
+                }
+            } catch (fpErr) {}
             if (FaceEmbedding) {
                 await FaceEmbedding.deleteMany({
                     $or: [{ studentId }, { email }]

@@ -118,10 +118,10 @@ export function useContinuousVerification({
         const rollingSimilarity = recentScoresRef.current.reduce((a, b) => a + b, 0) / recentScoresRef.current.length;
         const rollingConfidence = Math.round(rollingSimilarity * 100);
 
-        // Fix 2: Lower live monitoring threshold from 0.80 to 0.65
-        const match = data.match === true || data.verified === true || data.finalDecision === 'VERIFIED' || currentSim >= 0.65 || rollingSimilarity >= 0.65;
+        // Strict live monitoring check: requires confirmed backend match without lenient false-positive overrides
+        const match = (data.match === true || data.verified === true || data.finalDecision === 'VERIFIED') && (currentSim >= 0.82);
         const elapsedSinceVerified = (Date.now() - lastVerifiedTimeRef.current) / 1000;
-        const isWithinGraceWindow = elapsedSinceVerified < 10;
+        const isWithinGraceWindow = elapsedSinceVerified < 6 && consecutiveMatchesRef.current > 3;
 
         if (match) {
           lastVerifiedTimeRef.current = Date.now();

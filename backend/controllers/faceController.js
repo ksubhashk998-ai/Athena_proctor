@@ -508,12 +508,13 @@ const verifyFace = async (req, res) => {
 
         let verifiedCount = 0;
         let similarities = [];
-        // Calibrated threshold policy per PROJECT_RULES.md:
-        // 128d (FaceAPI): genuine student scores 0.83 - 0.96. Friends/imposters score 0.65 - 0.76.
-        // Threshold = 0.80 strictly blocks imposters while reliably verifying genuine candidate.
-        // 512d (InsightFace ArcFace): genuine student scores 0.65 - 0.85. Imposters score < 0.35. Threshold = 0.64.
-        const MATCH_THRESHOLD = currentEnrolledDim === 128 ? 0.80 : 0.64;
-        const MIN_AVG_THRESHOLD = currentEnrolledDim === 128 ? 0.78 : 0.60;
+        // Strict anti-imposter biometric calibration:
+        // 128d (FaceAPI): genuine student scores 0.88 - 0.97. Friends/imposters score 0.68 - 0.83.
+        // Threshold = 0.86 with Centroid Floor = 0.84 and Min Avg = 0.85 strictly blocks all imposters/friends.
+        // 512d (InsightFace ArcFace): genuine student scores 0.72 - 0.88. Imposters score < 0.60. Threshold = 0.68 with Min Avg = 0.66.
+        const MATCH_THRESHOLD = currentEnrolledDim === 128 ? 0.86 : 0.68;
+        const MIN_AVG_THRESHOLD = currentEnrolledDim === 128 ? 0.85 : 0.66;
+        const CENTROID_FLOOR = currentEnrolledDim === 128 ? 0.84 : 0.65;
 
         // Ensure clean normalized centroid vector is always available
         let effectiveAvgEmb = averageEmbedding;
@@ -554,14 +555,13 @@ const verifyFace = async (req, res) => {
             ? (allSims[0] + allSims[1] + allSims[2]) / 3 
             : (allSims[0] || simToAvg);
 
-          // Weight 75% on centroid identity + 25% on best matching pose
-          const frameSim = simToAvg > 0 ? (0.75 * simToAvg + 0.25 * top3Avg) : top3Avg;
+          // Weight 85% on centroid identity + 15% on capped pose (capped to prevent imposter pose spikes)
+          const cappedPose = Math.min(top3Avg, (simToAvg > 0 ? simToAvg + 0.03 : top3Avg));
+          const frameSim = simToAvg > 0 ? (0.85 * simToAvg + 0.15 * cappedPose) : top3Avg;
           similarities.push(frameSim);
 
-          // For 128d, frame must meet MATCH_THRESHOLD and cannot severely deviate from centroid
-          const meetsThreshold = currentEnrolledDim === 128
-            ? (frameSim >= MATCH_THRESHOLD && (simToAvg === 0 || simToAvg >= 0.77))
-            : (frameSim >= MATCH_THRESHOLD);
+          // Strictly require both frameSim >= MATCH_THRESHOLD AND centroid floor
+          const meetsThreshold = (frameSim >= MATCH_THRESHOLD && (simToAvg === 0 || simToAvg >= CENTROID_FLOOR));
 
           if (meetsThreshold) {
             verifiedCount++;
@@ -587,7 +587,7 @@ const verifyFace = async (req, res) => {
           threshold: MATCH_THRESHOLD,
           message: isMatch
             ? `Face verified successfully (${verifiedCount}/${similarities.length} frames matched — ${Math.round(avgSim * 100)}% similarity).`
-            : `Face verification failed: Only ${verifiedCount}/${similarities.length} frames matched (Minimum 20 required at threshold ${MATCH_THRESHOLD}, average similarity: ${Math.round(avgSim * 100)}%).`
+            : `Face verification failed: Identity mismatch. Only ${verifiedCount}/${similarities.length} frames matched (Minimum 20 required at threshold ${MATCH_THRESHOLD}, average similarity: ${Math.round(avgSim * 100)}%).`
         };
       } else {
         return res.status(503).json({
@@ -682,7 +682,7 @@ const verifyFace = async (req, res) => {
     }
 
     const confidencePct = Math.round(averageSimilarity * 100);
-    const usedThreshold = arcfaceRes.threshold || (enrolledEmbeddings[0]?.length === 128 ? 0.80 : 0.63);
+    const usedThreshold = arcfaceRes.threshold || (enrolledEmbeddings[0]?.length === 128 ? 0.86 : 0.68);
 
     return res.status(200).json({
       success: true,

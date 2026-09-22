@@ -58,10 +58,10 @@ MIN_ACCEPTABLE_QUALITY = 35.0
 GOOD_QUALITY = 55.0
 MIN_VALID_EMBEDDINGS = 30
 MAX_CANDIDATE_FRAMES = 40
-MIN_VERIFICATION_FRAMES = 20
-SIMILARITY_THRESHOLD = 0.58
-FRAME_MATCH_THRESHOLD = 0.58
-SUSPICIOUS_THRESHOLD = 0.48
+SIMILARITY_THRESHOLD = 0.68
+FRAME_MATCH_THRESHOLD = 0.68
+MIN_AVG_THRESHOLD = 0.66
+SUSPICIOUS_THRESHOLD = 0.55
 TARGET_VERIFICATION_FRAMES = 30
 ENABLE_DIAGNOSTIC_MODE = True
 
@@ -702,15 +702,17 @@ def arcface_verify(request: ArcFaceVerifyRequest):
 
             if average_vector is not None:
                 sim_to_avg = float(np.dot(average_vector, live_vector))
-                effective_sim = float(0.6 * sim_to_avg + 0.4 * top3_sim)
+                capped_pose = min(top3_sim, sim_to_avg + 0.03)
+                effective_sim = float(0.85 * sim_to_avg + 0.15 * capped_pose)
             else:
+                sim_to_avg = 1.0
                 effective_sim = top3_sim
 
             sim_clamped = round(float(np.clip(effective_sim, 0.0, 1.0)), 4)
             frame_similarities.append(sim_clamped)
 
-            # Cosine similarity matching threshold for ArcFace (>= 0.63)
-            if sim_clamped >= FRAME_MATCH_THRESHOLD:
+            # Strict Cosine similarity matching threshold for ArcFace (>= 0.68) with centroid guard (>= 0.66)
+            if sim_clamped >= FRAME_MATCH_THRESHOLD and (average_vector is None or sim_to_avg >= 0.66):
                 verified_count += 1
             elif sim_clamped >= SUSPICIOUS_THRESHOLD:
                 suspicious_count += 1
@@ -752,11 +754,11 @@ def arcface_verify(request: ArcFaceVerifyRequest):
             "elapsedSeconds": total_elapsed
         }
 
-    # PROJECT_RULES.md: Verification Rule: Minimum 20 out of 30 matching frames
+    # Strict Anti-Imposter Verification Rule: Minimum 20 matching frames AND average similarity >= 0.66
     if multi_face_triggered and valid_count < 3:
         decision = "MULTIPLE_FACES_DETECTED"
         verified = False
-    elif verified_count >= 20:
+    elif verified_count >= 20 and average_similarity >= MIN_AVG_THRESHOLD:
         verified = True
         decision = "VERIFIED"
     else:

@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import Webcam from 'react-webcam';
 import { getApiBaseUrl } from '../utils/config';
+import { ensureModelsLoaded, getFaceApi } from '../utils/faceModelLoader';
 
 const TARGET_SAMPLES = 30;
 
@@ -12,6 +13,7 @@ export default function Register() {
   const lastCaptureTimeRef = useRef(0);
   const lastEmbeddingRef = useRef(null);
   const samplesRef = useRef([]);
+  const descriptorsRef = useRef([]);
 
   // Form State
   const [formData, setFormData] = useState({
@@ -46,7 +48,12 @@ export default function Register() {
 
   // Initialize on mount
   useEffect(() => {
-    setModelsLoaded(true);
+    ensureModelsLoaded()
+      .then(() => setModelsLoaded(true))
+      .catch((e) => {
+        console.warn('face-api preload notice:', e.message);
+        setModelsLoaded(true);
+      });
 
     return () => {
       if (captureIntervalRef.current) {
@@ -132,9 +139,13 @@ export default function Register() {
     setStatusMsg('🚀 Biometric Scan: Center your face and hold steady...');
     setSamplesCount(0);
     samplesRef.current = [];
+    descriptorsRef.current = [];
     lastCaptureTimeRef.current = 0;
 
-    // Stable 300ms capture interval to collect 30 high-resolution frames smoothly
+    const api = getFaceApi();
+    const detectorOptions = api ? new api.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.20 }) : null;
+
+    // Stable capture interval to collect 30 high-resolution frames smoothly
     captureIntervalRef.current = setInterval(async () => {
       try {
         const v = webcamRef.current?.video;
@@ -143,7 +154,7 @@ export default function Register() {
         }
 
         const now = Date.now();
-        if (now - lastCaptureTimeRef.current < 250) {
+        if (now - lastCaptureTimeRef.current < 200) {
           return;
         }
 
@@ -158,6 +169,17 @@ export default function Register() {
         if (b64 && b64.length > 5000) {
           samplesRef.current.push(b64);
           lastCaptureTimeRef.current = now;
+
+          if (api && api.detectSingleFace && detectorOptions) {
+            try {
+              const det = await api.detectSingleFace(canvas, detectorOptions)
+                .withFaceLandmarks()
+                .withFaceDescriptor();
+              if (det && det.descriptor) {
+                descriptorsRef.current.push(Array.from(det.descriptor));
+              }
+            } catch (dErr) {}
+          }
 
           const count = samplesRef.current.length;
           setSamplesCount(count);
@@ -181,7 +203,7 @@ export default function Register() {
       } catch (err) {
         console.error('Face capture frame error:', err);
       }
-    }, 300);
+    }, 250);
   };
 
   const finalizeEnrollment = async (frames) => {
@@ -195,7 +217,8 @@ export default function Register() {
           email: formData.email,
           studentId: 'STU_' + formData.email.trim().toLowerCase().replace(/[^a-z0-9]/g, '_'),
           name: `${formData.firstName} ${formData.lastName}`,
-          frames: frames
+          frames: frames,
+          descriptors: descriptorsRef.current
         })
       });
 

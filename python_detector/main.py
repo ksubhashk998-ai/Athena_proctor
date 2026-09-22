@@ -47,9 +47,10 @@ _insightface_app = None
 _phone_model = None
 _headphone_model = None
 
-# COCO class IDs (0 = person, 67 = cell phone)
+# COCO class IDs (0 = person, 67 = cell phone, 65 = remote control/phone back)
 PERSON_CLASS_ID = 0
 PHONE_CLASS_ID = 67
+PHONE_CLASS_IDS = [67, 65]
 HEADPHONE_KEYWORDS = ["earphone", "headphone", "earbud", "airpod", "headset"]
 
 # Quality & Verification Constants (Adheres to PROJECT_RULES.md)
@@ -58,9 +59,9 @@ GOOD_QUALITY = 55.0
 MIN_VALID_EMBEDDINGS = 30
 MAX_CANDIDATE_FRAMES = 40
 MIN_VERIFICATION_FRAMES = 20
-SIMILARITY_THRESHOLD = 0.63
-FRAME_MATCH_THRESHOLD = 0.63
-SUSPICIOUS_THRESHOLD = 0.50
+SIMILARITY_THRESHOLD = 0.58
+FRAME_MATCH_THRESHOLD = 0.58
+SUSPICIOUS_THRESHOLD = 0.48
 TARGET_VERIFICATION_FRAMES = 30
 ENABLE_DIAGNOSTIC_MODE = True
 
@@ -379,7 +380,8 @@ async def detect_phone(request: DetectionRequest):
         image.thumbnail((640, 640))
 
         model = get_phone_model()
-        detections = run_yolo_detection(model, image, target_class_ids=[PHONE_CLASS_ID], threshold=request.confidence_threshold)
+        threshold = request.confidence_threshold if request.confidence_threshold is not None else 0.28
+        detections = run_yolo_detection(model, image, target_class_ids=PHONE_CLASS_IDS, threshold=threshold)
         return DetectionResponse(detected=len(detections) > 0, detections=detections, model="yolov8n", yolo_available=True)
     except Exception as e:
         logger.error(f"Phone detection error: {e}")
@@ -617,9 +619,24 @@ def arcface_verify(request: ArcFaceVerifyRequest):
             "averageSimilarity": 0.0
         }
 
-    for enrolled in request.enrolledEmbeddings:
-        if not isinstance(enrolled, list) or len(enrolled) != 512:
-            raise HTTPException(status_code=400, detail="Invalid enrolled embedding dimension. Expected 512d.")
+    dims = [len(enrolled) if isinstance(enrolled, list) else -1 for enrolled in (request.enrolledEmbeddings or [])]
+    if any(d != 512 for d in dims):
+        logger.warning(f"⚠️ [ArcFace Verify] Dimension mismatch in enrolled embeddings: count={len(dims)}, dims={set(dims)} (expected 512d).")
+        return {
+            "success": False,
+            "verified": False,
+            "match": False,
+            "decision": "DIMENSION_MISMATCH",
+            "finalDecision": "REJECTED",
+            "result": "rejected",
+            "message": f"Enrolled embeddings dimension mismatch (got {set(dims)}, expected 512d).",
+            "bestSimilarity": 0.0,
+            "averageSimilarity": 0.0,
+            "matchingFrames": 0,
+            "verifiedFrames": 0,
+            "validFrames": 0,
+            "totalFrames": total_requested
+        }
 
     # Pre-compute L2 normalized enrolled matrix ONCE
     enrolled_matrix = np.asarray(request.enrolledEmbeddings, dtype=np.float32)

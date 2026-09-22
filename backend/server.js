@@ -2389,11 +2389,19 @@ io.on('connection', (socket) => {
             const studentId = data.studentId || `STU_${data.email ? data.email.replace(/[^a-z0-9]/g, '_') : '1001'}`;
             socket.studentId = studentId;
             socket.studentEmail = data.email;
+            const targetSessionId = data.sessionId || `SESS_${studentId}`;
             try {
-                let session = await LiveSession.findOne({ $or: [{ studentId }, { usn: studentId }, { email: data.email }] });
+                let session = await LiveSession.findOne({
+                    $or: [
+                        { sessionId: targetSessionId },
+                        { studentId },
+                        { usn: studentId },
+                        ...(data.email ? [{ email: data.email }] : [])
+                    ]
+                });
                 if (!session) {
                     session = new LiveSession({
-                        sessionId: data.sessionId || `SESS_${studentId}`,
+                        sessionId: targetSessionId,
                         studentId: studentId,
                         studentName: data.studentName || data.fullName || 'Student',
                         usn: data.usn || studentId,
@@ -2424,7 +2432,20 @@ io.on('connection', (socket) => {
                     io.to('admin_room').emit('student-camera', { studentId, image: data.image });
                 }
             } catch (err) {
-                console.error('Error updating telemetry session:', err.message);
+                if (err.code === 11000) {
+                    try {
+                        const existingSession = await LiveSession.findOne({ sessionId: targetSessionId });
+                        if (existingSession) {
+                            existingSession.lastActive = new Date();
+                            if (data.image) existingSession.lastWebcamFrame = data.image;
+                            await existingSession.save();
+                        }
+                    } catch (retryErr) {
+                        console.error('Error updating telemetry session (retry):', retryErr.message);
+                    }
+                } else {
+                    console.error('Error updating telemetry session:', err.message);
+                }
             }
         }
     });

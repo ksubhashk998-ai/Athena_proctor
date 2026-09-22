@@ -70,10 +70,11 @@ export default function AdminMonitor() {
       ]);
 
       if (studentsRes?.data?.success) {
-        const incoming = studentsRes.data.students || [];
+        const incoming = (studentsRes.data.students || []).filter(s =>
+          ['Online', 'Warning', 'Active', 'in-progress'].includes(s.status)
+        );
         setStudents(prev => {
-          if (incoming.length === 0) return prev;
-          if (prev.length === 0) return incoming;
+          if (incoming.length === 0) return [];
           return incoming.map(inc => {
             const existing = prev.find(p =>
               p.studentId === inc.studentId ||
@@ -81,15 +82,13 @@ export default function AdminMonitor() {
               (p.email && inc.email && p.email.toLowerCase() === inc.email.toLowerCase())
             );
             if (!existing) return inc;
-            const isLive = !!existing.image || existing.status === 'Online';
-            const resolvedStatus = isLive ? (existing.status === 'Warning' ? 'Warning' : 'Online') : inc.status;
             return {
               ...inc,
-              image: existing.image || inc.image || null,
-              status: resolvedStatus,
-              riskLevel: resolvedStatus === 'Online' ? (existing.riskLevel && !existing.riskLevel.includes('High') ? existing.riskLevel : 'Safe (0-20)') : inc.riskLevel,
-              headPose: existing.headPose && existing.headPose !== 'N/A' && inc.headPose === 'N/A' ? existing.headPose : (inc.headPose || existing.headPose),
-              eyeGaze: existing.eyeGaze && existing.eyeGaze !== 'N/A' && inc.eyeGaze === 'N/A' ? existing.eyeGaze : (inc.eyeGaze || existing.eyeGaze)
+              image: inc.image || existing.image || null,
+              status: inc.status,
+              riskLevel: inc.riskLevel || existing.riskLevel || 'Safe (0-20)',
+              headPose: inc.headPose && inc.headPose !== 'N/A' ? inc.headPose : (existing.headPose || 'Looking Center'),
+              eyeGaze: inc.eyeGaze && inc.eyeGaze !== 'N/A' ? inc.eyeGaze : (existing.eyeGaze || 'Center')
             };
           });
         });
@@ -568,6 +567,10 @@ export default function AdminMonitor() {
     const statusStr = String(s.status || 'Offline').toLowerCase();
     const isTerminated = statusStr === 'terminated';
     const isWarning = statusStr === 'warning';
+    const isAttendingExam = ['online', 'active', 'warning', 'in-progress'].includes(statusStr);
+
+    // Live Monitoring strictly shows examinees actively attending the exam
+    if (!isAttendingExam) return false;
 
     const matchesSearch =
       !searchTerm.trim() ||
@@ -578,7 +581,7 @@ export default function AdminMonitor() {
 
     const matchesRisk =
       riskFilter === 'ALL' ||
-      (riskFilter === 'SAFE' && (s.riskLevel?.toLowerCase().includes('safe') || s.riskLevel?.toLowerCase().includes('low') || s.riskLevel?.toLowerCase().includes('normal') || statusStr === 'offline')) ||
+      (riskFilter === 'SAFE' && (s.riskLevel?.toLowerCase().includes('safe') || s.riskLevel?.toLowerCase().includes('low') || s.riskLevel?.toLowerCase().includes('normal'))) ||
       (riskFilter === 'MEDIUM' && (s.riskLevel?.toLowerCase().includes('medium') || s.riskLevel?.toLowerCase().includes('suspicious') || isWarning)) ||
       (riskFilter === 'HIGH' && (s.riskLevel?.toLowerCase().includes('high') || isTerminated));
 
@@ -987,15 +990,15 @@ export default function AdminMonitor() {
               <div style={styles.emptyStateContainer}>
                 <div style={styles.emptyStateIcon}>👥</div>
                 <h3 style={styles.emptyStateTitle}>
-                  {students.length === 0 ? 'No Registered Students Found' : 'No Students Matching Filter'}
+                  {students.length === 0 ? 'No Students Currently Attending Exam' : 'No Students Matching Filter'}
                 </h3>
                 <p style={styles.emptyStateSubtitle}>
                   {students.length === 0
-                    ? 'There are currently no registered student accounts in the database.'
-                    : 'Try clearing your search or risk filter to view all examinees.'}
+                    ? 'Active candidate camera video feeds and real-time AI proctoring telemetry will appear here automatically when students begin their exam session.'
+                    : 'Try clearing your search or risk filter to view examinees.'}
                 </p>
                 <button onClick={fetchData} style={styles.refreshBtn}>
-                  🔄 Refresh Status
+                  🔄 Refresh Live Feed
                 </button>
               </div>
             ) : (

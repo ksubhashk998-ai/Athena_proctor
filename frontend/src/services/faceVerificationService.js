@@ -1,19 +1,25 @@
 import { getApiBaseUrl } from '../utils/config';
-import { getFaceApi as getFaceModelApi } from '../utils/faceModelLoader';
+import {
+  loadFaceModels as loadLoaderFaceModels,
+  getFaceApi as getLoaderFaceApi,
+  areModelsLoaded,
+  ensureModelsLoaded
+} from '../utils/faceModelLoader';
 
 /**
- * Load face models (Clean session authentication - models bypass)
+ * Load face models via centralized loader
  */
 export async function loadFaceModels() {
-  return true;
+  const res = await loadLoaderFaceModels();
+  return Boolean(res && res.success);
 }
 
 export function areModelsReady() {
-  return true;
+  return areModelsLoaded();
 }
 
 export function getFaceApi() {
-  return null;
+  return getLoaderFaceApi();
 }
 
 export function canRunInference(videoRef) {
@@ -128,6 +134,13 @@ export async function verifyFaceAgainstBackend(videoElement, studentId, token, f
   verificationRunning = true;
 
   try {
+    // Ensure models are initialized before inference
+    try {
+      await ensureModelsLoaded();
+    } catch (mErr) {
+      console.warn('Face models initialization notice:', mErr.message);
+    }
+
     const apiBase = getApiBaseUrl();
     const stored = localStorage.getItem('user');
     let email = '';
@@ -152,16 +165,16 @@ export async function verifyFaceAgainstBackend(videoElement, studentId, token, f
 
     const video = videoElement?.current?.video || videoElement?.current || videoElement;
 
-    while (Date.now() - startTime < 3500 && frames.length < FRAME_COUNT) {
+    while (Date.now() - startTime < 15000 && frames.length < FRAME_COUNT) {
       if (video && video.readyState >= 2) {
         try {
           ctx.drawImage(video, 0, 0, 640, 480);
           frames.push(canvas.toDataURL('image/jpeg', 0.75));
 
-          const api = getFaceModelApi();
+          const api = getLoaderFaceApi();
           if (api && api.detectSingleFace) {
             try {
-              const det = await api.detectSingleFace(canvas, new api.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.25 }))
+              const det = await api.detectSingleFace(canvas, new api.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.20 }))
                 .withFaceLandmarks()
                 .withFaceDescriptor();
               if (det && det.descriptor) {

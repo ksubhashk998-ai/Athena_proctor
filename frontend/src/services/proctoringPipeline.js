@@ -31,6 +31,8 @@
  */
 
 import * as faceapi from '@vladmandic/face-api';
+import * as cocoSsd from '@tensorflow-models/coco-ssd';
+import '@tensorflow/tfjs';
 import gazeAttentionService from './gazeAttentionService';
 
 // ─── Eye Landmark Indices in face-api.js 68-point model ─────────────────────
@@ -53,6 +55,14 @@ class ProctoringPipeline {
 
     // ── General ───────────────────────────────────────────────
     this.isInitialized = false;
+
+    // ── Auxiliary Python YOLO state ───────────────────────────
+    this._lastYoloCheckTime = 0;
+    this._isYoloChecking = false;
+    this._yoloPhoneDetected = false;
+    this._yoloPhoneScore = 0;
+    this._yoloLastSeen = 0;
+    this._yoloCanvas = null;
 
     // ── 6-Frame Rolling Smoothing Buffers (Responsive ~1.5s tracking) ────
     this.gazeBuffer = new Array(6).fill('Center');
@@ -191,6 +201,16 @@ class ProctoringPipeline {
 
   async _initCocoSsd() {
     try {
+      if (cocoSsd && typeof cocoSsd.load === 'function') {
+        this.cocoModel = await cocoSsd.load({ base: 'mobilenet_v2' });
+        console.log('[Athena] COCO-SSD (npm module) loaded successfully ✓');
+        return true;
+      }
+    } catch (npmErr) {
+      console.warn('[Athena] NPM coco-ssd load notice:', npmErr.message);
+    }
+
+    try {
       if (!window.tf && !window.cocoSsd) {
         await this._loadScript('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js').catch(() => {});
       }
@@ -199,12 +219,62 @@ class ProctoringPipeline {
       }
       if (window.cocoSsd) {
         this.cocoModel = await window.cocoSsd.load({ base: 'mobilenet_v2' });
-        console.log('[Athena] COCO-SSD ready ✓');
+        console.log('[Athena] COCO-SSD (CDN) ready ✓');
       }
       return true;
     } catch (err) {
       console.warn('[Athena] COCO-SSD init failed:', err.message);
       return false;
+    }
+  }
+
+  // Non-blocking auxiliary YOLOv8 phone detection call to Python AI microservice
+  async _checkPythonYoloPhone(videoElement) {
+    const now = Date.now();
+    if (now - this._lastYoloCheckTime < 1500 || this._isYoloChecking) return;
+    this._lastYoloCheckTime = now;
+    this._isYoloChecking = true;
+
+    try {
+      if (!this._yoloCanvas) {
+        this._yoloCanvas = document.createElement('canvas');
+        this._yoloCanvas.width = 320;
+        this._yoloCanvas.height = 240;
+      }
+      const yCtx = this._yoloCanvas.getContext('2d');
+      yCtx.drawImage(videoElement, 0, 0, 320, 240);
+      const b64 = this._yoloCanvas.toDataURL('image/jpeg', 0.7);
+
+      const token = localStorage.getItem('token') || '';
+      const response = await fetch('http://127.0.0.1:8001/detect/phone', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageBase64: b64, confidence_threshold: 0.28 })
+      }).catch(() => {
+        return fetch('/api/detect/phone', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ imageBase64: b64, confidence_threshold: 0.28 })
+        });
+      });
+
+      if (response && response.ok) {
+        const data = await response.json();
+        if (data && data.detected) {
+          const topDet = data.detections?.[0];
+          const conf = Math.round((topDet?.confidence || 0.85) * 100);
+          this._yoloPhoneDetected = true;
+          this._yoloPhoneScore = conf;
+          this._yoloLastSeen = Date.now();
+        } else {
+          if (Date.now() - this._yoloLastSeen > 2500) {
+            this._yoloPhoneDetected = false;
+          }
+        }
+      }
+    } catch (_) {
+    } finally {
+      this._isYoloChecking = false;
     }
   }
 
@@ -238,7 +308,7 @@ class ProctoringPipeline {
     if (this.faceApiReady && videoElement && videoElement.videoWidth > 0 && videoElement.videoHeight > 0 && videoElement.readyState >= 3 && !videoElement.paused) {
       try {
         const dets = await faceapi
-          .detectAllFaces(videoElement, new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.20 }))
+          .detectAllFaces(videoElement, new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.42 }))
           .withFaceLandmarks();
         if (Array.isArray(dets)) {
           rawDetections = dets.filter(d => d && d.detection && d.detection.box && typeof d.detection.box.x === 'number' && d.detection.box.x !== null && d.detection.box.width > 0);
@@ -248,26 +318,75 @@ class ProctoringPipeline {
       }
     }
 
-    const validDetections = rawDetections.filter(d => d.detection.score >= 0.20);
+    let validDetections = rawDetections.filter(d => d.detection.score >= 0.42);
 
     // ── B. Head Pose & Eye Gaze from Landmarks ────────────────
     const poseResult = this._extractHeadPoseAndGaze(validDetections, videoElement, canvasW, canvasH);
 
-    // ── C. Phone & Earphone Detection (COCO-SSD) ─────────────
+    // ── C. Phone & Earphone Detection (COCO-SSD + Auxiliary YOLO) ─────────────
     let rawPredictions = [];
     if (this.cocoModel) {
       try {
-        rawPredictions = await this.cocoModel.detect(videoElement, 10, 0.12);
+        rawPredictions = await this.cocoModel.detect(videoElement, 10, 0.15);
       } catch (_) {}
     }
     const objectResult = this._extractObjects(rawPredictions, videoElement, canvasW, canvasH);
 
-    // ── D. Person Count Fusion (Faces + COCO-SSD Persons) ─────
-    let cocoPersonCount = 0;
-    if (rawPredictions && rawPredictions.length > 0) {
-      cocoPersonCount = rawPredictions.filter(p => p && p.class && p.class.toLowerCase() === 'person' && p.score >= 0.35).length;
+    // Trigger non-blocking auxiliary YOLO check to Python AI microservice
+    this._checkPythonYoloPhone(videoElement);
+    if (this._yoloPhoneDetected) {
+      objectResult.isPhoneActive = true;
+      objectResult.phoneScore = Math.max(objectResult.phoneScore || 0, this._yoloPhoneScore || 85);
     }
-    const personCount = Math.max(validDetections.length, cocoPersonCount);
+
+    // ── SPATIAL SUPPRESSION: Prevent Mobile Phone from being detected as Secondary Face ──
+    // If a phone is in frame, any face detected inside/near the phone box belongs to the phone.
+    if (objectResult.isPhoneActive && validDetections.length > 1) {
+      const pBox = objectResult.phoneBox;
+      if (pBox) {
+        const rawPW = pBox.rawW || (pBox.bw * (videoElement.videoWidth / canvasW));
+        const rawPH = pBox.rawH || (pBox.bh * (videoElement.videoHeight / canvasH));
+        const rawPX = pBox.rawX !== undefined ? pBox.rawX : (pBox.bx * (videoElement.videoWidth / canvasW));
+        const rawPY = pBox.rawY !== undefined ? pBox.rawY : (pBox.by * (videoElement.videoHeight / canvasH));
+
+        validDetections = validDetections.filter((face, idx) => {
+          if (idx === 0) return true; // Always retain primary examinee face
+          const fBox = face.detection.box;
+          const fx = fBox.x + fBox.width / 2;
+          const fy = fBox.y + fBox.height / 2;
+
+          const insidePhone = (
+            fx >= (rawPX - 30) && fx <= (rawPX + rawPW + 30) &&
+            fy >= (rawPY - 30) && fy <= (rawPY + rawPH + 30)
+          );
+
+          if (insidePhone) {
+            objectResult.isPhoneActive = true;
+            return false; // Suppress secondary face from phone
+          }
+          return true;
+        });
+      }
+    }
+
+    // Secondary Face Size & Score Validation:
+    // Suppress tiny reflection artifacts (< 12% of primary face area and score < 0.52)
+    if (validDetections.length > 1) {
+      const primaryFace = validDetections[0];
+      const primaryArea = primaryFace.detection.box.width * primaryFace.detection.box.height;
+      validDetections = validDetections.filter((face, idx) => {
+        if (idx === 0) return true;
+        const faceArea = face.detection.box.width * face.detection.box.height;
+        if (faceArea < primaryArea * 0.12 && face.detection.score < 0.52) {
+          return false;
+        }
+        return true;
+      });
+    }
+
+    // ── D. Person Count strictly based on verified real human face detections ──
+    // DO NOT use cocoPersonCount because COCO-SSD frequently misclassifies hands/arms/phones as persons!
+    const personCount = validDetections.length;
 
     // ── E. Temporal Persistence Counters ─────────────
     if (personCount === 0) this.faceMissingFrames++;
@@ -370,9 +489,8 @@ class ProctoringPipeline {
       // Trigger flags strictly filtered by duration
       faceReminderTrigger: this.faceMissingFrames >= 10 && this.faceMissingFrames < 17, // 3-5s: Soft reminder "Please remain visible" (No warning count)
       faceMissingTrigger: this.faceMissingFrames >= 17, // > 5 seconds face missing -> Warning
-      multiFaceTrigger: this.multiFaceFrames >= 7,      // ~2 seconds confirmed multiple faces -> Warning
-      phoneTrigger: objectResult.isPhoneActive && this.phoneTrackFrames >= 10,
-      earphoneTrigger: objectResult.isEarphonesActive && this.earphoneTrackFrames >= 10,
+      phoneTrigger: objectResult.isPhoneActive && this.phoneTrackFrames >= 2,
+      earphoneTrigger: objectResult.isEarphonesActive && this.earphoneTrackFrames >= 6,
       gazeAwayTrigger: this.gazeAwayFrames >= 34,       // > 10 continuous seconds looking away / head pose outside ±20° -> Warning
     };
   }
@@ -547,23 +665,45 @@ class ProctoringPipeline {
     const scaleX = canvasW / vW;
     const scaleY = canvasH / vH;
 
-    predictions.forEach(pred => {
-      const cls  = pred.class.toLowerCase();
+    (predictions || []).forEach(pred => {
+      if (!pred || !pred.class || !pred.bbox) return;
+      const cls  = pred.class.toLowerCase().trim();
       const conf = Math.round(pred.score * 100);
       const [x, y, w, h] = pred.bbox;
-      const box = { bx: x * scaleX, by: y * scaleY, bw: w * scaleX, bh: h * scaleY };
+      const box = { 
+        bx: x * scaleX, 
+        by: y * scaleY, 
+        bw: w * scaleX, 
+        bh: h * scaleY,
+        rawX: x,
+        rawY: y,
+        rawW: w,
+        rawH: h
+      };
 
-      const isPhone = cls === 'cell phone' || cls === 'mobile phone' || cls === 'phone';
-      const maxDim = Math.max(w, h);
-      const minDim = Math.min(w, h);
-      const aspectRatio = maxDim / (minDim || 1);
-      const isPhoneShape = maxDim >= 75 && minDim >= 35 && aspectRatio >= 1.28;
+      const isPhone = cls === 'cell phone' || cls === 'mobile phone' || cls === 'phone' || cls === 'remote';
+      const isEarphone = cls === 'headphone' || cls === 'earphone';
 
-      if (isPhone && conf >= 62 && isPhoneShape) {
+      // Sensitive phone detection:
+      // Phone held in hand can be vertical, horizontal, or tilted, with min dimension >= 12px
+      const isReasonableSize = Math.max(w, h) >= 25 && Math.min(w, h) >= 12;
+
+      if (isPhone && conf >= 28 && isReasonableSize) {
         detectedPhoneNow = true;
         if (conf > phoneScore) { phoneScore = conf; phoneBox = box; }
       }
+
+      if (isEarphone && conf >= 35) {
+        detectedEarphonesNow = true;
+        if (conf > earphonesScore) { earphonesScore = conf; earphonesBox = box; }
+      }
     });
+
+    // Incorporate auxiliary Python YOLO detection result if present
+    if (this._yoloPhoneDetected && !detectedPhoneNow) {
+      detectedPhoneNow = true;
+      phoneScore = Math.max(phoneScore, this._yoloPhoneScore || 85);
+    }
 
     // Phone temporal state
     if (detectedPhoneNow) {
@@ -571,13 +711,22 @@ class ProctoringPipeline {
       this.phoneTrackFrames++;
     } else {
       this.phoneAbsentFrames++;
-      if (this.phoneAbsentFrames >= 3) {
-        this.phoneTrackFrames = 0; phoneScore = 0; phoneBox = null;
+      if (this.phoneAbsentFrames >= 4) {
+        this.phoneTrackFrames = 0; 
+        phoneScore = 0; 
+        phoneBox = null;
       }
     }
-    const isPhoneActive = detectedPhoneNow || (this.phoneAbsentFrames < 3 && this.phoneTrackFrames > 0);
+    const isPhoneActive = detectedPhoneNow || (this.phoneAbsentFrames < 4 && this.phoneTrackFrames > 0);
 
-    return { isPhoneActive, phoneScore, phoneBox, isEarphonesActive: false, earphonesScore: 0, earphonesBox: null };
+    return { 
+      isPhoneActive, 
+      phoneScore: phoneScore || (isPhoneActive ? 85 : 0), 
+      phoneBox, 
+      isEarphonesActive: detectedEarphonesNow, 
+      earphonesScore, 
+      earphonesBox 
+    };
   }
 
   // Normal left-to-right canvas text drawing helper for overlay HUD & bounding boxes

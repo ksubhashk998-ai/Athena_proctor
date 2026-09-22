@@ -414,13 +414,13 @@ const getLiveStudents = async (req, res) => {
 
       if (session) {
         matchedSessionIds.add(session.sessionId || session._id.toString());
-        const isRecent = session.lastActive && (Date.now() - new Date(session.lastActive).getTime() < 10 * 60 * 1000);
-        const isOnline = ['Online', 'Active', 'Warning', 'in-progress'].includes(session.status) || isRecent || !!session.lastWebcamFrame;
+        const isRecent = session.lastActive && (Date.now() - new Date(session.lastActive).getTime() < 3 * 60 * 1000);
+        const isOnline = isRecent && ['Online', 'Active', 'Warning', 'in-progress'].includes(session.status);
         const computedStatus = session.status === 'Terminated'
           ? 'Terminated'
           : (['Finished', 'Completed', 'Submitted'].includes(session.status)
               ? 'Completed'
-              : (isOnline ? (session.status === 'Warning' ? 'Warning' : 'Online') : (session.status || 'Offline')));
+              : (isOnline ? (session.status === 'Warning' ? 'Warning' : 'Online') : 'Offline'));
 
         const computedRisk = calculateRiskScore(session, session.suspiciousActivityCount);
 
@@ -526,6 +526,14 @@ const getLiveStudents = async (req, res) => {
     (activeSessions || []).forEach(session => {
       const sessKey = session.sessionId || session._id.toString();
       if (!matchedSessionIds.has(sessKey)) {
+        const isRecent = session.lastActive && (Date.now() - new Date(session.lastActive).getTime() < 3 * 60 * 1000);
+        const isOnline = isRecent && ['Online', 'Active', 'Warning', 'in-progress'].includes(session.status);
+        const computedStatus = session.status === 'Terminated'
+          ? 'Terminated'
+          : (['Finished', 'Completed', 'Submitted'].includes(session.status)
+              ? 'Completed'
+              : (isOnline ? (session.status === 'Warning' ? 'Warning' : 'Online') : 'Offline'));
+
         const computedRisk = calculateRiskScore(session, session.suspiciousActivityCount);
         mergedStudents.push({
           sessionId: sessKey,
@@ -535,15 +543,15 @@ const getLiveStudents = async (req, res) => {
           email: session.email || 'student@university.edu',
           department: session.department || 'Computer Science & Engineering',
           examName: session.examName || 'Computer Science Final Assessment',
-          status: session.status || 'Online',
+          status: computedStatus,
           verificationStatus: session.verificationStatus || 'Verified',
           faceMatchConfidence: session.faceMatchConfidence || 95,
-          faceDetected: session.faceDetected !== undefined ? session.faceDetected : true,
+          faceDetected: session.faceDetected !== undefined ? session.faceDetected : (computedStatus !== 'Offline'),
           multipleFaces: session.multipleFaces || false,
           mobilePhoneDetected: session.mobilePhoneDetected || false,
-          fullScreenStatus: session.fullScreenStatus || 'Active',
-          headPose: session.headPose || 'Looking Center',
-          eyeGaze: session.eyeGaze || 'Looking Center',
+          fullScreenStatus: session.fullScreenStatus || (computedStatus !== 'Offline' ? 'Active' : 'N/A'),
+          headPose: session.headPose || (computedStatus !== 'Offline' ? 'Looking Center' : 'N/A'),
+          eyeGaze: session.eyeGaze || (computedStatus !== 'Offline' ? 'Looking Center' : 'N/A'),
           tabSwitchingCount: session.tabSwitchingCount || 0,
           copyPasteAttempts: session.copyPasteAttempts || 0,
           warningsCount: session.warningsCount || 0,
@@ -561,6 +569,12 @@ const getLiveStudents = async (req, res) => {
     });
 
     let results = mergedStudents;
+
+    // By default, Live Monitoring only shows candidates actively attending the exam
+    if (req.query.includeOffline !== 'true') {
+      results = results.filter(s => ['Online', 'Warning', 'Active', 'in-progress'].includes(s.status));
+    }
+
     if (search) {
       const q = search.toLowerCase();
       results = results.filter(s =>

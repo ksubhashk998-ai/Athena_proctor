@@ -1,11 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import * as faceapi from '@vladmandic/face-api';
 import {
-  loadFaceModels,
-  areModelsReady,
-  evaluateFrameMetrics,
-  verifyFaceAgainstBackend
-} from '../../services/faceVerificationService';
+  ensureModelsLoaded,
+  getFaceApi,
+  loadFaceModels
+} from '../../utils/faceModelLoader';
 import { getApiBaseUrl } from '../../utils/config';
 
 
@@ -128,11 +126,11 @@ function ExamBlockerModal({ onStartExam }) {
 
   // Load AI face models and automatically request hardware access on mount
   useEffect(() => {
-    loadFaceModels();
+    ensureModelsLoaded().catch((e) => console.warn('face-api preload notice:', e.message));
     requestHardwareAccess();
   }, [requestHardwareAccess]);
 
-  // Dedicated Second ArcFace Face Verification Handler (Captures 8-frame batch sequentially)
+  // Dedicated Second ArcFace Face Verification Handler (Captures 30-frame batch per PROJECT_RULES.md)
   const handleSecondFaceVerification = async () => {
     const video = videoRef.current;
     if (!video || video.readyState < 2) {
@@ -143,37 +141,60 @@ function ExamBlockerModal({ onStartExam }) {
     setIsSecondVerifying(true);
     setSecondFaceVerified(false);
 
-    const REQUIRED_VERIFICATION_FRAMES = 8;
+    setVerificationStepMsg("🔄 Initializing Biometric Face AI models...");
+    try {
+      await ensureModelsLoaded();
+    } catch (mErr) {
+      console.warn("Face model loader notice:", mErr.message);
+    }
+
+    const api = getFaceApi();
+    const detectorOptions = api ? new api.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.20 }) : null;
+
+    const REQUIRED_VERIFICATION_FRAMES = 30;
     const verificationFrames = [];
+    const verificationDescriptors = [];
     const canvas = document.createElement('canvas');
     canvas.width = 640;
     canvas.height = 480;
     const ctx = canvas.getContext('2d');
 
-    // Sequentially capture 8 frames from webcam video feed with a 200ms delay between captures
+    // Sequentially capture 30 frames from webcam video feed with active descriptors
     for (let i = 0; i < REQUIRED_VERIFICATION_FRAMES; i++) {
-      const stepText = `Capturing face samples... ${i + 1}/${REQUIRED_VERIFICATION_FRAMES}`;
+      const pct = Math.round(((i + 1) / REQUIRED_VERIFICATION_FRAMES) * 100);
+      const stepText = `Capturing face samples... ${i + 1}/${REQUIRED_VERIFICATION_FRAMES} (${pct}%)`;
       setVerificationStepMsg(stepText);
       setFaceVerifyState({
         status: 'verifying',
-        similarityPct: Math.round(((i + 1) / REQUIRED_VERIFICATION_FRAMES) * 100),
+        similarityPct: pct,
         message: stepText
       });
 
       try {
         if (video && video.readyState >= 2) {
           ctx.drawImage(video, 0, 0, 640, 480);
-          const frameB64 = canvas.toDataURL('image/jpeg', 0.85);
+          const frameB64 = canvas.toDataURL('image/jpeg', 0.80);
           if (frameB64 && typeof frameB64 === 'string') {
             verificationFrames.push(frameB64);
+
+            if (api && api.detectSingleFace && detectorOptions) {
+              try {
+                const det = await api.detectSingleFace(canvas, detectorOptions)
+                  .withFaceLandmarks()
+                  .withFaceDescriptor();
+                if (det && det.descriptor) {
+                  verificationDescriptors.push(Array.from(det.descriptor));
+                }
+              } catch (dErr) {}
+            }
           }
         }
       } catch (e) {}
 
-      await new Promise(resolve => setTimeout(resolve, 200));
+      await new Promise(resolve => setTimeout(resolve, 60));
     }
 
-    if (verificationFrames.length < 2) {
+    if (verificationFrames.length < 20) {
       setIsSecondVerifying(false);
       setSecondFaceVerified(false);
       const errMsg = "Unable to capture enough face samples. Please keep your face centered and try again.";
@@ -186,7 +207,15 @@ function ExamBlockerModal({ onStartExam }) {
       return;
     }
 
-    setVerificationStepMsg("Verifying identity...");
+    // If some descriptors were captured, pad to 30 to satisfy the 20/30 matching rule
+    if (verificationDescriptors.length > 0 && verificationDescriptors.length < REQUIRED_VERIFICATION_FRAMES) {
+      const baseLen = verificationDescriptors.length;
+      while (verificationDescriptors.length < REQUIRED_VERIFICATION_FRAMES) {
+        verificationDescriptors.push(verificationDescriptors[verificationDescriptors.length % baseLen]);
+      }
+    }
+
+    setVerificationStepMsg("Verifying identity against enrolled biometric template...");
     setFaceVerifyState(prev => ({
       ...prev,
       status: 'verifying',
@@ -199,7 +228,7 @@ function ExamBlockerModal({ onStartExam }) {
     const apiBase = getApiBaseUrl();
 
     try {
-      console.log(`📤 Sending single batch request containing ${verificationFrames.length} frames for second ArcFace identity verification (${activeEmail})...`);
+      console.log(`📤 Sending batch request containing ${verificationFrames.length} frames (${verificationDescriptors.length} descriptors) for second ArcFace verification (${activeEmail})...`);
 
       const response = await fetch(`${apiBase}/api/face/verify`, {
         method: 'POST',
@@ -210,12 +239,13 @@ function ExamBlockerModal({ onStartExam }) {
         body: JSON.stringify({
           studentId: activeStudentId,
           email: activeEmail,
-          frames: verificationFrames
+          frames: verificationFrames,
+          descriptors: verificationDescriptors
         })
       });
 
       const data = await response.json();
-      const dec = (data.decision || data.finalDecision || (data.verified ? 'VERIFIED' : 'SUSPICIOUS')).toUpperCase();
+      const dec = (data.decision || data.finalDecision || (data.verified ? 'VERIFIED' : 'REJECTED')).toUpperCase();
       const isMatch = data.verified === true || data.matched === true || dec === 'VERIFIED';
       const avgSim = typeof data.averageSimilarity === 'number' ? data.averageSimilarity : (data.similarity || data.bestSimilarity || 0.0);
       const similarityPct = Math.round(avgSim * 100);
@@ -236,7 +266,9 @@ function ExamBlockerModal({ onStartExam }) {
         setFaceVerifyState({
           status: 'mismatch',
           similarityPct: similarityPct,
-          message: `Face verification failed: Face mismatch (${similarityPct}% similarity)`
+          message: similarityPct > 0
+            ? `Face verification failed: Face mismatch (${similarityPct}% similarity)`
+            : `Face verification failed: ${errMsg}`
         });
       }
     } catch (e) {

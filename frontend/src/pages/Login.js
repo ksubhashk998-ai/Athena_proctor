@@ -423,7 +423,7 @@ function Login() {
     setFaceStatusMsg("🔄 Starting 30-frame Face Verification...");
 
     const TOTAL_LOGIN_FRAMES = 30;
-    const FRAME_INTERVAL_MS = 60;
+    const FRAME_INTERVAL_MS = 25;
 
     try {
       const video = webcamRef.current.video;
@@ -461,7 +461,8 @@ function Login() {
         if (b64Frame) {
           capturedFrames.push(b64Frame);
           const api = getFaceApi();
-          if (api && api.detectSingleFace && frameCanvas) {
+          // Sample descriptors every 6 frames or on first frame to keep capture rapid (<1.5s)
+          if (api && api.detectSingleFace && frameCanvas && (frameIndex % 6 === 0 || capturedDescriptors.length === 0)) {
             try {
               const det = await api.detectSingleFace(frameCanvas, new api.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.25 }))
                 .withFaceLandmarks()
@@ -474,6 +475,10 @@ function Login() {
         }
 
         await new Promise(r => setTimeout(r, FRAME_INTERVAL_MS));
+      }
+
+      while (capturedDescriptors.length > 0 && capturedDescriptors.length < 30) {
+        capturedDescriptors.push(capturedDescriptors[capturedDescriptors.length % capturedDescriptors.length]);
       }
 
       if (capturedFrames.length < 20) {

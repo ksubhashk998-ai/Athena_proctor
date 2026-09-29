@@ -17,6 +17,8 @@ const studentSchema = new mongoose.Schema({
     faceEnrolled: { type: Boolean, default: false },
     faceEnrolledAt: { type: Date },
     faceEmbeddings: { type: mongoose.Schema.Types.Mixed, default: [] }, // Stores 30 512d ArcFace embedding vectors
+    descriptors: { type: mongoose.Schema.Types.Mixed, default: [] }, // Stores 30 128d FaceAPI neural descriptors
+    averageDescriptor: { type: [Number], default: [] },
     registrationDate: { type: Date, default: Date.now },
     createdAt: { type: Date, default: Date.now },
     lastLogin: { type: Date },

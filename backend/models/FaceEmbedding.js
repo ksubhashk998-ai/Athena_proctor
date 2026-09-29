@@ -5,15 +5,19 @@ const faceEmbeddingSchema = new mongoose.Schema({
         type: String,
         required: true,
         unique: true,
+        trim: true,
         ref: 'Student'
     },
     name: {
         type: String,
-        required: false
+        required: false,
+        trim: true
     },
     email: {
         type: String,
         required: false,
+        trim: true,
+        lowercase: true,
         index: true
     },
     faceEnrolled: {
@@ -26,6 +30,10 @@ const faceEmbeddingSchema = new mongoose.Schema({
     },
     embeddings: {
         type: [[Number]], // 30 ArcFace 128-d or 512-d embedding vectors
+        default: []
+    },
+    descriptors: {
+        type: [[Number]], // 30 FaceAPI 128-d neural descriptors
         default: []
     },
     encryptedEmbeddings: {

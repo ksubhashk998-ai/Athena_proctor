@@ -50,31 +50,52 @@ router.get('/status/:email', async (req, res) => {
     const FaceEmbedding = require('../models/FaceEmbedding');
     const Student = require('../models/Student');
     const User = require('../models/User');
-    const cleanEmail = req.params.email.toLowerCase().trim();
+    const rawEmail = (req.params.email || '').trim();
+    const cleanEmail = rawEmail.toLowerCase();
+    const emailRegex = cleanEmail.includes('@') ? new RegExp('^' + cleanEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i') : null;
 
-    let profile = await FaceProfile.findOne({ email: cleanEmail });
-    if (profile && profile.embeddings && profile.embeddings.length > 0) {
+    let profile = await FaceProfile.findOne({
+      $or: [
+        ...(emailRegex ? [{ email: emailRegex }] : [{ email: cleanEmail }]),
+        { studentId: rawEmail }
+      ]
+    });
+    if (profile && ((profile.embeddings && profile.embeddings.length > 0) || (profile.descriptors && profile.descriptors.length > 0))) {
+      const count = (profile.embeddings && profile.embeddings.length) || (profile.descriptors && profile.descriptors.length) || 0;
+      const dim = profile.embeddings?.[0]?.length || profile.descriptors?.[0]?.length || 512;
       return res.json({
         enrolled: true,
-        descriptorsCount: profile.embeddings.length,
-        embeddingDim: profile.embeddings[0] ? profile.embeddings[0].length : 512,
+        descriptorsCount: count,
+        embeddingDim: dim,
         name: profile.name,
         studentId: profile.studentId
       });
     }
 
-    let faceEmb = await FaceEmbedding.findOne({ email: cleanEmail });
-    if (faceEmb && faceEmb.embeddings && faceEmb.embeddings.length > 0) {
+    let faceEmb = await FaceEmbedding.findOne({
+      $or: [
+        ...(emailRegex ? [{ email: emailRegex }] : [{ email: cleanEmail }]),
+        { studentId: rawEmail }
+      ]
+    });
+    if (faceEmb && ((faceEmb.embeddings && faceEmb.embeddings.length > 0) || (faceEmb.descriptors && faceEmb.descriptors.length > 0) || faceEmb.faceEnrolled)) {
+      const count = (faceEmb.embeddings && faceEmb.embeddings.length) || (faceEmb.descriptors && faceEmb.descriptors.length) || 0;
+      const dim = faceEmb.embeddings?.[0]?.length || faceEmb.descriptors?.[0]?.length || 512;
       return res.json({
         enrolled: true,
-        descriptorsCount: faceEmb.embeddings.length,
-        embeddingDim: faceEmb.embeddings[0] ? faceEmb.embeddings[0].length : 512,
+        descriptorsCount: count,
+        embeddingDim: dim,
         name: faceEmb.name,
         studentId: faceEmb.studentId
       });
     }
 
-    const student = await Student.findOne({ email: cleanEmail });
+    const student = await Student.findOne({
+      $or: [
+        ...(emailRegex ? [{ email: emailRegex }] : [{ email: cleanEmail }]),
+        { studentId: rawEmail }
+      ]
+    });
     if (student && student.faceEnrolled) {
       return res.json({
         enrolled: true,
@@ -84,7 +105,11 @@ router.get('/status/:email', async (req, res) => {
       });
     }
 
-    const user = await User.findOne({ email: cleanEmail });
+    const user = await User.findOne({
+      $or: [
+        ...(emailRegex ? [{ email: emailRegex }] : [{ email: cleanEmail }])
+      ]
+    });
     res.json({
       enrolled: !!(user && user.faceEnrolled),
       descriptorsCount: user && user.faceEmbeddings ? (Array.isArray(user.faceEmbeddings[0]) ? user.faceEmbeddings.length : 1) : 0,

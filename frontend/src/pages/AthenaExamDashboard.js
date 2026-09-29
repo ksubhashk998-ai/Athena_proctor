@@ -639,20 +639,10 @@ function AthenaExamDashboard() {
 
 
   // Request Permissions Callback (Immediate & Non-Blocking)
-  const handleRequestPermissions = useCallback(async () => {
+  const handleRequestPermissions = useCallback(() => {
     setHasCamera(true);
     setHasMic(true);
     addLog('Camera & Microphone permissions enabled', 'info');
-
-    try {
-      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-        await navigator.mediaDevices.getUserMedia({ video: true, audio: true }).catch(err => {
-          console.warn('Camera/Mic stream notice:', err.message);
-        });
-      }
-    } catch (err) {
-      console.warn('Permission request notice:', err);
-    }
   }, [addLog]);
 
 

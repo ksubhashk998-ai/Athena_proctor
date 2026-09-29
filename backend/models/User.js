@@ -27,6 +27,14 @@ const userSchema = new mongoose.Schema({
     type: [[Number]], // 30 128-dimensional vectors from 30 webcam frames
     default: []
   },
+  descriptors: {
+    type: [[Number]], // 30 128-d FaceAPI neural descriptors
+    default: []
+  },
+  averageDescriptor: {
+    type: [Number],
+    default: []
+  },
   enrolledImageSnapshot: {
     type: String, // Base64 or disk photo path
     default: null

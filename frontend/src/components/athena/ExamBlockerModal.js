@@ -7,12 +7,13 @@ import {
 import { getApiBaseUrl } from '../../utils/config';
 
 
-function ExamBlockerModal({ onStartExam }) {
+function ExamBlockerModal({ onStartExam, onRequestPermissions }) {
   const videoRef = useRef(null);
 
   // 1. Hardware & Permission States
   const [webcamState, setWebcamState] = useState({ status: 'pending', label: 'Requesting Webcam Permission...' });
   const [micState, setMicState] = useState({ status: 'pending', label: 'Requesting Microphone Permission...', volume: 0 });
+  const [isRequestingPermissions, setIsRequestingPermissions] = useState(false);
   const [internetState, setInternetState] = useState({ status: 'checking', pingMs: 0 });
 
   // 2. Real-Time Telemetry & Quality States
@@ -89,27 +90,65 @@ function ExamBlockerModal({ onStartExam }) {
     }
   }, []);
 
-  // Request Real Hardware Media Stream Permissions
+  // Request Real Hardware Media Stream Permissions (Fast Combined & Concurrent)
   const requestHardwareAccess = useCallback(async () => {
-    // 1. Request Webcam Permission
-    try {
-      const vidStream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
-      if (videoRef.current) {
-        videoRef.current.srcObject = vidStream;
-      }
-      setWebcamState({ status: 'connected', label: '✓ Webcam Connected & Stream Active' });
-    } catch (err) {
-      setWebcamState({ status: 'denied', label: '✗ Webcam Permission Required' });
+    if (isRequestingPermissions) return;
+    setIsRequestingPermissions(true);
+
+    if (onRequestPermissions) {
+      try { onRequestPermissions(); } catch (e) {}
     }
 
-    // 2. Request Microphone Permission
+    setWebcamState(prev => prev.status === 'connected' ? prev : { status: 'pending', label: 'Connecting Webcam...' });
+    setMicState(prev => prev.status === 'connected' ? prev : { status: 'pending', label: 'Connecting Microphone...', volume: 0 });
+
+    // 1. Fast Path: Request both video and audio simultaneously in a single prompt & device session
     try {
-      const audStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      initMicAnalyzer(audStream);
-    } catch (err) {
-      setMicState({ status: 'denied', label: '✗ Microphone Permission Required', volume: 0 });
+      const combinedStream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 640, height: 480 },
+        audio: true
+      });
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = combinedStream;
+        const p = videoRef.current.play();
+        if (p !== undefined) p.catch(() => {});
+      }
+      setWebcamState({ status: 'connected', label: '✓ Webcam Connected & Stream Active' });
+      initMicAnalyzer(combinedStream);
+      setIsRequestingPermissions(false);
+      return;
+    } catch (fastErr) {
+      console.warn('Combined getUserMedia fallback needed:', fastErr.message);
     }
-  }, [initMicAnalyzer]);
+
+    // 2. Parallel fallback if combined was rejected or system lacks a microphone
+    try {
+      const [vidRes, audRes] = await Promise.allSettled([
+        navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } }),
+        navigator.mediaDevices.getUserMedia({ audio: true })
+      ]);
+
+      if (vidRes.status === 'fulfilled') {
+        if (videoRef.current) {
+          videoRef.current.srcObject = vidRes.value;
+          const p = videoRef.current.play();
+          if (p !== undefined) p.catch(() => {});
+        }
+        setWebcamState({ status: 'connected', label: '✓ Webcam Connected & Stream Active' });
+      } else {
+        setWebcamState({ status: 'denied', label: '✗ Webcam Permission Required' });
+      }
+
+      if (audRes.status === 'fulfilled') {
+        initMicAnalyzer(audRes.value);
+      } else {
+        setMicState({ status: 'denied', label: '✗ Microphone Permission Required', volume: 0 });
+      }
+    } finally {
+      setIsRequestingPermissions(false);
+    }
+  }, [initMicAnalyzer, isRequestingPermissions, onRequestPermissions]);
 
   // Network Internet Ping Check
   useEffect(() => {
@@ -449,9 +488,17 @@ function ExamBlockerModal({ onStartExam }) {
         <div style={styles.actionRow}>
           {/* Permission Request Button */}
           {(!isWebcamOk || !isMicOk) ? (
-            <button onClick={requestHardwareAccess} style={styles.permBtn}>
-              <i className="fas fa-camera"></i>
-              <span>Grant Webcam & Mic Permissions</span>
+            <button
+              onClick={requestHardwareAccess}
+              disabled={isRequestingPermissions}
+              style={{
+                ...styles.permBtn,
+                opacity: isRequestingPermissions ? 0.75 : 1,
+                cursor: isRequestingPermissions ? 'wait' : 'pointer'
+              }}
+            >
+              <i className={`fas ${isRequestingPermissions ? 'fa-spinner fa-spin' : 'fa-camera'}`}></i>
+              <span>{isRequestingPermissions ? 'Granting Permissions...' : 'Grant Webcam & Mic Permissions'}</span>
             </button>
           ) : (
             <>

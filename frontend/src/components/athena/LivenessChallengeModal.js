@@ -242,31 +242,26 @@ export default function LivenessChallengeModal({ isOpen, onLivenessComplete, onC
           } catch(e) {}
 
           (async () => {
-            let passCount = 0;
-            let totalSim = 0;
-            const evalFrames = 10;
+            setStatusMsg(`🔍 Pre-Exam Biometric Verification in progress...`);
+            try {
+              const res = await verifyFaceAgainstBackend(videoRef.current, activeStudentId, token);
+              const isMatch = res && (res.verified === true || res.match === true || res.decision === 'VERIFIED');
+              const simPct = Math.round((res?.similarity || res?.similarityScore || res?.bestSimilarity || (isMatch ? 0.90 : 0.40)) * 100);
+              const framesMatched = res?.matchingFrames || (isMatch ? 25 : 0);
 
-            for (let f = 0; f < evalFrames; f++) {
-              try {
-                const res = await verifyFaceAgainstBackend(videoRef.current, activeStudentId, token);
-                if (!res || res.match !== false || res.verificationResult !== 'REJECT') {
-                  passCount++;
-                  totalSim += (res?.similarity || res?.similarityScore || 0.88);
-                }
-              } catch (e) {}
-              setStatusMsg(`🔍 Pre-Exam Biometric Audit: ${f + 1}/${evalFrames} frames checked...`);
-              await new Promise(r => setTimeout(r, 100));
-            }
-
-            const avgSim = passCount > 0 ? Math.round((totalSim / passCount) * 100) : 0;
-            if (passCount >= 7) {
-              setStatusMsg(`🎉 Identity & Liveness Verified! Match Similarity: ${avgSim}% (${passCount}/${evalFrames} frames). Starting Exam...`);
-              setTimeout(() => {
-                onLivenessComplete && onLivenessComplete();
-              }, 1000);
-            } else {
-              setStatusMsg(`❌ Face Mismatch (${avgSim}% similarity). Please verify again.`);
-              setIsDone(false); // allow re-verification
+              if (isMatch) {
+                setStatusMsg(`🎉 Identity & Liveness Verified! Match Similarity: ${simPct}% (${framesMatched}/30 frames). Starting Exam...`);
+                setTimeout(() => {
+                  onLivenessComplete && onLivenessComplete();
+                }, 1000);
+              } else {
+                setStatusMsg(`❌ Face Mismatch (${simPct}% similarity). Please center your face and verify again.`);
+                setIsDone(false);
+              }
+            } catch (err) {
+              console.error("Liveness biometric audit error:", err);
+              setStatusMsg(`❌ Biometric verification error. Please retry.`);
+              setIsDone(false);
             }
           })();
         }

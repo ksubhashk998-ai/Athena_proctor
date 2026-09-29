@@ -748,7 +748,7 @@ class ProctoringPipeline {
   // ═══════════════════════════════════════════════════════════
   // CANVAS OVERLAY — Face Bounding Boxes
   // ═══════════════════════════════════════════════════════════
-  _drawFaceBoxes(ctx, detections, videoElement, canvasW, canvasH, personCount, poseResult) {
+  _drawFaceBoxes(ctx, detections, videoElement, canvasW, canvasH, personCount, poseResult, studentInfo) {
     if (!detections || detections.length === 0) return;
 
     const vW = videoElement?.videoWidth  || 640;
@@ -770,11 +770,13 @@ class ProctoringPipeline {
       ctx.lineWidth = 2.5;
       ctx.strokeRect(x, y, w, h);
 
+      const rawName = studentInfo?.studentName || 'Subhash K';
+      const cleanName = rawName.replace(/\bk\b/i, 'K').trim();
       const label = isPrimary
-        ? `🧑 Candidate (${conf}% | Verified)`
+        ? `Student : ${cleanName}`
         : `⚠️ Secondary Face ${idx + 1} (${conf}%)`;
 
-      this._drawUnmirroredText(ctx, label, x, Math.max(18, y - 4), canvasW, color, Math.max(label.length * 7.5, 160));
+      this._drawUnmirroredText(ctx, label, x, Math.max(18, y - 4), canvasW, color, Math.max(label.length * 8.5, 140));
     });
   }
 

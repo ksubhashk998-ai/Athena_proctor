@@ -26,11 +26,14 @@ function WebcamFeed({ isProctoringActive, onDetectionUpdate, onViolationTriggere
   })();
 
   const studentName = (() => {
-    if (identityVerification?.studentName) return identityVerification.studentName;
-    if (activeStudent?.firstName && activeStudent?.lastName) {
-      return `${activeStudent.firstName} ${activeStudent.lastName}`;
+    let name = '';
+    if (identityVerification?.studentName) name = identityVerification.studentName;
+    else if (activeStudent?.firstName && activeStudent?.lastName) {
+      name = `${activeStudent.firstName} ${activeStudent.lastName}`;
+    } else {
+      name = activeStudent?.fullName || activeStudent?.name || 'Subhash K';
     }
-    return activeStudent?.fullName || activeStudent?.name || 'Subhash K';
+    return name.replace(/\bk\b/i, 'K').trim();
   })();
 
   const isVerified = identityVerification?.isVerified !== false;
@@ -262,8 +265,8 @@ function WebcamFeed({ isProctoringActive, onDetectionUpdate, onViolationTriggere
       };
     }
     return {
-      header: `👤 ${studentName}`,
-      subtext: `✔ Verified (${confidence}%)`,
+      header: `Student : ${studentName}`,
+      subtext: null,
       borderColor: '#10b981',
       textColor: '#34d399'
     };
@@ -396,9 +399,11 @@ function WebcamFeed({ isProctoringActive, onDetectionUpdate, onViolationTriggere
           <div style={{ fontSize: '0.85rem', fontWeight: 800, color: badge.textColor }}>
             {badge.header}
           </div>
-          <div style={{ fontSize: '0.72rem', fontWeight: 700, color: '#cbd5e1', marginTop: '1px' }}>
-            {badge.subtext}
-          </div>
+          {badge.subtext && (
+            <div style={{ fontSize: '0.72rem', fontWeight: 700, color: '#cbd5e1', marginTop: '1px' }}>
+              {badge.subtext}
+            </div>
+          )}
         </div>
       </div>
 

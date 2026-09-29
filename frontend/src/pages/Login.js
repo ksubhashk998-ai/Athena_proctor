@@ -461,10 +461,10 @@ function Login() {
         if (b64Frame) {
           capturedFrames.push(b64Frame);
           const api = getFaceApi();
-          // Sample descriptors every 6 frames or on first frame to keep capture rapid (<1.5s)
-          if (api && api.detectSingleFace && frameCanvas && (frameIndex % 6 === 0 || capturedDescriptors.length === 0)) {
+          // Sample descriptors every 5 frames or on first frame
+          if (api && api.detectSingleFace && (frameIndex % 5 === 0 || capturedDescriptors.length === 0)) {
             try {
-              const det = await api.detectSingleFace(frameCanvas, new api.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.25 }))
+              const det = await api.detectSingleFace(video, new api.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.15 }))
                 .withFaceLandmarks()
                 .withFaceDescriptor();
               if (det && det.descriptor) {

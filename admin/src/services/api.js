@@ -1,16 +1,11 @@
 import axios from 'axios';
 
 const getAdminBaseUrl = () => {
-  let envUrl = '';
-  try {
-    if (typeof import.meta !== 'undefined' && import.meta?.env?.VITE_API_URL) {
-      envUrl = import.meta.env.VITE_API_URL;
-    }
-  } catch (e) {}
-
-  if (!envUrl && typeof process !== 'undefined' && process.env) {
-    envUrl = process.env.VITE_API_URL || process.env.REACT_APP_API_URL;
-  }
+  const envUrl = 
+    process.env.REACT_APP_API_URL || 
+    process.env.VITE_API_URL || 
+    process.env.NEXT_PUBLIC_API_URL || 
+    process.env.REACT_APP_BACKEND_URL;
 
   if (envUrl) {
     return `${envUrl.replace(/\/$/, '')}/api`;

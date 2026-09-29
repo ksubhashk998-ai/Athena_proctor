@@ -169,31 +169,41 @@ export default function Register() {
         if (b64 && b64.length > 5000) {
           let hasValidFace = false;
           let faceDesc = null;
+          const activeApi = getFaceApi();
 
-          if (api && api.detectSingleFace && detectorOptions) {
+          if (activeApi && activeApi.detectSingleFace) {
             try {
-              const det = await api.detectSingleFace(canvas, detectorOptions)
+              const options = new activeApi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.15 });
+              const det = await activeApi.detectSingleFace(v, options)
                 .withFaceLandmarks()
                 .withFaceDescriptor();
-              if (det && det.box) {
-                const { width, height } = det.box;
-                if (width >= 50 && height >= 50) {
+
+              if (det) {
+                hasValidFace = true;
+                if (det.descriptor) {
+                  faceDesc = Array.from(det.descriptor);
+                }
+              } else {
+                // Secondary check without landmarks
+                const simpleDet = await activeApi.detectSingleFace(v, options);
+                if (simpleDet) {
                   hasValidFace = true;
-                  if (det.descriptor) {
-                    faceDesc = Array.from(det.descriptor);
-                  }
                 }
               }
-            } catch (dErr) {}
+            } catch (dErr) {
+              // If client face-api fails or throws, allow frame to pass to backend ArcFace
+              hasValidFace = true;
+            }
           } else {
+            // Models loading or fallback
             hasValidFace = true;
           }
 
           if (!hasValidFace) {
-            setStatusMsg('⚠️ Please center your face inside the circle (No face detected)');
+            setStatusMsg('⚠️ Please center your face inside the circle (Looking straight at camera)');
             setTelemetry({
               qualityScore: 30,
-              message: '⚠️ Align your face inside the guide oval'
+              message: '⚠️ Align your face inside the guide circle'
             });
             return;
           }
@@ -206,8 +216,8 @@ export default function Register() {
 
           const count = samplesRef.current.length;
           setSamplesCount(count);
-          console.log(`Sample saved ${count}/${TARGET_SAMPLES}`);
-          setStatusMsg(`Captured ${count}/${TARGET_SAMPLES} face frames`);
+          console.log(`[Enrollment] Sample saved ${count}/${TARGET_SAMPLES} (Descriptors: ${descriptorsRef.current.length})`);
+          setStatusMsg(`📸 Captured ${count}/${TARGET_SAMPLES} face samples...`);
 
           setTelemetry({
             qualityScore: 95,

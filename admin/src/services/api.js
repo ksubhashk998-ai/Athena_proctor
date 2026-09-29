@@ -1,10 +1,29 @@
 import axios from 'axios';
 
-const API_BASE_URL = process.env.REACT_APP_API_URL
-  ? `${process.env.REACT_APP_API_URL.replace(/\/$/, '')}/api`
-  : (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1'
-      ? `${window.location.origin}/api`
-      : 'http://localhost:5000/api');
+const getAdminBaseUrl = () => {
+  let envUrl = '';
+  try {
+    if (typeof import.meta !== 'undefined' && import.meta?.env?.VITE_API_URL) {
+      envUrl = import.meta.env.VITE_API_URL;
+    }
+  } catch (e) {}
+
+  if (!envUrl && typeof process !== 'undefined' && process.env) {
+    envUrl = process.env.VITE_API_URL || process.env.REACT_APP_API_URL;
+  }
+
+  if (envUrl) {
+    return `${envUrl.replace(/\/$/, '')}/api`;
+  }
+
+  if (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+    return 'https://athena-proctor-8.onrender.com/api';
+  }
+
+  return 'http://localhost:5000/api';
+};
+
+const API_BASE_URL = getAdminBaseUrl();
 
 
 

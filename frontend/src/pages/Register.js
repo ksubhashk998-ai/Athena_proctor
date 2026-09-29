@@ -167,24 +167,47 @@ export default function Register() {
         const b64 = canvas.toDataURL('image/jpeg', 0.85);
 
         if (b64 && b64.length > 5000) {
-          samplesRef.current.push(b64);
-          lastCaptureTimeRef.current = now;
+          let hasValidFace = false;
+          let faceDesc = null;
 
           if (api && api.detectSingleFace && detectorOptions) {
             try {
               const det = await api.detectSingleFace(canvas, detectorOptions)
                 .withFaceLandmarks()
                 .withFaceDescriptor();
-              if (det && det.descriptor) {
-                descriptorsRef.current.push(Array.from(det.descriptor));
+              if (det && det.box) {
+                const { width, height } = det.box;
+                if (width >= 50 && height >= 50) {
+                  hasValidFace = true;
+                  if (det.descriptor) {
+                    faceDesc = Array.from(det.descriptor);
+                  }
+                }
               }
             } catch (dErr) {}
+          } else {
+            hasValidFace = true;
           }
+
+          if (!hasValidFace) {
+            setStatusMsg('⚠️ Please center your face inside the circle (No face detected)');
+            setTelemetry({
+              qualityScore: 30,
+              message: '⚠️ Align your face inside the guide oval'
+            });
+            return;
+          }
+
+          samplesRef.current.push(b64);
+          if (faceDesc) {
+            descriptorsRef.current.push(faceDesc);
+          }
+          lastCaptureTimeRef.current = now;
 
           const count = samplesRef.current.length;
           setSamplesCount(count);
           console.log(`Sample saved ${count}/${TARGET_SAMPLES}`);
-          setStatusMsg(`Captured ${count}/${TARGET_SAMPLES}`);
+          setStatusMsg(`Captured ${count}/${TARGET_SAMPLES} face frames`);
 
           setTelemetry({
             qualityScore: 95,

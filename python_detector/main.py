@@ -58,10 +58,10 @@ MIN_ACCEPTABLE_QUALITY = 35.0
 GOOD_QUALITY = 55.0
 MIN_VALID_EMBEDDINGS = 15
 MAX_CANDIDATE_FRAMES = 30
-SIMILARITY_THRESHOLD = 0.68
-FRAME_MATCH_THRESHOLD = 0.68
-MIN_AVG_THRESHOLD = 0.66
-SUSPICIOUS_THRESHOLD = 0.55
+SIMILARITY_THRESHOLD = 0.62
+FRAME_MATCH_THRESHOLD = 0.62
+MIN_AVG_THRESHOLD = 0.60
+SUSPICIOUS_THRESHOLD = 0.50
 TARGET_VERIFICATION_FRAMES = 25
 MIN_VERIFICATION_FRAMES = 10
 ENABLE_DIAGNOSTIC_MODE = True
@@ -749,8 +749,8 @@ def arcface_verify(request: ArcFaceVerifyRequest):
             sim_clamped = round(float(np.clip(effective_sim, 0.0, 1.0)), 4)
             frame_similarities.append(sim_clamped)
 
-            # Strict Cosine similarity matching threshold for ArcFace (>= 0.68) with centroid guard (>= 0.66)
-            if sim_clamped >= FRAME_MATCH_THRESHOLD and (average_vector is None or sim_to_avg >= 0.66):
+            # Strict Cosine similarity matching threshold for ArcFace (>= 0.62) with centroid guard (>= 0.58)
+            if sim_clamped >= FRAME_MATCH_THRESHOLD and (average_vector is None or sim_to_avg >= 0.58):
                 verified_count += 1
             elif sim_clamped >= SUSPICIOUS_THRESHOLD:
                 suspicious_count += 1

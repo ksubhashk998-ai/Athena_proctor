@@ -11,8 +11,8 @@ function ExamBlockerModal({ onStartExam, onRequestPermissions }) {
   const videoRef = useRef(null);
 
   // 1. Hardware & Permission States
-  const [webcamState, setWebcamState] = useState({ status: 'pending', label: 'Requesting Webcam Permission...' });
-  const [micState, setMicState] = useState({ status: 'pending', label: 'Requesting Microphone Permission...', volume: 0 });
+  const [webcamState, setWebcamState] = useState({ status: 'pending', label: 'Webcam Permission Required' });
+  const [micState, setMicState] = useState({ status: 'pending', label: 'Microphone Permission Required', volume: 0 });
   const [isRequestingPermissions, setIsRequestingPermissions] = useState(false);
   const [internetState, setInternetState] = useState({ status: 'checking', pingMs: 0 });
 
@@ -90,7 +90,7 @@ function ExamBlockerModal({ onStartExam, onRequestPermissions }) {
     }
   }, []);
 
-  // Request Real Hardware Media Stream Permissions (Fast Combined & Concurrent)
+  // Request Real Hardware Media Stream Permissions (Explicitly invoked via user click)
   const requestHardwareAccess = useCallback(async () => {
     if (isRequestingPermissions) return;
     setIsRequestingPermissions(true);
@@ -163,11 +163,10 @@ function ExamBlockerModal({ onStartExam, onRequestPermissions }) {
       });
   }, []);
 
-  // Load AI face models and automatically request hardware access on mount
+  // Preload face models (Hardware access is triggered only when user clicks "Allow Camera & Mic Access")
   useEffect(() => {
     ensureModelsLoaded().catch((e) => console.warn('face-api preload notice:', e.message));
-    requestHardwareAccess();
-  }, [requestHardwareAccess]);
+  }, []);
 
   // Dedicated Second ArcFace Face Verification Handler (Captures 30-frame batch per PROJECT_RULES.md)
   const handleSecondFaceVerification = async () => {
@@ -486,7 +485,7 @@ function ExamBlockerModal({ onStartExam, onRequestPermissions }) {
 
         {/* Action Controls */}
         <div style={styles.actionRow}>
-          {/* Permission Request Button */}
+          {/* Explicit Permission Request Button (Requirement: Camera & Mic must not work until this is clicked) */}
           {(!isWebcamOk || !isMicOk) ? (
             <button
               onClick={requestHardwareAccess}
@@ -497,8 +496,8 @@ function ExamBlockerModal({ onStartExam, onRequestPermissions }) {
                 cursor: isRequestingPermissions ? 'wait' : 'pointer'
               }}
             >
-              <i className={`fas ${isRequestingPermissions ? 'fa-spinner fa-spin' : 'fa-camera'}`}></i>
-              <span>{isRequestingPermissions ? 'Granting Permissions...' : 'Grant Webcam & Mic Permissions'}</span>
+              <i className={`fas ${isRequestingPermissions ? 'fa-spinner fa-spin' : 'fa-video'}`}></i>
+              <span>{isRequestingPermissions ? 'Granting Hardware Access...' : '🎥 Allow Mic and Camera Access'}</span>
             </button>
           ) : (
             <>

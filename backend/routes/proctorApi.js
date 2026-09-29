@@ -31,6 +31,37 @@ const PYTHON_DETECTOR_URL = (process.env.PYTHON_DETECTOR_URL || 'http://127.0.0.
 // In-memory student registry cache
 const inMemoryStudents = new Map();
 
+// Helper: Prune screenshots directory to strictly enforce Render 512MB storage limit (cap at 25MB / 50 files)
+function pruneScreenshotsDir(dirPath, maxFiles = 50, maxTotalBytes = 25 * 1024 * 1024) {
+  try {
+    if (!fs.existsSync(dirPath)) return;
+    const entries = fs.readdirSync(dirPath).map(file => {
+      try {
+        const fullPath = path.join(dirPath, file);
+        const stats = fs.statSync(fullPath);
+        return { file, fullPath, size: stats.size, mtime: stats.mtimeMs };
+      } catch (e) {
+        return null;
+      }
+    }).filter(Boolean);
+
+    let totalSize = entries.reduce((acc, curr) => acc + curr.size, 0);
+
+    if (entries.length > maxFiles || totalSize > maxTotalBytes) {
+      entries.sort((a, b) => a.mtime - b.mtime);
+      while ((entries.length > maxFiles || totalSize > maxTotalBytes) && entries.length > 0) {
+        const oldest = entries.shift();
+        try {
+          fs.unlinkSync(oldest.fullPath);
+          totalSize -= oldest.size;
+        } catch (delErr) {}
+      }
+    }
+  } catch (err) {
+    console.warn('⚠️ Disk prune notice:', err.message);
+  }
+}
+
 // Helper: Save Base64 JPEG Image to Disk Folder (backend/screenshots/)
 function saveImageToDisk(base64Data, prefix, userIdentifier) {
   if (!base64Data || typeof base64Data !== 'string') return null;
@@ -39,6 +70,9 @@ function saveImageToDisk(base64Data, prefix, userIdentifier) {
     if (!fs.existsSync(screenshotsDir)) {
       fs.mkdirSync(screenshotsDir, { recursive: true });
     }
+    // Prune directory to strictly enforce Render 512MB storage ceiling
+    pruneScreenshotsDir(screenshotsDir);
+
     const cleanUser = (userIdentifier || 'student').replace(/[^a-z0-9]/gi, '_');
     const filename = `${prefix}_${cleanUser}_${Date.now()}.jpg`;
     const filepath = path.join(screenshotsDir, filename);

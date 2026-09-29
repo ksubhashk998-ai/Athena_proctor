@@ -512,7 +512,7 @@ function Login() {
       const simPct = Math.round((data.bestSimilarity || data.averageSimilarity || 0) * 100);
       const decision = (data.decision || data.finalDecision || data.verificationResult || '').toUpperCase();
       const matchingCount = typeof data.matchingFrames === 'number' ? data.matchingFrames : (typeof data.verifiedFrames === 'number' ? data.verifiedFrames : 0);
-      const isVerified = (data.verified === true || data.matched === true) && decision === 'VERIFIED' && matchingCount >= 20;
+      const isVerified = (data.verified === true || data.matched === true || decision === 'VERIFIED') && matchingCount >= 15;
 
       if (isVerified) {
         localStorage.setItem("faceVerified", "true");

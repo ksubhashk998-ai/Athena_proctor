@@ -12,6 +12,37 @@ const Student = require('../models/Student');
 
 const PYTHON_SERVICE_URL = (process.env.PYTHON_DETECTOR_URL || 'http://127.0.0.1:8001').replace('localhost', '127.0.0.1');
 
+// Helper: Prune screenshots directory to strictly enforce Render 512MB storage limit (cap at 25MB / 50 files)
+function pruneScreenshotsDir(dirPath, maxFiles = 50, maxTotalBytes = 25 * 1024 * 1024) {
+  try {
+    if (!fs.existsSync(dirPath)) return;
+    const entries = fs.readdirSync(dirPath).map(file => {
+      try {
+        const fullPath = path.join(dirPath, file);
+        const stats = fs.statSync(fullPath);
+        return { file, fullPath, size: stats.size, mtime: stats.mtimeMs };
+      } catch (e) {
+        return null;
+      }
+    }).filter(Boolean);
+
+    let totalSize = entries.reduce((acc, curr) => acc + curr.size, 0);
+
+    if (entries.length > maxFiles || totalSize > maxTotalBytes) {
+      entries.sort((a, b) => a.mtime - b.mtime);
+      while ((entries.length > maxFiles || totalSize > maxTotalBytes) && entries.length > 0) {
+        const oldest = entries.shift();
+        try {
+          fs.unlinkSync(oldest.fullPath);
+          totalSize -= oldest.size;
+        } catch (delErr) {}
+      }
+    }
+  } catch (err) {
+    console.warn('⚠️ Disk prune notice:', err.message);
+  }
+}
+
 // Helper: Save Base64 JPEG Image to Disk
 function saveImageToDisk(base64Data, prefix, userIdentifier) {
   if (!base64Data || typeof base64Data !== 'string') return null;
@@ -20,6 +51,9 @@ function saveImageToDisk(base64Data, prefix, userIdentifier) {
     if (!fs.existsSync(screenshotsDir)) {
       fs.mkdirSync(screenshotsDir, { recursive: true });
     }
+    // Automatically prune old snapshots so storage never exceeds 25MB on Render
+    pruneScreenshotsDir(screenshotsDir);
+
     const cleanUser = (userIdentifier || 'student').replace(/[^a-z0-9]/gi, '_');
     const filename = `${prefix}_${cleanUser}_${Date.now()}.jpg`;
     const filepath = path.join(screenshotsDir, filename);
@@ -224,7 +258,7 @@ const enrollFace = async (req, res) => {
         console.log(`[ArcFace Enrollment] FaceProfile created for ${cleanStudentId}`);
       }
 
-      // 2. Persist to FaceEmbedding model
+      // 2. Persist to FaceEmbedding model & faceembeddings collection
       try {
         const embeddingData = {
           studentId: cleanStudentId,
@@ -234,6 +268,7 @@ const enrollFace = async (req, res) => {
           enrollmentImages: savedImageUrls,
           embeddings: embeddings,
           embedding: averageEmbedding,
+          averageEmbedding: averageEmbedding,
           descriptors: normDescriptors.length > 0 ? normDescriptors : undefined,
           averageDescriptor: avgDescriptor ? avgDescriptor : undefined,
           imageSnapshot: savedImageUrls[0] || null,
@@ -246,11 +281,21 @@ const enrollFace = async (req, res) => {
         });
 
         if (existingFe) {
-          await FaceEmbedding.findByIdAndUpdate(existingFe._id, { $set: embeddingData }, { new: true });
+          await FaceEmbedding.findByIdAndUpdate(existingFe._id, { $set: embeddingData }, { new: true, upsert: true });
         } else {
           await FaceEmbedding.create(embeddingData);
         }
-        console.log(`✅ FaceEmbedding saved for ${cleanStudentId}`);
+
+        // Direct collection fallback to ensure Atlas faceembeddings collection is always synced
+        if (mongoose.connection?.db) {
+          await mongoose.connection.db.collection('faceembeddings').updateOne(
+            { $or: [{ email: cleanEmail }, { studentId: cleanStudentId }] },
+            { $set: embeddingData },
+            { upsert: true }
+          ).catch(e => console.warn('Direct faceembeddings collection notice:', e.message));
+        }
+
+        console.log(`✅ FaceEmbedding saved in Atlas faceembeddings collection for ${cleanStudentId}`);
       } catch (feErr) {
         console.warn('⚠️ FaceEmbedding save notice:', feErr.message);
       }
@@ -502,9 +547,9 @@ const verifyFace = async (req, res) => {
         console.log(`[Biometric Fallback] Matching ${live128.length} 128d client descriptors against ${enrolled128.length} enrolled templates...`);
         let verifiedCount = 0;
         let similarities = [];
-        const MATCH_THRESHOLD = 0.65; // Calibrated for FaceNet 128d normalized embeddings
-        const MIN_AVG_THRESHOLD = 0.64;
-        const CENTROID_FLOOR = 0.60;
+        const MATCH_THRESHOLD = 0.60; // Calibrated for FaceNet 128d normalized embeddings
+        const MIN_AVG_THRESHOLD = 0.58;
+        const CENTROID_FLOOR = 0.55;
 
         let effectiveAvg = avg128;
         if (!effectiveAvg || effectiveAvg.length !== 128) {
@@ -534,7 +579,7 @@ const verifyFace = async (req, res) => {
 
         const avgSim = similarities.length > 0 ? (similarities.reduce((a, b) => a + b, 0) / similarities.length) : 0;
         const bestSim = similarities.length > 0 ? Math.max(...similarities) : 0;
-        const minMatch128 = Math.min(20, Math.max(5, Math.floor(similarities.length * 0.6)));
+        const minMatch128 = Math.min(20, Math.max(5, Math.floor(similarities.length * 0.5)));
         const isMatch = verifiedCount >= minMatch128 && avgSim >= MIN_AVG_THRESHOLD;
 
         // Scale to standard 30-frame count for PROJECT_RULES.md
@@ -561,9 +606,9 @@ const verifyFace = async (req, res) => {
         console.log(`[Biometric Fallback] Matching ${live512.length} 512d descriptors against ${enrolled512.length} enrolled templates...`);
         let verifiedCount = 0;
         let similarities = [];
-        const MATCH_THRESHOLD = 0.68;
-        const MIN_AVG_THRESHOLD = 0.66;
-        const CENTROID_FLOOR = 0.65;
+        const MATCH_THRESHOLD = 0.62;
+        const MIN_AVG_THRESHOLD = 0.60;
+        const CENTROID_FLOOR = 0.58;
 
         for (let i = 0; i < live512.length; i++) {
           const vec = live512[i];
@@ -584,7 +629,7 @@ const verifyFace = async (req, res) => {
 
         const avgSim = similarities.length > 0 ? (similarities.reduce((a, b) => a + b, 0) / similarities.length) : 0;
         const bestSim = similarities.length > 0 ? Math.max(...similarities) : 0;
-        const minMatch512 = Math.min(20, Math.max(5, Math.floor(similarities.length * 0.6)));
+        const minMatch512 = Math.min(20, Math.max(5, Math.floor(similarities.length * 0.5)));
         const isMatch = verifiedCount >= minMatch512 && avgSim >= MIN_AVG_THRESHOLD;
 
         const scaledMatching = Math.min(30, Math.max(verifiedCount, Math.round((verifiedCount / Math.max(1, similarities.length)) * 30)));

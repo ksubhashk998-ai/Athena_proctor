@@ -44,6 +44,14 @@ const faceEmbeddingSchema = new mongoose.Schema({
         type: [Number], // Primary centroid vector
         default: []
     },
+    averageEmbedding: {
+        type: [Number],
+        default: []
+    },
+    averageDescriptor: {
+        type: [Number],
+        default: []
+    },
     encryptedEmbedding: {
         type: String,
         default: null
@@ -60,7 +68,7 @@ const faceEmbeddingSchema = new mongoose.Schema({
         type: Date,
         default: Date.now
     }
-}, { timestamps: true });
+}, { timestamps: true, collection: 'faceembeddings' });
 
-module.exports = mongoose.model('FaceEmbedding', faceEmbeddingSchema);
+module.exports = mongoose.models.FaceEmbedding || mongoose.model('FaceEmbedding', faceEmbeddingSchema, 'faceembeddings');
 

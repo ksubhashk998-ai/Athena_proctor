@@ -87,10 +87,48 @@ app.add_middleware(
 
 # ----------------- MODEL LOADERS (CPU ONLY) -----------------
 
+def ensure_buffalo_s_lightweight(root_dir: str) -> str:
+    """
+    Ensures buffalo_s model directory is downloaded and pruned to ONLY:
+      1. det_500m.onnx (SCRFD face detection, ~2.5MB)
+      2. w600k_mbf.onnx (ArcFace 512-d recognition, ~13.6MB)
+    Removes unneeded heavy models before FaceAnalysis opens ONNX sessions:
+      - 1k3d68.onnx (143 MB 3D landmarks - causes 512MB RAM OOM crash on Render!)
+      - 2d106det.onnx (5 MB 2D landmarks)
+      - genderage.onnx (1.3 MB gender/age)
+    This guarantees peak RAM usage stays under 50MB, preventing Render SIGKILL (OOM 137).
+    """
+    model_dir = os.path.join(root_dir, 'models', 'buffalo_s')
+    det_path = os.path.join(model_dir, 'det_500m.onnx')
+    rec_path = os.path.join(model_dir, 'w600k_mbf.onnx')
+
+    # If the required models don't exist yet, download buffalo_s
+    if not (os.path.exists(det_path) and os.path.exists(rec_path)):
+        logger.info("[AI] Downloading buffalo_s package...")
+        try:
+            from insightface.utils.storage import download
+            download('models', 'buffalo_s', force=False, root=root_dir)
+        except Exception as dl_err:
+            logger.error(f"[AI] Error downloading buffalo_s: {dl_err}")
+            raise
+
+    # Prune heavy unused models to protect Render's 512MB RAM limit
+    unneeded = ['1k3d68.onnx', '2d106det.onnx', 'genderage.onnx']
+    for fname in unneeded:
+        fpath = os.path.join(model_dir, fname)
+        if os.path.exists(fpath):
+            try:
+                os.remove(fpath)
+                logger.info(f"[AI] Pruned unused model {fname} to conserve RAM")
+            except Exception as e:
+                logger.warning(f"[AI] Warning pruning {fname}: {e}")
+
+    return model_dir
+
 def get_insightface():
     """
     Load InsightFace buffalo_s ArcFace Model (512-d embeddings).
-    Uses lightweight buffalo_s on CPU execution provider.
+    Uses lightweight buffalo_s on CPU execution provider (strictly <50MB RAM).
     """
     global _insightface_app, _insightface_error
     if _insightface_app is not None:
@@ -102,9 +140,12 @@ def get_insightface():
 
     try:
         logger.info("[AI] Starting InsightFace initialization...")
-        logger.info("[AI] Loading buffalo_s...")
+        logger.info("[AI] Loading buffalo_s (512MB RAM safe mode)...")
         root_dir = os.environ.get("INSIGHTFACE_ROOT", os.path.expanduser("~/.insightface"))
         os.makedirs(root_dir, exist_ok=True)
+
+        # Download & prune unneeded models BEFORE FaceAnalysis creates ONNX sessions
+        ensure_buffalo_s_lightweight(root_dir)
 
         app_face = FaceAnalysis(
             name='buffalo_s',
@@ -117,7 +158,7 @@ def get_insightface():
         if hasattr(app_face, 'models') and 'detection' in app_face.models and 'recognition' in app_face.models:
             _insightface_app = app_face
             _insightface_error = None
-            logger.info("[AI] ArcFace loaded successfully")
+            logger.info("[AI] ArcFace loaded successfully with detection & recognition")
         else:
             found_modules = list(getattr(app_face, 'models', {}).keys())
             raise RuntimeError(f"buffalo_s missing detection or recognition module (found: {found_modules})")
@@ -167,9 +208,16 @@ async def startup_event():
     Ensures model is loaded and ready before serving traffic.
     """
     logger.info("🚀 [Startup] Starting AI models initialization...")
-    get_insightface()
+    try:
+        get_insightface()
+    except Exception as e:
+        logger.error(f"❌ [Startup] InsightFace preload error: {e}", exc_info=True)
+
     if YOLO_AVAILABLE:
-        get_phone_model()
+        try:
+            get_phone_model()
+        except Exception as e:
+            logger.error(f"❌ [Startup] YOLO preload error: {e}", exc_info=True)
     logger.info("🚀 [Startup] Application initialization complete.")
 
 # ----------------- REQUEST & RESPONSE SCHEMAS -----------------

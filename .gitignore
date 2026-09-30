@@ -29,6 +29,13 @@ yarn-error.log*
 backend/screenshots/
 *.log
 
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pt
+!python_detector/yolov8n.pt
+
 # OS & Editor
 .DS_Store
 Thumbs.db

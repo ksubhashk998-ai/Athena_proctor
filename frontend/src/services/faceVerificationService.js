@@ -245,7 +245,7 @@ export async function verifyFaceAgainstBackend(videoElement, studentId, token, f
       if (dec === 'INSUFFICIENT_SAMPLES') {
         defaultMsg = "Not enough valid face samples";
       } else {
-        defaultMsg = "Face verification failed: Face mismatch";
+        defaultMsg = "Face does not match. Please try again.";
       }
     }
 

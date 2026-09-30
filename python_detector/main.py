@@ -59,12 +59,12 @@ MIN_ACCEPTABLE_QUALITY = 35.0
 GOOD_QUALITY = 55.0
 MIN_VALID_EMBEDDINGS = 15
 MAX_CANDIDATE_FRAMES = 30
-SIMILARITY_THRESHOLD = 0.62
-FRAME_MATCH_THRESHOLD = 0.62
-MIN_AVG_THRESHOLD = 0.60
-SUSPICIOUS_THRESHOLD = 0.50
-TARGET_VERIFICATION_FRAMES = 25
-MIN_VERIFICATION_FRAMES = 10
+SIMILARITY_THRESHOLD = 0.85
+FRAME_MATCH_THRESHOLD = 0.85
+MIN_AVG_THRESHOLD = 0.84
+SUSPICIOUS_THRESHOLD = 0.75
+TARGET_VERIFICATION_FRAMES = 30
+MIN_VERIFICATION_FRAMES = 20
 ENABLE_DIAGNOSTIC_MODE = True
 
 app = FastAPI(
@@ -820,18 +820,7 @@ def arcface_verify(request: ArcFaceVerifyRequest):
     verification_start = time.time()
     req_id = f"v_{int(time.time()*1000)}"
 
-    input_items = []
-    if request.frames and len(request.frames) > 0:
-        input_items = request.frames
-    elif request.liveEmbeddings and len(request.liveEmbeddings) > 0:
-        input_items = request.liveEmbeddings
-    elif request.embedding and len(request.embedding) == 512:
-        input_items = [request.embedding]
-
-    frames_to_process = input_items[:TARGET_VERIFICATION_FRAMES]
-    total_requested = len(frames_to_process)
-
-    if total_requested == 0:
+    if not request.frames or len(request.frames) == 0:
         return {
             "success": False,
             "requestId": req_id,
@@ -840,7 +829,7 @@ def arcface_verify(request: ArcFaceVerifyRequest):
             "result": "rejected",
             "decision": "NO_FRAMES",
             "finalDecision": "REJECTED",
-            "message": "No verification frames provided",
+            "message": "Live camera frames required for biometric verification.",
             "bestSimilarity": 0.0,
             "averageSimilarity": 0.0,
             "matchingFrames": 0,
@@ -849,6 +838,9 @@ def arcface_verify(request: ArcFaceVerifyRequest):
             "totalFrames": 0,
             "totalFramesProcessed": 0
         }
+
+    frames_to_process = request.frames[:TARGET_VERIFICATION_FRAMES]
+    total_requested = len(frames_to_process)
 
     app_face = get_insightface()
     if app_face is None:
@@ -923,11 +915,6 @@ def arcface_verify(request: ArcFaceVerifyRequest):
     frame_similarities = []
     quality_scores = []
 
-    # Sub-sample keyframes evenly if more than 15 base64 frames provided for balanced performance
-    if len(frames_to_process) > 15 and isinstance(frames_to_process[0], str):
-        indices = np.linspace(0, len(frames_to_process) - 1, 15, dtype=int)
-        frames_to_process = [frames_to_process[i] for i in indices]
-
     for idx, item in enumerate(frames_to_process):
         bgr_img = None
         try:
@@ -991,15 +978,15 @@ def arcface_verify(request: ArcFaceVerifyRequest):
             if average_vector is not None:
                 sim_to_avg = float(np.dot(average_vector, live_vector))
                 capped_pose = min(top3_sim, sim_to_avg + 0.03)
-                effective_sim = float(0.85 * sim_to_avg + 0.15 * capped_pose)
+                effective_sim = float(0.70 * sim_to_avg + 0.30 * capped_pose)
             else:
-                sim_to_avg = 1.0
+                sim_to_avg = top3_sim
                 effective_sim = top3_sim
 
             sim_clamped = round(float(np.clip(effective_sim, 0.0, 1.0)), 4)
             frame_similarities.append(sim_clamped)
 
-            if sim_clamped >= FRAME_MATCH_THRESHOLD and (average_vector is None or sim_to_avg >= 0.58):
+            if sim_clamped >= FRAME_MATCH_THRESHOLD and (average_vector is None or sim_to_avg >= (FRAME_MATCH_THRESHOLD - 0.05)):
                 verified_count += 1
             elif sim_clamped >= SUSPICIOUS_THRESHOLD:
                 suspicious_count += 1
@@ -1022,21 +1009,21 @@ def arcface_verify(request: ArcFaceVerifyRequest):
     # Garbage collection
     gc.collect()
 
-    # Minimum match needed: at least 70% of evaluated valid frames (min 4)
-    min_match_needed = max(4, int(np.ceil(valid_count * 0.70))) if valid_count >= 4 else 4
+    # Minimum match needed: PROJECT_RULES.md specifies minimum 20 out of 30 matching frames
+    min_match_needed = 20 if total_requested >= 25 else max(4, int(np.ceil(total_requested * 0.70)))
 
-    if multi_face_triggered and valid_count < 3:
+    if multi_face_triggered and multi_face_count > 0:
         decision = "MULTIPLE_FACES_DETECTED"
         verified = False
         rejection_reason = "Multiple faces detected during verification."
-    elif occluded_count > 0 and valid_count < 4:
+    elif occluded_count > 0 and (valid_count < min_match_needed or occluded_count >= 5):
         decision = "FACE_OCCLUDED"
         verified = False
         rejection_reason = "Face obscured or covered. Please remove your hand or obstruction."
-    elif valid_count < 4:
+    elif valid_count < min_match_needed:
         decision = "INSUFFICIENT_SAMPLES"
         verified = False
-        rejection_reason = f"Only {valid_count} valid face frames evaluated. Please ensure face is clearly visible."
+        rejection_reason = f"Only {valid_count} valid face frames evaluated (minimum {min_match_needed} required). Please ensure face is clearly visible."
     elif verified_count >= min_match_needed and average_similarity >= MIN_AVG_THRESHOLD:
         verified = True
         decision = "VERIFIED"
@@ -1044,7 +1031,7 @@ def arcface_verify(request: ArcFaceVerifyRequest):
     else:
         verified = False
         decision = "REJECTED"
-        rejection_reason = f"Face verification failed: Only {verified_count}/{valid_count} frames matched (average similarity: {int(round(average_similarity*100))}%, required: {int(round(MIN_AVG_THRESHOLD*100))}%)."
+        rejection_reason = "Face does not match. Please try again."
 
     # Step 6: Structured privacy-conscious diagnostic logging
     logger.info(

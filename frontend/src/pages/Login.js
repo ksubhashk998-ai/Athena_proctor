@@ -722,7 +722,9 @@ function Login() {
       const decision = (data.decision || data.finalDecision || data.verificationResult || '').toUpperCase();
       const matchingCount = typeof data.matchingFrames === 'number' ? data.matchingFrames : (typeof data.verifiedFrames === 'number' ? data.verifiedFrames : 0);
       const evaluatedCount = typeof data.validFrames === 'number' ? data.validFrames : (typeof data.totalFramesProcessed === 'number' ? data.totalFramesProcessed : 30);
-      const isVerified = (data.verified === true || data.match === true || decision === 'VERIFIED') && matchingCount >= 20;
+      
+      // Fail closed: must have server-verified flag true, decision VERIFIED, and at least 20 matching frames
+      const isVerified = Boolean(data.verified === true && data.match !== false && decision === 'VERIFIED' && matchingCount >= 20);
 
       if (isVerified) {
         localStorage.setItem("faceVerified", "true");
@@ -733,7 +735,7 @@ function Login() {
       } else {
         localStorage.removeItem("faceVerified");
         const failReason = data.message || `Face not matched (${matchingCount}/${evaluatedCount} matching frames, min 20 required).`;
-        setFaceStatusMsg(`🔴 ${failReason} Please ensure face is completely unobstructed.`);
+        setFaceStatusMsg(`🔴 ${failReason}`);
       }
 
     } catch (e) {
@@ -742,8 +744,8 @@ function Login() {
       if (e.code === 'ECONNABORTED' || e.code === 'ETIMEDOUT' || e.message?.includes('timeout')) {
         setFaceStatusMsg("❌ Face verification timed out. Check ArcFace service.");
       } else {
-        const serverReason = e.response?.data?.reason || e.response?.data?.error || e.response?.data?.message || "Server connection error";
-        setFaceStatusMsg(`🔴 Verification failed: ${serverReason}. Please retry.`);
+        const serverReason = e.response?.data?.message || e.response?.data?.reason || e.response?.data?.error || "Server connection error";
+        setFaceStatusMsg(`🔴 ${serverReason}`);
       }
     } finally {
       setFaceVerifying(false);

@@ -107,20 +107,20 @@ export default function FaceVerification({
 
       const dec = (data.decision || data.finalDecision || (data.verified ? 'VERIFIED' : 'SUSPICIOUS')).toUpperCase();
 
-      if (dec === 'VERIFIED' || data.verified === true) {
+      if (dec === 'VERIFIED' && data.verified === true) {
         localStorage.setItem("faceVerified", "true");
         consecutiveFailuresRef.current = 0;
         setStatusMsg("Face verified successfully");
         if (onVerificationSuccess) onVerificationSuccess(data);
         if (onVerified) onVerified(data);
       } else if (dec === 'SUSPICIOUS') {
-        setStatusMsg("Face verification failed: Face mismatch");
-        if (onVerificationFailed) onVerificationFailed('Face verification failed: Face mismatch');
+        setStatusMsg("Face does not match. Please try again.");
+        if (onVerificationFailed) onVerificationFailed('Face does not match. Please try again.');
       } else if (dec === 'INSUFFICIENT_SAMPLES') {
         setStatusMsg("Not enough valid face samples");
         if (onVerificationFailed) onVerificationFailed('Not enough valid face samples');
       } else {
-        handleFailurePass(data.message || 'Face verification failed: Face mismatch');
+        handleFailurePass(data.message || 'Face does not match. Please try again.');
       }
     } catch (err) {
       console.warn('ArcFace verification error:', err);

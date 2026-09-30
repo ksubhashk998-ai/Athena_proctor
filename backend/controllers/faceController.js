@@ -397,19 +397,50 @@ const verifyFace = async (req, res) => {
   try {
     const { studentId, email, frames, liveEmbeddings, descriptor, liveDescriptor, embedding, challengePose, descriptors } = req.body;
 
-    const cleanEmail = (email || '').trim().toLowerCase();
-    const cleanStudentId = (studentId || '').trim();
-    const emailRegex = cleanEmail ? new RegExp('^' + cleanEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i') : null;
-    const studentIdRegex = cleanStudentId ? new RegExp('^' + cleanStudentId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i') : null;
-    const derivedStudentId = cleanEmail ? ('STU_' + cleanEmail.replace(/[^a-z0-9]/gi, '_')) : '';
+    // Extract token if provided in Authorization header to bind to authenticated student
+    let authEmail = null;
+    let authStudentId = null;
+    try {
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        const token = authHeader.split(' ')[1];
+        const jwt = require('jsonwebtoken');
+        const decoded = jwt.decode(token);
+        if (decoded) {
+          authEmail = (decoded.email || '').trim().toLowerCase();
+          authStudentId = (decoded.studentId || decoded.id || '').trim();
+        }
+      }
+    } catch (tokenErr) {
+      console.warn('[Verification] Auth token parse notice:', tokenErr.message);
+    }
 
-    const searchConditions = [
-      ...(emailRegex ? [{ email: emailRegex }] : []),
-      ...(studentIdRegex ? [{ studentId: studentIdRegex }] : []),
-      ...(cleanEmail ? [{ studentId: cleanEmail }] : []),
-      ...(cleanStudentId ? [{ email: cleanStudentId }] : []),
-      ...(derivedStudentId ? [{ studentId: derivedStudentId }] : [])
-    ];
+    const cleanEmail = (email || authEmail || '').trim().toLowerCase();
+    const cleanStudentId = (studentId || authStudentId || '').trim();
+
+    if (!cleanEmail && !cleanStudentId) {
+      return res.status(400).json({
+        success: false,
+        verified: false,
+        match: false,
+        decision: 'MISSING_IDENTITY',
+        finalDecision: 'REJECTED',
+        result: 'rejected',
+        verificationResult: 'REJECTED',
+        message: 'Student identifier or email is required for face verification.'
+      });
+    }
+
+    // Strict identity search conditions — exact email or studentId match only (no cross-matching)
+    const searchConditions = [];
+    if (cleanEmail) {
+      const emailRegex = new RegExp('^' + cleanEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i');
+      searchConditions.push({ email: emailRegex });
+    }
+    if (cleanStudentId) {
+      const studentIdRegex = new RegExp('^' + cleanStudentId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i');
+      searchConditions.push({ studentId: studentIdRegex });
+    }
 
     let profile = null;
     if (searchConditions.length > 0) {
@@ -425,7 +456,7 @@ const verifyFace = async (req, res) => {
           : (fe.embedding && fe.embedding.length > 0 ? [fe.embedding] : []);
         if (feList.length > 0 || (fe.descriptors && fe.descriptors.length > 0)) {
           profile = {
-            studentId: fe.studentId || cleanStudentId || derivedStudentId,
+            studentId: fe.studentId || cleanStudentId,
             email: fe.email || cleanEmail,
             name: fe.name || 'Student',
             embeddings: feList,
@@ -443,7 +474,7 @@ const verifyFace = async (req, res) => {
       if (st && (st.faceEmbeddings?.length > 0 || st.descriptors?.length > 0 || st.faceEnrolled)) {
         const stList = Array.isArray(st.faceEmbeddings?.[0]) ? st.faceEmbeddings : (st.faceEmbeddings?.length > 0 ? [st.faceEmbeddings] : []);
         profile = {
-          studentId: st.studentId || cleanStudentId || derivedStudentId,
+          studentId: st.studentId || cleanStudentId,
           email: st.email || cleanEmail,
           name: st.fullName || st.name || 'Student',
           embeddings: stList,
@@ -460,7 +491,7 @@ const verifyFace = async (req, res) => {
       if (u && (u.faceEmbeddings?.length > 0 || u.descriptors?.length > 0 || u.faceEnrolled)) {
         const uList = Array.isArray(u.faceEmbeddings?.[0]) ? u.faceEmbeddings : (u.faceEmbeddings?.length > 0 ? [u.faceEmbeddings] : []);
         profile = {
-          studentId: cleanStudentId || derivedStudentId,
+          studentId: cleanStudentId,
           email: u.email || cleanEmail,
           name: u.name || 'Student',
           embeddings: uList,
@@ -471,14 +502,29 @@ const verifyFace = async (req, res) => {
       }
     }
 
+    // Validate retrieved profile actually matches requested student identity
+    if (profile) {
+      const pEmail = (profile.email || '').toLowerCase();
+      const pId = (profile.studentId || '');
+      const emailMatches = cleanEmail && pEmail === cleanEmail;
+      const idMatches = cleanStudentId && pId.toLowerCase() === cleanStudentId.toLowerCase();
+      if (!emailMatches && !idMatches) {
+        console.warn(`[Verification Security] Retrieved profile (${pId}/${pEmail}) does not match requested student (${cleanStudentId}/${cleanEmail})`);
+        profile = null;
+      }
+    }
+
     if (!profile) {
       return res.status(200).json({
         verified: false,
         match: false,
-        result: 'REJECTED',
+        result: 'rejected',
+        decision: 'ENROLLMENT_MISSING',
+        finalDecision: 'REJECTED',
         verificationResult: 'REJECTED',
         reason: 'No face profile enrolled',
         needsEnrollment: true,
+        message: 'No face profile enrolled for this student. Please complete face enrollment first.',
         error: 'No face profile enrolled for this student. Please complete face enrollment first.'
       });
     }
@@ -493,6 +539,20 @@ const verifyFace = async (req, res) => {
       enrolled128 = allEmbeddings.filter(e => e.length === 128).map(normalizeVector);
     }
 
+    if (enrolled512.length === 0 && enrolled128.length === 0) {
+      return res.status(200).json({
+        verified: false,
+        match: false,
+        decision: 'INVALID_ENROLLED_EMBEDDINGS',
+        finalDecision: 'REJECTED',
+        result: 'rejected',
+        verificationResult: 'REJECTED',
+        needsEnrollment: true,
+        message: 'Enrolled face embeddings are missing or invalid. Please re-enroll face.',
+        error: 'Enrolled face embeddings are missing or invalid. Please re-enroll face.'
+      });
+    }
+
     const avg512 = (profile.averageEmbedding && profile.averageEmbedding.length === 512)
       ? normalizeVector(profile.averageEmbedding)
       : (enrolled512[0] ? normalizeVector(enrolled512[0]) : null);
@@ -501,21 +561,27 @@ const verifyFace = async (req, res) => {
       ? normalizeVector(profile.averageDescriptor)
       : (enrolled128[0] ? normalizeVector(enrolled128[0]) : null);
 
-    // Extract live samples (frames and vectors)
+    // Extract live samples — strictly require genuine camera frames
     const verificationFrames = Array.isArray(frames) ? frames.filter(f => typeof f === 'string' && f.length > 100).slice(0, 30) : [];
     const rawLive = descriptors || liveEmbeddings || (descriptor || liveDescriptor || embedding ? [descriptor || liveDescriptor || embedding] : null) || [];
     const liveVecs = Array.isArray(rawLive) ? rawLive.filter(v => Array.isArray(v) && v.length > 0) : [];
     const live128 = liveVecs.filter(v => v.length === 128).map(normalizeVector);
     const live512 = liveVecs.filter(v => v.length === 512).map(normalizeVector);
 
-    if (verificationFrames.length === 0 && liveVecs.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: "No verification frames received",
+    if (verificationFrames.length < 20) {
+      return res.status(200).json({
+        success: true,
         verified: false,
         match: false,
-        result: 'REJECTED',
-        error: 'No live camera frames or face descriptors provided for verification.'
+        result: 'rejected',
+        decision: 'INSUFFICIENT_SAMPLES',
+        finalDecision: 'REJECTED',
+        verificationResult: 'REJECTED',
+        matchingFrames: 0,
+        validFrames: verificationFrames.length,
+        averageSimilarity: 0.0,
+        bestSimilarity: 0.0,
+        message: 'Face verification failed: At least 20 valid camera frames are required. Please ensure camera is unobstructed.'
       });
     }
 
@@ -524,21 +590,18 @@ const verifyFace = async (req, res) => {
     let arcfaceRes = null;
 
     // Route 1: Route to Python ArcFace if 512d template exists and live frames are available
-    if (enrolled512.length > 0 && verificationFrames.length > 0) {
+    if (enrolled512.length > 0 && verificationFrames.length >= 20) {
       try {
-        // Forward up to 15 keyframes for balanced, deep evaluation on Python detector
-        const sampleStep = Math.max(1, Math.floor(verificationFrames.length / 15));
-        const sampledFrames = verificationFrames.filter((_, idx) => idx % sampleStep === 0).slice(0, 15);
-
-        console.log(`[ARCFACE] Calling Python detector for verification: ${profile.studentId || profile.email} at ${PYTHON_SERVICE_URL} (${sampledFrames.length} frames)`);
+        const framesToSend = verificationFrames.slice(0, 30);
+        console.log(`[ARCFACE] Calling Python detector for verification: ${profile.studentId || profile.email} at ${PYTHON_SERVICE_URL} (${framesToSend.length} frames)`);
         const response = await axios.post(`${PYTHON_SERVICE_URL}/api/arcface/verify`, {
           studentId: profile.studentId,
           email: profile.email,
-          frames: sampledFrames,
+          frames: framesToSend,
           enrolledEmbeddings: enrolled512,
           averageEmbedding: avg512,
           challengePose: challengePose || null
-        }, { timeout: 25000 });
+        }, { timeout: 45000 });
 
         console.log(`[ARCFACE] Python detector verification response: ${response.status} (decision: ${response.data?.decision}, matched: ${response.data?.matchingFrames}/${response.data?.validFrames})`);
         if (response.data && response.data.decision !== 'DIMENSION_MISMATCH') {
@@ -596,9 +659,10 @@ const verifyFace = async (req, res) => {
 
         let verifiedCount = 0;
         let similarities = [];
-        const MATCH_THRESHOLD = 0.65; // Calibrated for FaceNet 128d normalized embeddings
-        const MIN_AVG_THRESHOLD = 0.65;
-        const CENTROID_FLOOR = 0.60;
+        // Strictly calibrated FaceNet 128d unit vector threshold (distance <= 0.49 -> cosine >= 0.88)
+        const MATCH_THRESHOLD = 0.88;
+        const MIN_AVG_THRESHOLD = 0.86;
+        const CENTROID_FLOOR = 0.84;
 
         let effectiveAvg = avg128;
         if (!effectiveAvg || effectiveAvg.length !== 128) {
@@ -618,7 +682,7 @@ const verifyFace = async (req, res) => {
           }
           allSims.sort((a, b) => b - a);
           const top3Avg = allSims.length >= 3 ? (allSims[0] + allSims[1] + allSims[2]) / 3 : (allSims[0] || simToAvg);
-          const frameSim = simToAvg > 0 ? (0.85 * simToAvg + 0.15 * top3Avg) : top3Avg;
+          const frameSim = simToAvg > 0 ? (0.70 * simToAvg + 0.30 * top3Avg) : top3Avg;
           similarities.push(frameSim);
 
           if (frameSim >= MATCH_THRESHOLD && (simToAvg === 0 || simToAvg >= CENTROID_FLOOR)) {
@@ -631,23 +695,20 @@ const verifyFace = async (req, res) => {
         const minMatch128 = 20; // PROJECT_RULES.md: Minimum 20 out of 30 matching frames
         const isMatch = verifiedCount >= minMatch128 && avgSim >= MIN_AVG_THRESHOLD && similarities.length >= 20;
 
-        // Return real, uninflated frame counts (Step 3-F & Step 4)
-        const finalMatching = verifiedCount;
-
         arcfaceRes = {
           success: true,
           verified: isMatch,
           decision: isMatch ? 'VERIFIED' : 'REJECTED',
           finalDecision: isMatch ? 'VERIFIED' : 'REJECTED',
-          matchingFrames: finalMatching,
-          verifiedFrames: finalMatching,
+          matchingFrames: verifiedCount,
+          verifiedFrames: verifiedCount,
           validFrames: similarities.length,
           averageSimilarity: avgSim,
           bestSimilarity: bestSim,
           threshold: MATCH_THRESHOLD,
           message: isMatch
-            ? `Face verified successfully (${finalMatching}/${similarities.length} frames matched — ${Math.round(avgSim * 100)}% similarity).`
-            : `Face verification failed: Identity mismatch or obscured face. Only ${verifiedCount}/${similarities.length} frames matched (minimum 20 required).`
+            ? `Face verified successfully (${verifiedCount}/${similarities.length} frames matched — ${Math.round(avgSim * 100)}% similarity).`
+            : "Face does not match. Please try again."
         };
       } else if (live512.length > 0 && enrolled512.length > 0) {
         // High-precision 512d cosine matching
@@ -673,9 +734,9 @@ const verifyFace = async (req, res) => {
 
         let verifiedCount = 0;
         let similarities = [];
-        const MATCH_THRESHOLD = 0.68;
-        const MIN_AVG_THRESHOLD = 0.65;
-        const CENTROID_FLOOR = 0.60;
+        const MATCH_THRESHOLD = 0.85;
+        const MIN_AVG_THRESHOLD = 0.84;
+        const CENTROID_FLOOR = 0.82;
 
         for (let i = 0; i < live512.length; i++) {
           const vec = live512[i];
@@ -686,7 +747,7 @@ const verifyFace = async (req, res) => {
           }
           allSims.sort((a, b) => b - a);
           const top3Avg = allSims.length >= 3 ? (allSims[0] + allSims[1] + allSims[2]) / 3 : (allSims[0] || simToAvg);
-          const frameSim = simToAvg > 0 ? (0.85 * simToAvg + 0.15 * top3Avg) : top3Avg;
+          const frameSim = simToAvg > 0 ? (0.70 * simToAvg + 0.30 * top3Avg) : top3Avg;
           similarities.push(frameSim);
 
           if (frameSim >= MATCH_THRESHOLD && (simToAvg === 0 || simToAvg >= CENTROID_FLOOR)) {
@@ -699,30 +760,26 @@ const verifyFace = async (req, res) => {
         const minMatch512 = 20; // PROJECT_RULES.md: Minimum 20 matching frames
         const isMatch = verifiedCount >= minMatch512 && avgSim >= MIN_AVG_THRESHOLD && similarities.length >= 20;
 
-        // Return real, uninflated frame counts (Step 3-F & Step 4)
-        const finalMatching = verifiedCount;
-
         arcfaceRes = {
           success: true,
           verified: isMatch,
           decision: isMatch ? 'VERIFIED' : 'REJECTED',
           finalDecision: isMatch ? 'VERIFIED' : 'REJECTED',
-          matchingFrames: finalMatching,
-          verifiedFrames: finalMatching,
+          matchingFrames: verifiedCount,
+          verifiedFrames: verifiedCount,
           validFrames: similarities.length,
           averageSimilarity: avgSim,
           bestSimilarity: bestSim,
           threshold: MATCH_THRESHOLD,
           message: isMatch
-            ? `Face verified successfully (${finalMatching}/${similarities.length} frames matched — ${Math.round(avgSim * 100)}% similarity).`
-            : `Face verification failed: Identity mismatch or obscured face. Only ${verifiedCount}/${similarities.length} frames matched (minimum 20 required).`
+            ? `Face verified successfully (${verifiedCount}/${similarities.length} frames matched — ${Math.round(avgSim * 100)}% similarity).`
+            : "Face does not match. Please try again."
         };
       } else if (enrolled512.length > 0 && live128.length > 0 && enrolled128.length === 0) {
-        // Enrolled with 512d only, client sent 128d, Python service offline: Prompt re-enrollment safely WITHOUT setting needsEnrollment: true
         console.warn(`[Biometric Fallback] Template format update needed for ${profile.email}`);
         return res.status(200).json({
           success: false,
-          needsEnrollment: false, // Student IS enrolled, so do NOT show "No face enrolled for this account"
+          needsEnrollment: false,
           needsReEnrollment: true,
           verified: false,
           match: false,
@@ -764,8 +821,13 @@ const verifyFace = async (req, res) => {
     const suspiciousFrames = typeof arcfaceRes.suspiciousFrames === 'number' && !isNaN(arcfaceRes.suspiciousFrames) ? arcfaceRes.suspiciousFrames : 0;
     const rejectedFrames = typeof arcfaceRes.rejectedFrames === 'number' && !isNaN(arcfaceRes.rejectedFrames) ? arcfaceRes.rejectedFrames : 0;
     const finalDecision = (arcfaceRes.decision || arcfaceRes.finalDecision || (arcfaceRes.verified ? 'VERIFIED' : 'REJECTED')).toUpperCase();
-    const isVerified = (arcfaceRes.verified === true && finalDecision === 'VERIFIED') ||
-      (finalDecision === 'VERIFIED' && matchingFrames >= 10);
+    
+    // PROJECT_RULES.md: Strictly require at least 20 matching frames
+    const isVerified = Boolean(
+      arcfaceRes.verified === true &&
+      finalDecision === 'VERIFIED' &&
+      matchingFrames >= 20
+    );
 
     const result = isVerified ? 'VERIFIED' : 'REJECTED';
 
@@ -817,15 +879,19 @@ const verifyFace = async (req, res) => {
 
     let defaultMsg = "Face verified successfully.";
     if (!isVerified) {
-      if (finalDecision === 'INSUFFICIENT_SAMPLES') {
-        defaultMsg = "Not enough valid face samples";
+      if (finalDecision === 'MULTIPLE_FACES_DETECTED') {
+        defaultMsg = "Multiple faces detected during verification.";
+      } else if (finalDecision === 'FACE_OCCLUDED') {
+        defaultMsg = "Face obscured or covered. Please remove your hand or obstruction.";
+      } else if (finalDecision === 'INSUFFICIENT_SAMPLES') {
+        defaultMsg = `Only ${verifiedFrames}/${verificationFrames.length} valid face frames evaluated (minimum 20 required).`;
       } else {
-        defaultMsg = `Face verification failed: Only ${verifiedFrames}/${arcfaceRes?.validFrames || verificationFrames.length} frames matched (Minimum 10 required).`;
+        defaultMsg = "Face does not match. Please try again.";
       }
     }
 
     const confidencePct = Math.round(averageSimilarity * 100);
-    const usedThreshold = arcfaceRes.threshold || (enrolled128.length > 0 && enrolled512.length === 0 ? 0.86 : 0.68);
+    const usedThreshold = arcfaceRes.threshold || (enrolled128.length > 0 && enrolled512.length === 0 ? 0.88 : 0.85);
 
     return res.status(200).json({
       success: true,
@@ -844,11 +910,12 @@ const verifyFace = async (req, res) => {
       confidence: confidencePct,
       threshold: usedThreshold,
       matchingFrames: verifiedFrames,
-      minMatchingRequired: 10,
+      minMatchingRequired: 20,
       validFrames: arcfaceRes?.validFrames || verifiedFrames,
       totalFrames: verificationFrames.length,
-      totalFramesProcessed: verificationFrames.length,
-      message: arcfaceRes?.message || defaultMsg,
+      message: isVerified
+        ? (arcfaceRes?.message || defaultMsg)
+        : ((arcfaceRes?.decision === 'REJECTED' || !arcfaceRes?.verified) ? "Face does not match. Please try again." : (arcfaceRes?.message || defaultMsg)),
       timestamp: new Date().toISOString()
     });
   } catch (err) {

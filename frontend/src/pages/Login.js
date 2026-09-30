@@ -27,6 +27,138 @@ const postWithFallback = async (primaryUrl, fallbackUrl, payload) => {
   }
 };
 
+/**
+ * Strict Facial Occlusion & Landmark Validation
+ * Rejects frames where hand, mask, cloth, or any obstruction covers mouth, nose, eyes, or chin.
+ */
+const validateFaceLandmarks = (det, canvas) => {
+  if (!det || !det.landmarks) return { valid: false, reason: "No face detected" };
+  if (det.detection && typeof det.detection.score === 'number' && det.detection.score < 0.40) {
+    return { valid: false, reason: "Face detection confidence too low" };
+  }
+  const pts = det.landmarks.positions;
+  if (!pts || pts.length < 68) return { valid: false, reason: "Facial landmarks incomplete" };
+
+  // 1. Eye centers & eye distance
+  const leftEyeX = (pts[36].x + pts[39].x) / 2;
+  const leftEyeY = (pts[36].y + pts[39].y) / 2;
+  const rightEyeX = (pts[42].x + pts[45].x) / 2;
+  const rightEyeY = (pts[42].y + pts[45].y) / 2;
+
+  const eyeDist = Math.hypot(rightEyeX - leftEyeX, rightEyeY - leftEyeY);
+  if (eyeDist < 25) return { valid: false, reason: "Face too far from camera" };
+
+  const eyeMidX = (leftEyeX + rightEyeX) / 2;
+  const eyeMidY = (leftEyeY + rightEyeY) / 2;
+
+  // 2. Eye Aspect Ratio (EAR) & openness
+  const leftEAR = (Math.hypot(pts[37].x - pts[41].x, pts[37].y - pts[41].y) +
+                   Math.hypot(pts[38].x - pts[40].x, pts[38].y - pts[40].y)) /
+                  (2 * Math.max(1, Math.hypot(pts[36].x - pts[39].x, pts[36].y - pts[39].y)));
+  const rightEAR = (Math.hypot(pts[43].x - pts[47].x, pts[43].y - pts[47].y) +
+                    Math.hypot(pts[44].x - pts[46].x, pts[44].y - pts[46].y)) /
+                   (2 * Math.max(1, Math.hypot(pts[42].x - pts[45].x, pts[42].y - pts[45].y)));
+
+  // If one eye is obscured by hand / fingers
+  if (Math.abs(leftEAR - rightEAR) > 0.16 || leftEAR < 0.10 || rightEAR < 0.10) {
+    return { valid: false, reason: "Eye covered or obscured by hand" };
+  }
+
+  // 3. Nose tip (pt 30) position relative to eye midpoint
+  const noseX = pts[30].x;
+  const noseY = pts[30].y;
+  const noseDist = Math.hypot(noseX - eyeMidX, noseY - eyeMidY);
+  const noseRatio = noseDist / eyeDist;
+  if (noseRatio < 0.35 || noseRatio > 0.90) {
+    return { valid: false, reason: "Nose region occluded or distorted" };
+  }
+
+  // 4. Mouth center & dimensions (pts 48-67)
+  let mouthSumX = 0, mouthSumY = 0;
+  for (let i = 48; i < 68; i++) {
+    mouthSumX += pts[i].x;
+    mouthSumY += pts[i].y;
+  }
+  const mouthCenterX = mouthSumX / 20;
+  const mouthCenterY = mouthSumY / 20;
+  const mouthDist = Math.hypot(mouthCenterX - eyeMidX, mouthCenterY - eyeMidY);
+  const mouthRatio = mouthDist / eyeDist;
+  if (mouthRatio < 0.70 || mouthRatio > 1.60) {
+    return { valid: false, reason: "Mouth region occluded or covered" };
+  }
+
+  const mouthWidth = Math.hypot(pts[54].x - pts[48].x, pts[54].y - pts[48].y);
+  const mouthWidthRatio = mouthWidth / eyeDist;
+  if (mouthWidthRatio < 0.35 || mouthWidthRatio > 1.10) {
+    return { valid: false, reason: "Mouth occluded or covered" };
+  }
+
+  // 5. Chin position (pt 8)
+  const chinDist = Math.hypot(pts[8].x - eyeMidX, pts[8].y - eyeMidY);
+  const chinRatio = chinDist / eyeDist;
+  if (chinRatio < 1.05 || chinRatio > 2.05) {
+    return { valid: false, reason: "Chin/jaw occluded" };
+  }
+
+  // 6. Horizontal symmetry
+  if (Math.abs(noseX - eyeMidX) > 0.40 * eyeDist || Math.abs(mouthCenterX - eyeMidX) > 0.40 * eyeDist) {
+    return { valid: false, reason: "Face turned away or occluded" };
+  }
+
+  // 7. Pixel brightness / Hand-over-face check using canvas context
+  if (canvas) {
+    try {
+      const ctx = canvas.getContext('2d');
+      const cw = canvas.width;
+      const ch = canvas.height;
+
+      // Sample eye patches for brightness asymmetry (detects hand or shadow over one eye)
+      const r = Math.max(3, Math.round(eyeDist * 0.12));
+      const lx = Math.max(0, Math.min(cw - r * 2, Math.round(leftEyeX - r)));
+      const ly = Math.max(0, Math.min(ch - r * 2, Math.round(leftEyeY - r)));
+      const rx = Math.max(0, Math.min(cw - r * 2, Math.round(rightEyeX - r)));
+      const ry = Math.max(0, Math.min(ch - r * 2, Math.round(rightEyeY - r)));
+
+      const imgDataL = ctx.getImageData(lx, ly, r * 2, r * 2).data;
+      const imgDataR = ctx.getImageData(rx, ry, r * 2, r * 2).data;
+      let bL = 0, bR = 0, count = (r * 2) * (r * 2);
+      for (let i = 0; i < imgDataL.length; i += 4) {
+        bL += 0.299 * imgDataL[i] + 0.587 * imgDataL[i + 1] + 0.114 * imgDataL[i + 2];
+        bR += 0.299 * imgDataR[i] + 0.587 * imgDataR[i + 1] + 0.114 * imgDataR[i + 2];
+      }
+      bL /= count;
+      bR /= count;
+      if (Math.abs(bL - bR) > 35.0) {
+        return { valid: false, reason: "Hand or obstruction covering eye" };
+      }
+
+      // Sample mouth vs forehead to detect hand covering lower face
+      const fhy = Math.max(0, Math.round(eyeMidY - 0.40 * eyeDist));
+      const fhx = Math.max(0, Math.min(cw - 20, Math.round(eyeMidX - 10)));
+      const mhy = Math.max(0, Math.min(ch - 20, Math.round(mouthCenterY - 10)));
+      const mhx = Math.max(0, Math.min(cw - 20, Math.round(mouthCenterX - 10)));
+
+      const fhData = ctx.getImageData(fhx, fhy, 20, 20).data;
+      const mhData = ctx.getImageData(mhx, mhy, 20, 20).data;
+      let bFh = 0, bMh = 0;
+      for (let i = 0; i < fhData.length; i += 4) {
+        bFh += 0.299 * fhData[i] + 0.587 * fhData[i + 1] + 0.114 * fhData[i + 2];
+        bMh += 0.299 * mhData[i] + 0.587 * mhData[i + 1] + 0.114 * mhData[i + 2];
+      }
+      bFh /= 400;
+      bMh /= 400;
+
+      if (Math.abs(bMh - bFh) > 36.0) {
+        return { valid: false, reason: "Hand covering lower face/mouth" };
+      }
+    } catch (pixErr) {
+      // Ignore canvas read exceptions
+    }
+  }
+
+  return { valid: true };
+};
+
 function Login() {
   const navigate = useNavigate();
   const webcamRef = useRef(null);
@@ -466,12 +598,23 @@ function Login() {
       return;
     }
     setFaceVerifying(true);
+    // Step 2-5: Clear previous verification results before starting a new attempt
+    localStorage.removeItem("faceVerified");
     setFaceStatusMsg("🔄 Initializing Biometric Face Models...");
     try {
       await loadFaceModels();
     } catch (mErr) {
       console.warn("Face models loader notice:", mErr);
     }
+
+    // Step 2-1: Verification must stop if the face-detection models fail to load
+    const faceApi = getFaceApi();
+    if (!faceApi || !faceApi.detectSingleFace) {
+      setFaceStatusMsg("❌ Face detection models failed to load. Please check your internet connection and refresh.");
+      setFaceVerifying(false);
+      return;
+    }
+
     setFaceStatusMsg("🔄 Starting 30-frame Face Verification...");
 
     const TOTAL_LOGIN_FRAMES = 30;
@@ -513,16 +656,24 @@ function Login() {
         if (b64Frame) {
           capturedFrames.push(b64Frame);
           const api = getFaceApi();
-          // Detect face in current live video frame
+          // Detect face with landmarks in current live video frame
           if (api && api.detectSingleFace) {
             try {
-              const det = await api.detectSingleFace(video, new api.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.25 }))
+              const det = await api.detectSingleFace(video, new api.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.35 }))
                 .withFaceLandmarks()
                 .withFaceDescriptor();
-              if (det && det.descriptor) {
-                capturedDescriptors.push(Array.from(det.descriptor));
+
+              if (det) {
+                const landmarkValidation = validateFaceLandmarks(det, frameCanvas);
+                if (landmarkValidation.valid && det.descriptor) {
+                  capturedDescriptors.push(Array.from(det.descriptor));
+                } else {
+                  console.warn(`[FaceVerify] Frame ${frameIndex + 1} occluded/invalid:`, landmarkValidation.reason);
+                }
               }
-            } catch (dErr) {}
+            } catch (dErr) {
+              console.warn("[FaceVerify] Face landmark error:", dErr);
+            }
           }
         }
 
@@ -535,12 +686,14 @@ function Login() {
         return;
       }
 
-      // If client-side face detection is active, ensure face was genuinely visible across frames (reject hands/obstructions)
+      // PROJECT_RULES.md: Strictly require minimum 20 clear, unobstructed face samples
       const api = getFaceApi();
-      if (api && api.detectSingleFace && capturedDescriptors.length < 15) {
-        setFaceStatusMsg(`🔴 Face not detected (${capturedDescriptors.length}/30 frames with visible face, min 20 required). Please remove your hand or obstruction and look directly at the camera.`);
-        setFaceVerifying(false);
-        return;
+      if (api && api.detectSingleFace) {
+        if (capturedDescriptors.length < 20) {
+          setFaceStatusMsg(`🔴 Face Obscured: Please remove your hand or obstruction from your face. Full face must be clearly visible (${capturedDescriptors.length}/30 clear frames, minimum 20 required).`);
+          setFaceVerifying(false);
+          return;
+        }
       }
 
       // === PHASE 2: ONE single final verification request (30 frames) ===
@@ -568,25 +721,28 @@ function Login() {
       const simPct = Math.round((data.bestSimilarity || data.averageSimilarity || 0) * 100);
       const decision = (data.decision || data.finalDecision || data.verificationResult || '').toUpperCase();
       const matchingCount = typeof data.matchingFrames === 'number' ? data.matchingFrames : (typeof data.verifiedFrames === 'number' ? data.verifiedFrames : 0);
-      const isVerified = (data.verified === true || data.matched === true || decision === 'VERIFIED') && matchingCount >= 20;
+      const evaluatedCount = typeof data.validFrames === 'number' ? data.validFrames : (typeof data.totalFramesProcessed === 'number' ? data.totalFramesProcessed : 30);
+      const isVerified = (data.verified === true || data.match === true || decision === 'VERIFIED') && matchingCount >= 20;
 
       if (isVerified) {
         localStorage.setItem("faceVerified", "true");
-        setFaceStatusMsg(`✓ Identity Confirmed (${matchingCount}/30 frames matched — ${simPct}% similarity)`);
+        setFaceStatusMsg(`✓ Identity Confirmed (${matchingCount}/${evaluatedCount} frames matched — ${simPct}% similarity)`);
         setTimeout(() => {
           completeLogin(activeToken, activeStudent);
         }, 800);
       } else {
-        const failReason = data.message || `Face not matched (${matchingCount}/30 matching frames, min 20 required).`;
+        localStorage.removeItem("faceVerified");
+        const failReason = data.message || `Face not matched (${matchingCount}/${evaluatedCount} matching frames, min 20 required).`;
         setFaceStatusMsg(`🔴 ${failReason} Please ensure face is completely unobstructed.`);
       }
 
     } catch (e) {
       console.error("[FaceVerify] COMPLETE ERROR:", e);
+      localStorage.removeItem("faceVerified");
       if (e.code === 'ECONNABORTED' || e.code === 'ETIMEDOUT' || e.message?.includes('timeout')) {
         setFaceStatusMsg("❌ Face verification timed out. Check ArcFace service.");
       } else {
-        const serverReason = e.response?.data?.reason || e.response?.data?.error || "Server connection error";
+        const serverReason = e.response?.data?.reason || e.response?.data?.error || e.response?.data?.message || "Server connection error";
         setFaceStatusMsg(`🔴 Verification failed: ${serverReason}. Please retry.`);
       }
     } finally {

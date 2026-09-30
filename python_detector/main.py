@@ -378,12 +378,102 @@ def filter_real_faces(raw_faces, img_shape, min_conf=0.35, min_size=35):
 
     return genuine_faces
 
+def check_face_occlusion(bgr_img: np.ndarray, face) -> tuple:
+    """
+    Detect facial occlusion (hands, masks, cloth, or foreign objects covering face/eyes/nose/mouth).
+    Lightweight and optimized for CPU inference on Render.
+    Returns: (is_occluded: bool, reason: str)
+    """
+    if face is None:
+        return True, "NO_FACE"
+
+    det_score = float(getattr(face, 'det_score', 1.0))
+    if det_score < 0.45:
+        return True, f"INSUFFICIENT_FACE_VISIBILITY (det_score: {det_score:.2f} < 0.45)"
+
+    kps = getattr(face, 'kps', None)
+    if kps is None or len(kps) < 5:
+        return True, "INSUFFICIENT_FACE_VISIBILITY (missing facial landmarks)"
+
+    # 1. 5-Point Landmark Geometry Check
+    eye_l = np.asarray(kps[0], dtype=np.float32)
+    eye_r = np.asarray(kps[1], dtype=np.float32)
+    nose = np.asarray(kps[2], dtype=np.float32)
+    mouth_l = np.asarray(kps[3], dtype=np.float32)
+    mouth_r = np.asarray(kps[4], dtype=np.float32)
+
+    eye_dist = float(np.linalg.norm(eye_r - eye_l))
+    if eye_dist < 15.0:
+        return True, "INSUFFICIENT_FACE_VISIBILITY (interocular distance too small)"
+
+    eye_mid = (eye_l + eye_r) / 2.0
+    mouth_mid = (mouth_l + mouth_r) / 2.0
+    mouth_w = float(np.linalg.norm(mouth_r - mouth_l))
+    nose_dist = float(np.linalg.norm(nose - eye_mid))
+    mouth_dist = float(np.linalg.norm(mouth_mid - eye_mid))
+
+    mouth_w_ratio = mouth_w / eye_dist
+    nose_ratio = nose_dist / eye_dist
+    mouth_ratio = mouth_dist / eye_dist
+
+    if not (0.35 <= mouth_w_ratio <= 1.25):
+        return True, f"FACE_OCCLUDED (abnormal mouth width ratio: {mouth_w_ratio:.2f})"
+    if not (0.32 <= nose_ratio <= 0.95):
+        return True, f"FACE_OCCLUDED (abnormal nose-to-eye distance ratio: {nose_ratio:.2f})"
+    if not (0.65 <= mouth_ratio <= 1.70):
+        return True, f"FACE_OCCLUDED (abnormal mouth-to-eye distance ratio: {mouth_ratio:.2f})"
+
+    # 2. Eye Patch Brightness Asymmetry Check (Detects hand or shadow over one eye)
+    radius = max(3, int(eye_dist * 0.14))
+    img_h, img_w = bgr_img.shape[:2]
+    patch_l = bgr_img[max(0, int(eye_l[1]) - radius):min(img_h, int(eye_l[1]) + radius),
+                      max(0, int(eye_l[0]) - radius):min(img_w, int(eye_l[0]) + radius)]
+    patch_r = bgr_img[max(0, int(eye_r[1]) - radius):min(img_h, int(eye_r[1]) + radius),
+                      max(0, int(eye_r[0]) - radius):min(img_w, int(eye_r[0]) + radius)]
+
+    if patch_l.size > 0 and patch_r.size > 0:
+        b_l = float(np.mean(cv2.cvtColor(patch_l, cv2.COLOR_BGR2GRAY)))
+        b_r = float(np.mean(cv2.cvtColor(patch_r, cv2.COLOR_BGR2GRAY)))
+        eye_diff = abs(b_l - b_r)
+        if eye_diff > 35.0:
+            return True, f"FACE_OCCLUDED: Eye region covered or obscured (eye asymmetry: {eye_diff:.1f})"
+
+    # 3. Lower Face / Mouth vs Forehead Lighting Disparity (Hand on mouth / lower face)
+    bbox = face.bbox.astype(int) if hasattr(face.bbox, 'astype') else [int(b) for b in face.bbox]
+    x1, y1, x2, y2 = max(0, bbox[0]), max(0, bbox[1]), min(img_w, bbox[2]), min(img_h, bbox[3])
+    face_crop = bgr_img[y1:y2, x1:x2]
+    if face_crop.size > 0:
+        fh, fw = face_crop.shape[:2]
+        forehead = face_crop[int(0.05 * fh):int(0.35 * fh), int(0.20 * fw):int(0.80 * fw)]
+        mouth_area = face_crop[int(0.60 * fh):int(0.90 * fh), int(0.20 * fw):int(0.80 * fw)]
+
+        if forehead.size > 0 and mouth_area.size > 0:
+            b_fh = float(np.mean(forehead))
+            b_mo = float(np.mean(mouth_area))
+            plane_diff = abs(b_mo - b_fh)
+            if plane_diff > 38.0:
+                return True, f"FACE_OCCLUDED: Hand covering lower face/mouth (lighting disparity: {plane_diff:.1f})"
+
+        # 4. Vertical Finger Edge Check over Mouth (Hand fingers covering mouth)
+        if mouth_area.size > 0:
+            gray_m = cv2.cvtColor(mouth_area, cv2.COLOR_BGR2GRAY)
+            sob_v = cv2.Sobel(gray_m, cv2.CV_64F, 1, 0, ksize=3)
+            sob_h = cv2.Sobel(gray_m, cv2.CV_64F, 0, 1, ksize=3)
+            v_e = float(np.mean(np.abs(sob_v)))
+            h_e = float(np.mean(np.abs(sob_h)))
+            vh_ratio = v_e / max(h_e, 1e-4)
+            if v_e > 25.0 and vh_ratio > 1.6:
+                return True, f"FACE_OCCLUDED: Hand/fingers covering mouth (vertical edge ratio: {vh_ratio:.2f})"
+
+    return False, "UNOBSTRUCTED"
+
 def validate_face_quality(bgr_img: np.ndarray, face) -> dict:
     """
-    Validate face sample quality (supports longer camera distances):
+    Validate face sample quality & visibility (supports longer camera distances):
     - Min face resolution: relaxed to 50x50 / 80x80 baseline for distance
     - Brightness range: 30.0-235.0
     - Blur (Laplacian Variance): >= 15.0
+    - Occlusion & Visibility: Hands, masks, or foreign objects covering face rejected
     """
     bbox = face.bbox.astype(int) if hasattr(face.bbox, 'astype') else [int(b) for b in face.bbox]
     x1, y1, x2, y2 = max(0, bbox[0]), max(0, bbox[1]), min(bgr_img.shape[1], bbox[2]), min(bgr_img.shape[0], bbox[3])
@@ -391,11 +481,28 @@ def validate_face_quality(bgr_img: np.ndarray, face) -> dict:
     img_h, img_w = bgr_img.shape[:2]
 
     if face_w <= 0 or face_h <= 0:
-        return {"passed": False, "score": 0, "reason": "Invalid face region"}
+        return {"passed": False, "score": 0, "reason": "Invalid face region", "occluded": False}
+
+    # Occlusion & Visibility Check (Step 3-D)
+    is_occluded, occ_reason = check_face_occlusion(bgr_img, face)
+    if is_occluded:
+        return {
+            "passed": False,
+            "score": 0.0,
+            "label": "OCCLUDED",
+            "resolution": f"{face_w}x{face_h}",
+            "brightness": 0.0,
+            "blurVar": 0.0,
+            "centered": False,
+            "face_w": face_w,
+            "face_h": face_h,
+            "reason": occ_reason,
+            "occluded": True
+        }
 
     face_crop = bgr_img[y1:y2, x1:x2]
     if face_crop.size == 0:
-        return {"passed": False, "score": 0, "reason": "Invalid face region"}
+        return {"passed": False, "score": 0, "reason": "Invalid face region", "occluded": False}
 
     gray_crop = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
 
@@ -433,7 +540,8 @@ def validate_face_quality(bgr_img: np.ndarray, face) -> dict:
         "centered": centering_pass,
         "face_w": face_w,
         "face_h": face_h,
-        "reason": quality_label if passed else f"Low quality (Res:{face_w}x{face_h}, Blur:{round(blur_var,1)}, Bright:{round(mean_brightness,1)})"
+        "reason": quality_label if passed else f"Low quality (Res:{face_w}x{face_h}, Blur:{round(blur_var,1)}, Bright:{round(mean_brightness,1)})",
+        "occluded": False
     }
 
 def run_yolo_detection(model, image: Image.Image, target_class_ids: list, threshold: float):
@@ -702,10 +810,15 @@ def arcface_enroll(request: ArcFaceEnrollRequest):
 def arcface_verify(request: ArcFaceVerifyRequest):
     """
     InsightFace ArcFace Biometric Identity Verification:
+    - Decodes and preprocesses genuine camera frames independently
+    - Rejects occluded frames (hands, masks, cloth covering eyes/nose/mouth)
+    - Validates image quality, centering, blur, and resolution
+    - Rejects multiple faces
     - Evaluates similarity score against enrolled 512-d embeddings
-    - Verification succeeds if averageSimilarity >= 0.65 or bestSimilarity >= 0.70
+    - Returns honest, uninflated frame counts
     """
     verification_start = time.time()
+    req_id = f"v_{int(time.time()*1000)}"
 
     input_items = []
     if request.frames and len(request.frames) > 0:
@@ -721,14 +834,19 @@ def arcface_verify(request: ArcFaceVerifyRequest):
     if total_requested == 0:
         return {
             "success": False,
+            "requestId": req_id,
             "verified": False,
             "match": False,
             "result": "rejected",
+            "decision": "NO_FRAMES",
             "finalDecision": "REJECTED",
-            "message": "No verification frames or embeddings provided",
+            "message": "No verification frames provided",
             "bestSimilarity": 0.0,
             "averageSimilarity": 0.0,
+            "matchingFrames": 0,
             "verifiedFrames": 0,
+            "validFrames": 0,
+            "totalFrames": 0,
             "totalFramesProcessed": 0
         }
 
@@ -739,28 +857,15 @@ def arcface_verify(request: ArcFaceVerifyRequest):
     if not request.enrolledEmbeddings or len(request.enrolledEmbeddings) == 0:
         return {
             "success": False,
+            "requestId": req_id,
             "verified": False,
             "match": False,
             "needsEnrollment": True,
             "result": "rejected",
+            "decision": "ENROLLMENT_MISSING",
             "finalDecision": "REJECTED",
-            "message": "Enrollment data missing",
+            "message": "Enrollment data missing. Please complete face enrollment first.",
             "error": "Enrollment data missing. Please complete face enrollment first.",
-            "bestSimilarity": 0.0,
-            "averageSimilarity": 0.0
-        }
-
-    dims = [len(enrolled) if isinstance(enrolled, list) else -1 for enrolled in (request.enrolledEmbeddings or [])]
-    if any(d != 512 for d in dims):
-        logger.warning(f"⚠️ [ArcFace Verify] Dimension mismatch in enrolled embeddings: count={len(dims)}, dims={set(dims)} (expected 512d).")
-        return {
-            "success": False,
-            "verified": False,
-            "match": False,
-            "decision": "DIMENSION_MISMATCH",
-            "finalDecision": "REJECTED",
-            "result": "rejected",
-            "message": f"Enrolled embeddings dimension mismatch (got {set(dims)}, expected 512d).",
             "bestSimilarity": 0.0,
             "averageSimilarity": 0.0,
             "matchingFrames": 0,
@@ -769,28 +874,58 @@ def arcface_verify(request: ArcFaceVerifyRequest):
             "totalFrames": total_requested
         }
 
-    # Pre-compute L2 normalized enrolled matrix ONCE
-    enrolled_matrix = np.asarray(request.enrolledEmbeddings, dtype=np.float32)
-    norms = np.linalg.norm(enrolled_matrix, axis=1, keepdims=True)
-    enrolled_matrix = enrolled_matrix / np.maximum(norms, 1e-8)
+    # Validate enrolled 512d embeddings (finite values, positive norm)
+    valid_enrolled = []
+    for emb in (request.enrolledEmbeddings or []):
+        if isinstance(emb, list) and len(emb) == 512:
+            arr = np.asarray(emb, dtype=np.float32)
+            if np.all(np.isfinite(arr)):
+                norm_val = float(np.linalg.norm(arr))
+                if norm_val > 1e-4:
+                    valid_enrolled.append(arr / norm_val)
+
+    if len(valid_enrolled) == 0:
+        logger.warning(f"[{req_id}] No valid finite 512d enrolled embeddings provided.")
+        return {
+            "success": False,
+            "requestId": req_id,
+            "verified": False,
+            "match": False,
+            "decision": "INVALID_ENROLLED_EMBEDDINGS",
+            "finalDecision": "REJECTED",
+            "result": "rejected",
+            "message": "Invalid enrolled face embeddings. Please re-enroll face.",
+            "bestSimilarity": 0.0,
+            "averageSimilarity": 0.0,
+            "matchingFrames": 0,
+            "verifiedFrames": 0,
+            "validFrames": 0,
+            "totalFrames": total_requested
+        }
+
+    enrolled_matrix = np.vstack(valid_enrolled)
 
     average_vector = None
     if request.averageEmbedding and len(request.averageEmbedding) == 512:
-        average_vector = np.asarray(request.averageEmbedding, dtype=np.float32)
-        norm_avg = np.linalg.norm(average_vector)
-        if norm_avg > 0:
-            average_vector = average_vector / norm_avg
+        arr_avg = np.asarray(request.averageEmbedding, dtype=np.float32)
+        if np.all(np.isfinite(arr_avg)):
+            norm_avg = float(np.linalg.norm(arr_avg))
+            if norm_avg > 1e-4:
+                average_vector = arr_avg / norm_avg
 
     verified_count = 0
     suspicious_count = 0
     rejected_count = 0
+    occluded_count = 0
+    poor_quality_count = 0
     multi_face_triggered = False
+    multi_face_count = 0
     frame_similarities = []
     quality_scores = []
 
-    # For fast and accurate verification, sub-sample up to 8 keyframes when base64 strings are provided
-    if len(frames_to_process) > 8 and isinstance(frames_to_process[0], str):
-        indices = np.linspace(0, len(frames_to_process) - 1, 8, dtype=int)
+    # Sub-sample keyframes evenly if more than 15 base64 frames provided for balanced performance
+    if len(frames_to_process) > 15 and isinstance(frames_to_process[0], str):
+        indices = np.linspace(0, len(frames_to_process) - 1, 15, dtype=int)
         frames_to_process = [frames_to_process[i] for i in indices]
 
     for idx, item in enumerate(frames_to_process):
@@ -799,34 +934,51 @@ def arcface_verify(request: ArcFaceVerifyRequest):
             live_vector = None
             if isinstance(item, list) or isinstance(item, np.ndarray):
                 raw_arr = np.asarray(item, dtype=np.float32)
-                if raw_arr.shape[0] == 512:
-                    live_vector = raw_arr / max(np.linalg.norm(raw_arr), 1e-8)
+                if raw_arr.shape[0] == 512 and np.all(np.isfinite(raw_arr)):
+                    n_v = float(np.linalg.norm(raw_arr))
+                    if n_v > 1e-4:
+                        live_vector = raw_arr / n_v
             elif isinstance(item, str) and len(item) > 100:
                 bgr_img = preprocess_image_np(item, target_max_dim=480)
                 if bgr_img is not None and bgr_img.size > 0:
                     raw_faces = app_face.get(bgr_img)
-                    faces = filter_real_faces(raw_faces, bgr_img.shape, min_conf=0.35, min_size=20)
+                    faces = filter_real_faces(raw_faces, bgr_img.shape, min_conf=0.40, min_size=20)
 
                     if len(faces) == 0:
                         rejected_count += 1
                         continue
 
                     if len(faces) > 1:
-                        logger.warning(f"🚨 [ArcFace Verification] Multiple faces in frame {idx+1}")
+                        logger.warning(f"[{req_id}] Multiple faces in frame {idx+1}")
                         multi_face_triggered = True
+                        multi_face_count += 1
                         rejected_count += 1
                         continue
 
                     face = faces[0]
+                    # Quality & Occlusion Validation Gate (Step 3-C & 3-D)
                     quality = validate_face_quality(bgr_img, face)
+                    if not quality["passed"]:
+                        if quality.get("occluded"):
+                            occluded_count += 1
+                            logger.warning(f"[{req_id}] Frame {idx+1} REJECTED (OCCLUDED): {quality['reason']}")
+                        else:
+                            poor_quality_count += 1
+                            logger.warning(f"[{req_id}] Frame {idx+1} REJECTED (QUALITY): {quality['reason']}")
+                        rejected_count += 1
+                        continue
+
                     quality_scores.append(quality["score"])
 
                     raw_live_emb = getattr(face, 'normed_embedding', None)
                     if raw_live_emb is None:
                         raw_live_emb = getattr(face, 'embedding', None)
                     if raw_live_emb is not None and raw_live_emb.shape[0] == 512:
-                        live_vector = np.asarray(raw_live_emb, dtype=np.float32)
-                        live_vector = live_vector / max(np.linalg.norm(live_vector), 1e-8)
+                        raw_arr = np.asarray(raw_live_emb, dtype=np.float32)
+                        if np.all(np.isfinite(raw_arr)):
+                            n_val = float(np.linalg.norm(raw_arr))
+                            if n_val > 1e-4:
+                                live_vector = raw_arr / n_val
 
             if live_vector is None:
                 rejected_count += 1
@@ -847,7 +999,6 @@ def arcface_verify(request: ArcFaceVerifyRequest):
             sim_clamped = round(float(np.clip(effective_sim, 0.0, 1.0)), 4)
             frame_similarities.append(sim_clamped)
 
-            # Strict Cosine similarity matching threshold for ArcFace (>= 0.62) with centroid guard (>= 0.58)
             if sim_clamped >= FRAME_MATCH_THRESHOLD and (average_vector is None or sim_to_avg >= 0.58):
                 verified_count += 1
             elif sim_clamped >= SUSPICIOUS_THRESHOLD:
@@ -856,7 +1007,7 @@ def arcface_verify(request: ArcFaceVerifyRequest):
                 rejected_count += 1
 
         except Exception as err:
-            logger.error(f"Error processing frame {idx+1}: {err}")
+            logger.error(f"[{req_id}] Error processing frame {idx+1}: {err}")
             rejected_count += 1
         finally:
             if bgr_img is not None:
@@ -871,52 +1022,49 @@ def arcface_verify(request: ArcFaceVerifyRequest):
     # Garbage collection
     gc.collect()
 
-    if valid_count < 5:
-        return {
-            "success": True,
-            "verified": False,
-            "match": False,
-            "decision": "INSUFFICIENT_SAMPLES",
-            "finalDecision": "INSUFFICIENT_SAMPLES",
-            "result": "insufficient_samples",
-            "message": f"Only {valid_count} valid face frames received. At least 5 are required for verification.",
-            "bestSimilarity": best_similarity,
-            "averageSimilarity": average_similarity,
-            "matchingFrames": verified_count,
-            "verifiedFrames": verified_count,
-            "validFrames": valid_count,
-            "totalFrames": total_requested,
-            "totalFramesProcessed": total_requested,
-            "elapsedSeconds": total_elapsed
-        }
+    # Minimum match needed: at least 70% of evaluated valid frames (min 4)
+    min_match_needed = max(4, int(np.ceil(valid_count * 0.70))) if valid_count >= 4 else 4
 
-    # Anti-Imposter Verification Rule: At least 50% matching frames (min 5, target MIN_VERIFICATION_FRAMES) AND average similarity >= MIN_AVG_THRESHOLD (0.66)
-    min_match_needed = min(MIN_VERIFICATION_FRAMES, max(5, int(valid_count * 0.5)))
     if multi_face_triggered and valid_count < 3:
         decision = "MULTIPLE_FACES_DETECTED"
         verified = False
+        rejection_reason = "Multiple faces detected during verification."
+    elif occluded_count > 0 and valid_count < 4:
+        decision = "FACE_OCCLUDED"
+        verified = False
+        rejection_reason = "Face obscured or covered. Please remove your hand or obstruction."
+    elif valid_count < 4:
+        decision = "INSUFFICIENT_SAMPLES"
+        verified = False
+        rejection_reason = f"Only {valid_count} valid face frames evaluated. Please ensure face is clearly visible."
     elif verified_count >= min_match_needed and average_similarity >= MIN_AVG_THRESHOLD:
         verified = True
         decision = "VERIFIED"
+        rejection_reason = None
     else:
         verified = False
         decision = "REJECTED"
+        rejection_reason = f"Face verification failed: Only {verified_count}/{valid_count} frames matched (average similarity: {int(round(average_similarity*100))}%, required: {int(round(MIN_AVG_THRESHOLD*100))}%)."
 
-    logger.info(f"[ArcFace Verify] {request.studentId} -> {decision} (Matching: {verified_count}/{valid_count}, Needed: {min_match_needed}, Avg: {average_similarity}, Best: {best_similarity})")
-
-    msg_str = (
-        f"Face verified successfully ({verified_count}/{valid_count} frames matched)."
-        if verified
-        else ("Multiple faces detected." if decision == "MULTIPLE_FACES_DETECTED" else f"Face verification failed. Only {verified_count}/{valid_count} frames matched (Minimum {min_match_needed} required).")
+    # Step 6: Structured privacy-conscious diagnostic logging
+    logger.info(
+        f"[{req_id}] ArcFace Verify: student={request.studentId or request.email or 'unknown'} "
+        f"decision={decision} verified={verified} submitted={total_requested} "
+        f"processed={len(frames_to_process)} valid={valid_count} matched={verified_count} "
+        f"occluded={occluded_count} poor_quality={poor_quality_count} multi_face={multi_face_count} "
+        f"avg_sim={average_similarity} best_sim={best_similarity} elapsed={total_elapsed}s"
     )
 
-    # Normalize matching frames to standard 30-frame scale for frontend PROJECT_RULES.md
-    scaled_matching = min(30, max(verified_count, int(round((verified_count / max(1, valid_count)) * 30))))
-    if verified:
-        scaled_matching = max(scaled_matching, 24)
+    msg_str = (
+        f"Face verified successfully ({verified_count}/{valid_count} evaluated frames matched — {int(round(average_similarity * 100))}% similarity)."
+        if verified
+        else rejection_reason
+    )
 
+    # Return honest, uninflated counts (Step 3-F)
     response = {
         "success": True,
+        "requestId": req_id,
         "studentId": request.studentId,
         "verified": verified,
         "match": verified,
@@ -925,34 +1073,37 @@ def arcface_verify(request: ArcFaceVerifyRequest):
         "result": decision.lower(),
         "bestSimilarity": best_similarity,
         "averageSimilarity": average_similarity,
-        "validFrames": valid_count,
-        "totalFrames": total_requested,
-        "totalFramesProcessed": total_requested,
-        "matchingFrames": scaled_matching,
-        "verifiedFrames": scaled_matching,
-        "rawVerifiedFrames": verified_count,
-        "suspiciousFrames": suspicious_count,
+        "matchingFrames": verified_count,       # Real honest matching frames
+        "verifiedFrames": verified_count,       # Real honest verified frames
+        "rawVerifiedFrames": verified_count,    # Compatibility
+        "validFrames": valid_count,             # Real valid evaluated frames
+        "totalFrames": total_requested,         # Real frames submitted
+        "totalFramesProcessed": len(frames_to_process),
         "rejectedFrames": rejected_count,
-        "qualityScore": avg_quality,
+        "occludedFrames": occluded_count,
+        "poorQualityFrames": poor_quality_count,
         "multiFaceTriggered": multi_face_triggered,
+        "qualityScore": avg_quality,
         "elapsedSeconds": total_elapsed,
         "message": msg_str
     }
 
     if ENABLE_DIAGNOSTIC_MODE:
         response["diagnostic"] = {
+            "requestId": req_id,
             "rawSimilarities": frame_similarities,
             "bestSimilarity": best_similarity,
             "averageSimilarity": average_similarity,
             "verifiedFrames": verified_count,
+            "validFrames": valid_count,
+            "occludedFrames": occluded_count,
+            "poorQualityFrames": poor_quality_count,
             "suspiciousFrames": suspicious_count,
             "rejectedFrames": rejected_count,
             "thresholds": {
-                "verified": SIMILARITY_THRESHOLD,
+                "verified": FRAME_MATCH_THRESHOLD,
                 "suspicious": SUSPICIOUS_THRESHOLD,
-                "minRequiredFrames": MIN_VERIFICATION_FRAMES,
-                "minAvgSimilarity": SIMILARITY_THRESHOLD,
-                "minBestSimilarity": 0.70
+                "minAvgSimilarity": MIN_AVG_THRESHOLD
             }
         }
 

@@ -1,5 +1,4 @@
-// DEVELOPMENT MODE ONLY - REMOVE BEFORE PRODUCTION
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import axios from "axios";
 import { useNavigate } from "react-router-dom";
 import Webcam from "react-webcam";
@@ -43,6 +42,59 @@ function Login() {
   const [tempStudent, setTempStudent] = useState(null);
   const [faceVerifying, setFaceVerifying] = useState(false);
   const [faceStatusMsg, setFaceStatusMsg] = useState("Position your face clearly in the camera");
+
+  // Camera permission & state for Step 3 Face Identity Verification
+  const [cameraPermission, setCameraPermission] = useState("prompt"); // "prompt" | "granted" | "denied"
+  const [cameraError, setCameraError] = useState(null);
+  const [cameraActive, setCameraActive] = useState(false);
+
+  const requestCameraPermission = useCallback(async () => {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setCameraPermission("denied");
+      setCameraError("Camera access is not supported by your browser. Please use Chrome, Edge, or Firefox.");
+      return;
+    }
+
+    setCameraError(null);
+    try {
+      // Explicitly trigger the browser's native camera permission prompt (Allow / Block)
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+          facingMode: "user"
+        },
+        audio: false
+      });
+      setCameraPermission("granted");
+      setCameraError(null);
+      setCameraActive(true);
+
+      if (webcamRef.current && webcamRef.current.video) {
+        webcamRef.current.video.srcObject = stream;
+        webcamRef.current.video.play().catch(() => {});
+      }
+    } catch (err) {
+      console.warn("[Camera] Permission request result:", err);
+      setCameraPermission("denied");
+      setCameraActive(false);
+      if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+        setCameraError("Camera permission blocked. Please click the lock/camera icon in your browser address bar to Allow camera.");
+      } else if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
+        setCameraError("No webcam found on your device.");
+      } else if (err.name === "NotReadableError" || err.name === "TrackStartError") {
+        setCameraError("Camera is currently in use by another app (Zoom, Teams, etc.). Please close it and retry.");
+      } else {
+        setCameraError(`Camera error: ${err.message || "Failed to access camera"}`);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (verificationStep === "face_verify") {
+      requestCameraPermission();
+    }
+  }, [verificationStep, requestCameraPermission]);
 
   // OTP State
   const [otpInput, setOtpInput] = useState("");
@@ -426,9 +478,9 @@ function Login() {
     const FRAME_INTERVAL_MS = 25;
 
     try {
-      const video = webcamRef.current.video;
-      if (!video) {
-        setFaceStatusMsg("⚠️ Camera not active. Please allow webcam access.");
+      const video = webcamRef.current?.video;
+      if (!video || video.paused || video.ended || video.readyState < 2) {
+        setFaceStatusMsg("⚠️ Camera not ready. Please allow camera access in your browser to verify.");
         setFaceVerifying(false);
         return;
       }
@@ -1186,12 +1238,54 @@ function Login() {
               <Webcam
                 ref={webcamRef}
                 audio={false}
-                width={300}
-                height={225}
+                width={320}
+                height={240}
                 screenshotFormat="image/jpeg"
-                style={{ borderRadius: '12px' }}
+                videoConstraints={{
+                  width: { ideal: 640 },
+                  height: { ideal: 480 },
+                  facingMode: "user"
+                }}
+                style={styles.webcam}
                 mirrored={true}
+                onUserMedia={(stream) => {
+                  console.log("[Webcam] Stream loaded successfully");
+                  setCameraPermission("granted");
+                  setCameraActive(true);
+                  setCameraError(null);
+                }}
+                onUserMediaError={(err) => {
+                  console.warn("[Webcam] UserMedia error:", err);
+                  setCameraPermission("denied");
+                  setCameraActive(false);
+                  if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+                    setCameraError("Camera permission blocked. Please allow camera access in your browser address bar.");
+                  } else {
+                    setCameraError(`Camera error: ${err.message || err}`);
+                  }
+                }}
               />
+
+              {/* Overlay if camera permission is denied or pending */}
+              {(!cameraActive || cameraPermission === "denied") && (
+                <div style={styles.cameraOverlay}>
+                  <div style={{ fontSize: "2rem", marginBottom: "8px" }}>
+                    {cameraPermission === "denied" ? "📷🚫" : "📷"}
+                  </div>
+                  <div style={{ fontSize: "0.85rem", fontWeight: 600, color: "#f8fafc", marginBottom: "6px", maxWidth: "260px", lineHeight: 1.4 }}>
+                    {cameraPermission === "denied"
+                      ? (cameraError || "Camera permission is blocked. Please allow camera access in your browser.")
+                      : "Requesting camera permission... Please click 'Allow' in the browser prompt."}
+                  </div>
+                  <button
+                    onClick={requestCameraPermission}
+                    type="button"
+                    style={styles.allowCameraButton}
+                  >
+                    🔄 {cameraPermission === "denied" ? "Grant Camera Permission" : "Allow Camera"}
+                  </button>
+                </div>
+              )}
             </div>
 
             <div style={{ margin: '12px 0', fontSize: '0.85rem', fontWeight: 600, color: faceStatusMsg.includes('🔴') || faceStatusMsg.includes('❌') ? '#ef4444' : '#10b981' }}>
@@ -1382,10 +1476,48 @@ const styles = {
     marginBottom: "8px"
   },
   webcamWrapper: {
-    display: "inline-block",
-    borderRadius: "12px",
+    position: "relative",
+    width: "320px",
+    height: "240px",
+    margin: "0 auto",
+    borderRadius: "14px",
     overflow: "hidden",
-    border: "2px solid #6366f1"
+    border: "2px solid #6366f1",
+    background: "#0f172a",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center"
+  },
+  webcam: {
+    width: "100%",
+    height: "100%",
+    objectFit: "cover",
+    borderRadius: "12px",
+    display: "block"
+  },
+  cameraOverlay: {
+    position: "absolute",
+    inset: 0,
+    background: "rgba(15, 23, 42, 0.92)",
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: "16px",
+    textAlign: "center",
+    zIndex: 2
+  },
+  allowCameraButton: {
+    marginTop: "8px",
+    background: "linear-gradient(135deg, #6366f1, #4f46e5)",
+    color: "#ffffff",
+    border: "none",
+    borderRadius: "8px",
+    padding: "8px 16px",
+    fontSize: "0.8rem",
+    fontWeight: 600,
+    cursor: "pointer",
+    boxShadow: "0 2px 8px rgba(99, 102, 241, 0.4)"
   },
   footerNote: {
     marginTop: "24px",

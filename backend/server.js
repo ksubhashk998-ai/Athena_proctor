@@ -2799,7 +2799,10 @@ if (!process.env.VERCEL) {
 
         // Check & ensure Python AI microservice is reachable
         try {
-            const configuredPyUrl = process.env.PYTHON_DETECTOR_URL || 'http://127.0.0.1:8001';
+            const defaultPyUrl = (process.env.NODE_ENV === 'production' || process.env.RENDER)
+                ? 'https://athena-python.onrender.com'
+                : 'http://127.0.0.1:8001';
+            const configuredPyUrl = process.env.PYTHON_DETECTOR_URL || process.env.PYTHON_SERVICE_URL || defaultPyUrl;
             const isLocal = configuredPyUrl.includes('127.0.0.1') || configuredPyUrl.includes('localhost');
 
             if (isLocal && process.env.NODE_ENV !== 'production') {

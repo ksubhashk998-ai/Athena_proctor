@@ -26,7 +26,10 @@ const LiveSession = require('../models/LiveSession');
 
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this-in-production';
-const rawPyUrl = (process.env.PYTHON_DETECTOR_URL || 'http://127.0.0.1:8001').trim();
+const defaultPyUrl = (process.env.NODE_ENV === 'production' || process.env.RENDER)
+  ? 'https://athena-python.onrender.com'
+  : 'http://127.0.0.1:8001';
+const rawPyUrl = (process.env.PYTHON_DETECTOR_URL || process.env.PYTHON_SERVICE_URL || defaultPyUrl).trim();
 const PYTHON_DETECTOR_URL = rawPyUrl.includes('localhost')
   ? rawPyUrl.replace('localhost', '127.0.0.1').replace(/\/$/, '')
   : rawPyUrl.replace(/\/$/, '');
@@ -1081,16 +1084,16 @@ router.get('/violations/screenshot/:activityId', authenticateToken, async (req, 
 router.post('/detect/phone', authenticateToken, async (req, res) => {
     try {
         const { imageBase64, confidence_threshold } = req.body;
-        console.log('[PHONE] Frontend request received');
-        console.log('[PHONE] Calling Python detector');
+        console.log('[PHONE] Request received from frontend');
+        console.log(`[PHONE] Forwarding request to Python detector: ${PYTHON_DETECTOR_URL}/detect/phone`);
 
         try {
             const response = await axios.post(
                 `${PYTHON_DETECTOR_URL}/detect/phone`,
                 { imageBase64, confidence_threshold: confidence_threshold || 0.35 },
-                { timeout: 5000 }
+                { timeout: 8000 }
             );
-            console.log(`[PHONE] Python detector response: ${response.status} (detected: ${response.data?.detected})`);
+            console.log(`[PHONE] Python detector responded: ${response.status} (detected: ${response.data?.detected})`);
             return res.json(response.data);
         } catch (pyErr) {
             console.warn(`[PHONE] Python detector offline or unreachable (${pyErr.message}). Graceful fallback.`);

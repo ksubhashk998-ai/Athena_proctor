@@ -42,8 +42,9 @@ try:
 except (ImportError, Exception):
     logger.warning("insightface not installed. Run: pip install insightface onnxruntime")
 
-# Lazy model references (Initialized on-demand only)
+# Model references
 _insightface_app = None
+_insightface_error: Optional[str] = None
 _phone_model = None
 _headphone_model = None
 
@@ -84,29 +85,47 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ----------------- LAZY MODEL LOADERS (CPU ONLY) -----------------
+# ----------------- MODEL LOADERS (CPU ONLY) -----------------
 
 def get_insightface():
     """
-    Lazy-load InsightFace buffalo_s ArcFace Model (512-d embeddings).
-    Uses lightweight buffalo_s (~40MB RAM) on CPU execution provider.
+    Load InsightFace buffalo_s ArcFace Model (512-d embeddings).
+    Uses lightweight buffalo_s on CPU execution provider.
     """
-    global _insightface_app
+    global _insightface_app, _insightface_error
     if _insightface_app is not None:
         return _insightface_app
-    if INSIGHTFACE_AVAILABLE:
-        try:
-            logger.info("🔄 Lazy-loading InsightFace ArcFace model (buffalo_s - CPU)...")
-            app_face = FaceAnalysis(
-                name='buffalo_s',
-                allowed_modules=['detection', 'recognition'],
-                providers=['CPUExecutionProvider']
-            )
-            app_face.prepare(ctx_id=-1, det_size=(320, 320))
+
+    if not INSIGHTFACE_AVAILABLE:
+        logger.warning("[AI] InsightFace package is not available in environment.")
+        return None
+
+    try:
+        logger.info("[AI] Starting InsightFace initialization...")
+        logger.info("[AI] Loading buffalo_s...")
+        root_dir = os.environ.get("INSIGHTFACE_ROOT", os.path.expanduser("~/.insightface"))
+        os.makedirs(root_dir, exist_ok=True)
+
+        app_face = FaceAnalysis(
+            name='buffalo_s',
+            root=root_dir,
+            allowed_modules=['detection', 'recognition'],
+            providers=['CPUExecutionProvider']
+        )
+        app_face.prepare(ctx_id=-1, det_size=(320, 320))
+
+        if hasattr(app_face, 'models') and 'detection' in app_face.models and 'recognition' in app_face.models:
             _insightface_app = app_face
-            logger.info("✅ ArcFace model loaded (InsightFace buffalo_s - 512d ArcFace - Fast CPU Mode)")
-        except Exception as e:
-            logger.error(f"❌ Failed to load InsightFace ArcFace model: {e}")
+            _insightface_error = None
+            logger.info("[AI] ArcFace loaded successfully")
+        else:
+            found_modules = list(getattr(app_face, 'models', {}).keys())
+            raise RuntimeError(f"buffalo_s missing detection or recognition module (found: {found_modules})")
+    except Exception as e:
+        _insightface_app = None
+        _insightface_error = str(e)
+        logger.error(f"[AI] ArcFace initialization failed: {e}", exc_info=True)
+
     return _insightface_app
 
 def get_phone_model():
@@ -115,7 +134,12 @@ def get_phone_model():
     if _phone_model is None and YOLO_AVAILABLE:
         try:
             logger.info("🔄 Lazy-loading YOLOv8n phone model (CPU)...")
-            _phone_model = YOLO("yolov8n.pt")
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            local_weights = os.path.join(base_dir, "yolov8n.pt")
+            if os.path.exists(local_weights):
+                _phone_model = YOLO(local_weights)
+            else:
+                _phone_model = YOLO("yolov8n.pt")
             logger.info("✅ YOLOv8n loaded for phone detection")
         except Exception as e:
             logger.error(f"❌ Failed to load YOLO phone model: {e}")
@@ -135,6 +159,18 @@ def get_headphone_model():
         except Exception as e:
             logger.error(f"❌ Failed to load YOLO headphone model: {e}")
     return _headphone_model
+
+@app.on_event("startup")
+async def startup_event():
+    """
+    FastAPI startup event: initialize InsightFace ArcFace buffalo_s and YOLO model.
+    Ensures model is loaded and ready before serving traffic.
+    """
+    logger.info("🚀 [Startup] Starting AI models initialization...")
+    get_insightface()
+    if YOLO_AVAILABLE:
+        get_phone_model()
+    logger.info("🚀 [Startup] Application initialization complete.")
 
 # ----------------- REQUEST & RESPONSE SCHEMAS -----------------
 
@@ -380,16 +416,30 @@ def run_yolo_detection(model, image: Image.Image, target_class_ids: list, thresh
 @app.get("/health")
 async def health_check():
     """
-    Lightweight health check.
-    Does NOT force model loading at startup.
+    Health check endpoint reporting readiness of AI models.
+    arcface_loaded is true only when the actual FaceAnalysis model object is fully initialized.
     """
-    return {
+    app_face = _insightface_app
+    if app_face is None and INSIGHTFACE_AVAILABLE:
+        app_face = get_insightface()
+
+    is_arcface_loaded = (
+        app_face is not None
+        and hasattr(app_face, 'models')
+        and 'detection' in app_face.models
+        and 'recognition' in app_face.models
+    )
+
+    result = {
         "status": "ok",
-        "arcface_loaded": _insightface_app is not None,
+        "arcface_loaded": is_arcface_loaded,
         "insightface_available": INSIGHTFACE_AVAILABLE,
         "yolo_available": YOLO_AVAILABLE,
         "engine": "InsightFace-ArcFace (buffalo_s 512d CPU)"
     }
+    if _insightface_error and not is_arcface_loaded:
+        result["arcface_error"] = _insightface_error
+    return result
 
 @app.post("/detect/phone", response_model=DetectionResponse)
 async def detect_phone(request: DetectionRequest):

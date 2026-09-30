@@ -3,7 +3,10 @@ const User = require('../models/userModel.js');
 
 class FaceService {
     constructor() {
-        const rawPy = process.env.PYTHON_DETECTOR_URL || process.env.PYTHON_SERVICE_URL || 'http://127.0.0.1:8001';
+        const defaultPy = (process.env.NODE_ENV === 'production' || process.env.RENDER)
+            ? 'https://athena-python.onrender.com'
+            : 'http://127.0.0.1:8001';
+        const rawPy = process.env.PYTHON_DETECTOR_URL || process.env.PYTHON_SERVICE_URL || defaultPy;
         this.pythonServiceUrl = rawPy.includes('localhost')
             ? rawPy.replace('localhost', '127.0.0.1').replace(/\/$/, '')
             : rawPy.replace(/\/$/, '');

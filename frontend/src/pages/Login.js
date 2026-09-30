@@ -513,10 +513,10 @@ function Login() {
         if (b64Frame) {
           capturedFrames.push(b64Frame);
           const api = getFaceApi();
-          // Sample descriptors every 5 frames or on first frame
-          if (api && api.detectSingleFace && (frameIndex % 5 === 0 || capturedDescriptors.length === 0)) {
+          // Detect face in current live video frame
+          if (api && api.detectSingleFace) {
             try {
-              const det = await api.detectSingleFace(video, new api.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.15 }))
+              const det = await api.detectSingleFace(video, new api.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.25 }))
                 .withFaceLandmarks()
                 .withFaceDescriptor();
               if (det && det.descriptor) {
@@ -529,12 +529,16 @@ function Login() {
         await new Promise(r => setTimeout(r, FRAME_INTERVAL_MS));
       }
 
-      while (capturedDescriptors.length > 0 && capturedDescriptors.length < 30) {
-        capturedDescriptors.push(capturedDescriptors[capturedDescriptors.length % capturedDescriptors.length]);
+      if (capturedFrames.length < 20) {
+        setFaceStatusMsg("🔴 Verification failed: Camera feed interrupted. At least 20 clear frames required.");
+        setFaceVerifying(false);
+        return;
       }
 
-      if (capturedFrames.length < 20) {
-        setFaceStatusMsg("🔴 Verification failed: At least 20 clear face frames required. Please ensure good lighting and face visibility.");
+      // If client-side face detection is active, ensure face was genuinely visible across frames (reject hands/obstructions)
+      const api = getFaceApi();
+      if (api && api.detectSingleFace && capturedDescriptors.length < 15) {
+        setFaceStatusMsg(`🔴 Face not detected (${capturedDescriptors.length}/30 frames with visible face, min 20 required). Please remove your hand or obstruction and look directly at the camera.`);
         setFaceVerifying(false);
         return;
       }
@@ -564,7 +568,7 @@ function Login() {
       const simPct = Math.round((data.bestSimilarity || data.averageSimilarity || 0) * 100);
       const decision = (data.decision || data.finalDecision || data.verificationResult || '').toUpperCase();
       const matchingCount = typeof data.matchingFrames === 'number' ? data.matchingFrames : (typeof data.verifiedFrames === 'number' ? data.verifiedFrames : 0);
-      const isVerified = (data.verified === true || data.matched === true || decision === 'VERIFIED') && matchingCount >= 15;
+      const isVerified = (data.verified === true || data.matched === true || decision === 'VERIFIED') && matchingCount >= 20;
 
       if (isVerified) {
         localStorage.setItem("faceVerified", "true");
@@ -573,7 +577,8 @@ function Login() {
           completeLogin(activeToken, activeStudent);
         }, 800);
       } else {
-        setFaceStatusMsg(`🔴 Face not matched (${matchingCount}/30 matching frames, min 20 required). Please ensure registered student is in view.`);
+        const failReason = data.message || `Face not matched (${matchingCount}/30 matching frames, min 20 required).`;
+        setFaceStatusMsg(`🔴 ${failReason} Please ensure face is completely unobstructed.`);
       }
 
     } catch (e) {

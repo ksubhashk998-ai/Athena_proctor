@@ -10,7 +10,10 @@ const VerificationLog = require('../models/VerificationLog');
 const User = require('../models/User');
 const Student = require('../models/Student');
 
-const rawPyUrl = (process.env.PYTHON_DETECTOR_URL || 'http://127.0.0.1:8001').trim();
+const defaultPyUrl = (process.env.NODE_ENV === 'production' || process.env.RENDER)
+  ? 'https://athena-python.onrender.com'
+  : 'http://127.0.0.1:8001';
+const rawPyUrl = (process.env.PYTHON_DETECTOR_URL || process.env.PYTHON_SERVICE_URL || defaultPyUrl).trim();
 const PYTHON_SERVICE_URL = rawPyUrl.includes('localhost')
   ? rawPyUrl.replace('localhost', '127.0.0.1').replace(/\/$/, '')
   : rawPyUrl.replace(/\/$/, '');
@@ -527,7 +530,7 @@ const verifyFace = async (req, res) => {
         const sampleStep = Math.max(1, Math.floor(verificationFrames.length / 8));
         const sampledFrames = verificationFrames.filter((_, idx) => idx % sampleStep === 0).slice(0, 8);
 
-        console.log(`[ARCFACE] Calling Python detector for verification: ${profile.studentId || profile.email}`);
+        console.log(`[ARCFACE] Calling Python detector for verification: ${profile.studentId || profile.email} at ${PYTHON_SERVICE_URL}`);
         const response = await axios.post(`${PYTHON_SERVICE_URL}/api/arcface/verify`, {
           studentId: profile.studentId,
           email: profile.email,
@@ -535,7 +538,7 @@ const verifyFace = async (req, res) => {
           enrolledEmbeddings: enrolled512,
           averageEmbedding: avg512,
           challengePose: challengePose || null
-        }, { timeout: 6000 });
+        }, { timeout: 15000 });
 
         console.log(`[ARCFACE] Python detector verification response: ${response.status} (decision: ${response.data?.decision})`);
         if (response.data && response.data.decision !== 'DIMENSION_MISMATCH') {
@@ -583,14 +586,52 @@ const verifyFace = async (req, res) => {
           }
         }
 
+        // PROJECT_RULES.md: Minimum 20 matching frames required for verification
+        if (live128.length < 15) {
+          console.warn(`[Biometric Fallback] Insufficient face samples: only ${live128.length}/30 valid face frames received`);
+          return res.status(200).json({
+            success: true,
+            verified: false,
+            match: false,
+            decision: 'INSUFFICIENT_SAMPLES',
+            finalDecision: 'REJECTED',
+            verificationResult: 'REJECTED',
+            matchingFrames: 0,
+            verifiedFrames: 0,
+            validFrames: live128.length,
+            averageSimilarity: 0,
+            bestSimilarity: 0,
+            message: `Verification failed: Face obscured or not detected in enough frames (${live128.length} valid frames, min 20 required). Ensure face is completely uncovered.`
+          });
+        }
+
+        // Anti-Spoof: Reject if all descriptors are identical clones
+        const isCloned = live128.length >= 10 && live128.every(v => cosineSimilarity(v, live128[0]) > 0.9999);
+        if (isCloned) {
+          console.warn(`[Biometric Fallback] Static/cloned descriptors rejected for ${profile.email}`);
+          return res.status(200).json({
+            success: true,
+            verified: false,
+            match: false,
+            decision: 'REJECTED',
+            finalDecision: 'REJECTED',
+            verificationResult: 'REJECTED',
+            matchingFrames: 0,
+            verifiedFrames: 0,
+            validFrames: live128.length,
+            averageSimilarity: 0,
+            bestSimilarity: 0,
+            message: 'Verification failed: Static or cloned face frames detected. Please keep camera unobstructed and verify with live video.'
+          });
+        }
+
         const avgSim = similarities.length > 0 ? (similarities.reduce((a, b) => a + b, 0) / similarities.length) : 0;
         const bestSim = similarities.length > 0 ? Math.max(...similarities) : 0;
-        const minMatch128 = Math.min(20, Math.max(5, Math.floor(similarities.length * 0.5)));
-        const isMatch = verifiedCount >= minMatch128 && avgSim >= MIN_AVG_THRESHOLD;
+        const minMatch128 = 20; // PROJECT_RULES.md: Minimum 20 out of 30 matching frames
+        const isMatch = verifiedCount >= minMatch128 && avgSim >= MIN_AVG_THRESHOLD && similarities.length >= 20;
 
-        // Scale to standard 30-frame count for PROJECT_RULES.md
-        const scaledMatching = Math.min(30, Math.max(verifiedCount, Math.round((verifiedCount / Math.max(1, similarities.length)) * 30)));
-        const finalMatching = isMatch ? Math.max(scaledMatching, 24) : scaledMatching;
+        const scaledMatching = Math.min(30, verifiedCount);
+        const finalMatching = isMatch ? Math.max(scaledMatching, 20) : scaledMatching;
 
         arcfaceRes = {
           success: true,
@@ -605,7 +646,7 @@ const verifyFace = async (req, res) => {
           threshold: MATCH_THRESHOLD,
           message: isMatch
             ? `Face verified successfully (${finalMatching}/30 frames matched — ${Math.round(avgSim * 100)}% similarity).`
-            : `Face verification failed: Identity mismatch. Only ${verifiedCount}/${similarities.length} frames matched (average similarity: ${Math.round(avgSim * 100)}%).`
+            : `Face verification failed: Identity mismatch or obscured face. Only ${verifiedCount}/${similarities.length} frames matched (minimum 20 required).`
         };
       } else if (live512.length > 0 && enrolled512.length > 0) {
         // High-precision 512d cosine matching

@@ -10,6 +10,7 @@ import {
   showPhoneWarning,
   usePhoneDetection
 } from "../utils/deviceDetection";
+import { getApiBaseUrl } from "../utils/config";
 
 function Exam() {
   const videoRef = useRef(null);
@@ -135,7 +136,8 @@ function Exam() {
           
           // Log mobile device access attempt
           const ip = await getClientIP();
-          await fetch("/api/proctoring/violation", {
+          const apiBase = getApiBaseUrl();
+          await fetch(`${apiBase}/api/proctoring/violation`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -183,7 +185,8 @@ function Exam() {
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
         };
         
-        await fetch("/api/log-device", {
+        const apiBase = getApiBaseUrl();
+        await fetch(`${apiBase}/api/log-device`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(deviceInfo)
@@ -197,7 +200,7 @@ function Exam() {
             setWarning("❌ Exam terminated: Mobile device detected during exam.");
             
             // Log device change violation
-            fetch("/api/proctoring/violation", {
+            fetch(`${apiBase}/api/proctoring/violation`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
@@ -341,8 +344,9 @@ function Exam() {
         setViolations(prev => [...prev, { type: "TAB_SWITCH", timestamp: new Date() }]);
         setWarning(`⚠️ Tab switched! (${tabSwitchCount}/${MAX_TAB_SWITCHES}) This is not allowed. Exam may be terminated.`);
         
+        const apiBase = getApiBaseUrl();
         // Log tab switch for proctoring
-        fetch("/api/proctoring/violation", {
+        fetch(`${apiBase}/api/proctoring/violation`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -357,7 +361,7 @@ function Exam() {
           setExamAllowed(false);
           setWarning("❌ Exam terminated: Maximum tab switches exceeded.");
           
-          fetch("/api/proctoring/terminate", {
+          fetch(`${apiBase}/api/proctoring/terminate`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -390,8 +394,9 @@ function Exam() {
           setViolations(prev => [...prev, { type: "DEVICE_CHANGED", details: event, timestamp: new Date() }]);
           setWarning(`⚠️ Device change detected! ${event.previous?.deviceType || "unknown"} to ${event.current?.deviceType || "unknown"}. This violates exam rules.`);
           
+          const apiBase = getApiBaseUrl();
           // Log device change
-          fetch("/api/proctoring/violation", {
+          fetch(`${apiBase}/api/proctoring/violation`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -427,8 +432,9 @@ function Exam() {
       const newOrientation = detectOrientation();
       setOrientation(newOrientation);
       
+      const apiBase = getApiBaseUrl();
       // Log orientation change
-      fetch("/api/proctoring/event", {
+      fetch(`${apiBase}/api/proctoring/event`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -454,7 +460,8 @@ function Exam() {
       e.preventDefault();
       setViolations(prev => [...prev, { type: "RIGHT_CLICK", timestamp: new Date() }]);
       
-      fetch("/api/proctoring/violation", {
+      const apiBase = getApiBaseUrl();
+      fetch(`${apiBase}/api/proctoring/violation`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -473,7 +480,8 @@ function Exam() {
         e.preventDefault();
         setViolations(prev => [...prev, { type: "DEV_TOOLS_ATTEMPT", timestamp: new Date() }]);
         
-        fetch("/api/proctoring/violation", {
+        const apiBase = getApiBaseUrl();
+        fetch(`${apiBase}/api/proctoring/violation`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({

@@ -2797,32 +2797,39 @@ if (!process.env.VERCEL) {
         console.log(`💾 Database: ${process.env.MONGODB_URI || 'mongodb://localhost:27017/smart-proctoring'}`);
         console.log(`=================================\n`);
 
-        // Check & ensure Python ArcFace microservice is active on port 8001
+        // Check & ensure Python AI microservice is reachable
         try {
-            const http = require('http');
-            const { spawn } = require('child_process');
-            const pyReq = http.get('http://127.0.0.1:8001/health', (res) => {
-                if (res.statusCode === 200) {
-                    console.log('🐍 Python ArcFace microservice is ALIVE on http://127.0.0.1:8001');
-                }
-            });
-            pyReq.on('error', () => {
-                console.log('🐍 Python ArcFace service not active. Spawning python_detector...');
-                const pyDir = path.resolve(__dirname, '../python_detector');
-                try {
-                    const pyProc = spawn('python', ['-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', '8001'], {
-                        cwd: pyDir,
-                        detached: true,
-                        stdio: 'ignore',
-                        shell: true
-                    });
-                    pyProc.unref();
-                    console.log('🚀 Python ArcFace microservice auto-spawned on port 8001');
-                } catch (spErr) {
-                    console.warn('⚠️ Could not spawn python detector:', spErr.message);
-                }
-            });
-            pyReq.setTimeout(2000, () => pyReq.destroy());
+            const configuredPyUrl = process.env.PYTHON_DETECTOR_URL || 'http://127.0.0.1:8001';
+            const isLocal = configuredPyUrl.includes('127.0.0.1') || configuredPyUrl.includes('localhost');
+
+            if (isLocal && process.env.NODE_ENV !== 'production') {
+                const http = require('http');
+                const { spawn } = require('child_process');
+                const pyReq = http.get('http://127.0.0.1:8001/health', (res) => {
+                    if (res.statusCode === 200) {
+                        console.log('🐍 Local Python AI microservice is ALIVE on http://127.0.0.1:8001');
+                    }
+                });
+                pyReq.on('error', () => {
+                    console.log('🐍 Local Python AI service not active. Spawning python_detector...');
+                    const pyDir = path.resolve(__dirname, '../python_detector');
+                    try {
+                        const pyProc = spawn('python', ['-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', '8001'], {
+                            cwd: pyDir,
+                            detached: true,
+                            stdio: 'ignore',
+                            shell: true
+                        });
+                        pyProc.unref();
+                        console.log('🚀 Python AI microservice auto-spawned on port 8001');
+                    } catch (spErr) {
+                        console.warn('⚠️ Could not spawn python detector:', spErr.message);
+                    }
+                });
+                pyReq.setTimeout(2000, () => pyReq.destroy());
+            } else {
+                console.log(`🐍 Python AI Microservice configured at: ${configuredPyUrl}`);
+            }
         } catch (checkErr) {
             console.warn('Python service health check notice:', checkErr.message);
         }

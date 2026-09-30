@@ -26,7 +26,10 @@ const LiveSession = require('../models/LiveSession');
 
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this-in-production';
-const PYTHON_DETECTOR_URL = (process.env.PYTHON_DETECTOR_URL || 'http://127.0.0.1:8001').replace('localhost', '127.0.0.1');
+const rawPyUrl = (process.env.PYTHON_DETECTOR_URL || 'http://127.0.0.1:8001').trim();
+const PYTHON_DETECTOR_URL = rawPyUrl.includes('localhost')
+  ? rawPyUrl.replace('localhost', '127.0.0.1').replace(/\/$/, '')
+  : rawPyUrl.replace(/\/$/, '');
 
 // In-memory student registry cache
 const inMemoryStudents = new Map();
@@ -1078,6 +1081,8 @@ router.get('/violations/screenshot/:activityId', authenticateToken, async (req, 
 router.post('/detect/phone', authenticateToken, async (req, res) => {
     try {
         const { imageBase64, confidence_threshold } = req.body;
+        console.log('[PHONE] Frontend request received');
+        console.log('[PHONE] Calling Python detector');
 
         try {
             const response = await axios.post(
@@ -1085,8 +1090,10 @@ router.post('/detect/phone', authenticateToken, async (req, res) => {
                 { imageBase64, confidence_threshold: confidence_threshold || 0.35 },
                 { timeout: 5000 }
             );
+            console.log(`[PHONE] Python detector response: ${response.status} (detected: ${response.data?.detected})`);
             return res.json(response.data);
         } catch (pyErr) {
+            console.warn(`[PHONE] Python detector offline or unreachable (${pyErr.message}). Graceful fallback.`);
             // Python service not available - return graceful fallback
             return res.json({
                 detected: false,
@@ -1097,6 +1104,7 @@ router.post('/detect/phone', authenticateToken, async (req, res) => {
             });
         }
     } catch (error) {
+        console.error('[PHONE] Internal error:', error.message);
         return res.status(500).json({ error: error.message });
     }
 });
@@ -1107,6 +1115,8 @@ router.post('/detect/phone', authenticateToken, async (req, res) => {
 router.post('/detect/headphone', authenticateToken, async (req, res) => {
     try {
         const { imageBase64, confidence_threshold } = req.body;
+        console.log('[HEADPHONE] Frontend request received');
+        console.log('[HEADPHONE] Calling Python detector');
 
         try {
             const response = await axios.post(
@@ -1114,8 +1124,10 @@ router.post('/detect/headphone', authenticateToken, async (req, res) => {
                 { imageBase64, confidence_threshold: confidence_threshold || 0.35 },
                 { timeout: 5000 }
             );
+            console.log(`[HEADPHONE] Python detector response: ${response.status} (detected: ${response.data?.detected})`);
             return res.json(response.data);
         } catch (pyErr) {
+            console.warn(`[HEADPHONE] Python detector offline or unreachable (${pyErr.message}). Graceful fallback.`);
             return res.json({
                 detected: false,
                 detections: [],
@@ -1125,6 +1137,7 @@ router.post('/detect/headphone', authenticateToken, async (req, res) => {
             });
         }
     } catch (error) {
+        console.error('[HEADPHONE] Internal error:', error.message);
         return res.status(500).json({ error: error.message });
     }
 });
@@ -1136,14 +1149,18 @@ router.post('/detect/headphone', authenticateToken, async (req, res) => {
 router.post('/detect/faces', authenticateToken, async (req, res) => {
     try {
         const { imageBase64 } = req.body;
+        console.log('[FACES] Frontend request received');
+        console.log('[FACES] Calling Python detector');
         try {
             const response = await axios.post(
                 `${PYTHON_DETECTOR_URL}/detect/faces`,
                 { imageBase64 },
                 { timeout: 5000 }
             );
+            console.log(`[FACES] Python detector response: ${response.status} (multipleFaces: ${response.data?.multipleFaces})`);
             return res.json(response.data);
         } catch (pyErr) {
+            console.warn(`[FACES] Python face detector offline or unreachable (${pyErr.message}). Graceful fallback.`);
             return res.json({
                 faceCount: 1,
                 multipleFaces: false,
@@ -1152,6 +1169,7 @@ router.post('/detect/faces', authenticateToken, async (req, res) => {
             });
         }
     } catch (error) {
+        console.error('[FACES] Internal error:', error.message);
         return res.status(500).json({ error: error.message });
     }
 });

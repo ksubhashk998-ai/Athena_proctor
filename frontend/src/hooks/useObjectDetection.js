@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { getApiBaseUrl } from '../utils/config';
 
 export function useObjectDetection({
   webcamRef,
@@ -27,7 +28,8 @@ export function useObjectDetection({
 
     // 1. Detect Phone via backend proxy to YOLOv8
     try {
-      const phoneRes = await fetch('/api/detect/phone', {
+      const apiBase = getApiBaseUrl();
+      const phoneRes = await fetch(`${apiBase}/api/detect/phone`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

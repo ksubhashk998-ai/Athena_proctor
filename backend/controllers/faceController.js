@@ -10,7 +10,10 @@ const VerificationLog = require('../models/VerificationLog');
 const User = require('../models/User');
 const Student = require('../models/Student');
 
-const PYTHON_SERVICE_URL = (process.env.PYTHON_DETECTOR_URL || 'http://127.0.0.1:8001').replace('localhost', '127.0.0.1');
+const rawPyUrl = (process.env.PYTHON_DETECTOR_URL || 'http://127.0.0.1:8001').trim();
+const PYTHON_SERVICE_URL = rawPyUrl.includes('localhost')
+  ? rawPyUrl.replace('localhost', '127.0.0.1').replace(/\/$/, '')
+  : rawPyUrl.replace(/\/$/, '');
 
 // Helper: Prune screenshots directory to strictly enforce Render 512MB storage limit (cap at 25MB / 50 files)
 function pruneScreenshotsDir(dirPath, maxFiles = 50, maxTotalBytes = 25 * 1024 * 1024) {
@@ -157,11 +160,12 @@ const enrollFace = async (req, res) => {
     let arcfaceRes = null;
     if (paddedFrames.length >= 3) {
       try {
+        console.log(`[ARCFACE] Calling Python detector for enrollment: ${cleanStudentId}`);
         const response = await axios.post(`${PYTHON_SERVICE_URL}/api/arcface/enroll`, payload, { timeout: 45000 });
-        console.log("Enrollment response from Python detector:", response.data?.success ? "SUCCESS" : "FAILED");
+        console.log(`[ARCFACE] Enrollment response status from Python detector: ${response.status} (success: ${response.data?.success ? "YES" : "NO"})`);
         arcfaceRes = response.data;
       } catch (pyErr) {
-        console.warn("⚠️ Python ArcFace service unreachable, checking client neural face descriptors:", pyErr.message);
+        console.warn(`[ARCFACE] Python ArcFace service offline or unreachable (${pyErr.message}), checking client neural face descriptors`);
       }
     }
 
@@ -523,6 +527,7 @@ const verifyFace = async (req, res) => {
         const sampleStep = Math.max(1, Math.floor(verificationFrames.length / 8));
         const sampledFrames = verificationFrames.filter((_, idx) => idx % sampleStep === 0).slice(0, 8);
 
+        console.log(`[ARCFACE] Calling Python detector for verification: ${profile.studentId || profile.email}`);
         const response = await axios.post(`${PYTHON_SERVICE_URL}/api/arcface/verify`, {
           studentId: profile.studentId,
           email: profile.email,
@@ -532,11 +537,12 @@ const verifyFace = async (req, res) => {
           challengePose: challengePose || null
         }, { timeout: 6000 });
 
+        console.log(`[ARCFACE] Python detector verification response: ${response.status} (decision: ${response.data?.decision})`);
         if (response.data && response.data.decision !== 'DIMENSION_MISMATCH') {
           arcfaceRes = response.data;
         }
       } catch (pyErr) {
-        console.warn("⚠️ Python ArcFace service notice:", pyErr.message);
+        console.warn(`[ARCFACE] Python ArcFace verification service notice (${pyErr.message})`);
       }
     }
 

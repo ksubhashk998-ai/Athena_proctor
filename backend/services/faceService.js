@@ -3,7 +3,10 @@ const User = require('../models/userModel.js');
 
 class FaceService {
     constructor() {
-        this.pythonServiceUrl = process.env.PYTHON_SERVICE_URL || 'http://localhost:5001';
+        const rawPy = process.env.PYTHON_DETECTOR_URL || process.env.PYTHON_SERVICE_URL || 'http://127.0.0.1:8001';
+        this.pythonServiceUrl = rawPy.includes('localhost')
+            ? rawPy.replace('localhost', '127.0.0.1').replace(/\/$/, '')
+            : rawPy.replace(/\/$/, '');
     }
 
     async registerFace(userId, faceImages) {

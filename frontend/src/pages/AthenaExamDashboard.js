@@ -787,7 +787,8 @@ function AthenaExamDashboard() {
       recordViolation(`🚨 Multiple Faces Detected (${nextWarn}/3 Confirmed Warnings)`);
 
       // Log violation to MongoDB (Requirement 7)
-      fetch('/api/violations/log', {
+      const apiBase = getApiBaseUrl();
+      fetch(`${apiBase}/api/violations/log`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

@@ -11,6 +11,7 @@ import { useContinuousVerification } from '../hooks/useContinuousVerification';
 import { useObjectDetection } from '../hooks/useObjectDetection';
 import { useSecurityControls } from '../hooks/useSecurityControls';
 import { getSocket, joinStudentRoom } from '../services/socketService';
+import { getApiBaseUrl } from '../utils/config';
 
 export default function ProctorDashboard({ user, onLogout }) {
   const webcamRef = useRef(null);
@@ -81,7 +82,8 @@ export default function ProctorDashboard({ user, onLogout }) {
     // Send violation to backend API
     try {
       if (token) {
-        await fetch('/api/violations/log', {
+        const apiBase = getApiBaseUrl();
+        await fetch(`${apiBase}/api/violations/log`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',

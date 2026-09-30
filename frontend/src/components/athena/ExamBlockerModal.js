@@ -153,7 +153,8 @@ function ExamBlockerModal({ onStartExam, onRequestPermissions }) {
   // Network Internet Ping Check
   useEffect(() => {
     const startPing = Date.now();
-    fetch('/api/health', { method: 'GET', cache: 'no-store' })
+    const apiBase = getApiBaseUrl();
+    fetch(`${apiBase}/api/health`, { method: 'GET', cache: 'no-store' })
       .then(() => {
         const ping = Date.now() - startPing;
         setInternetState({ status: 'connected', pingMs: ping });

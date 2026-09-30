@@ -1,4 +1,5 @@
 import * as faceapi from '@vladmandic/face-api';
+import { getApiBaseUrl } from './config';
 // eyeMovementDetection.js - High-accuracy eye tracking, gaze analysis, & head-pose detection
 // Fixed: proper model loading guards to prevent "TinyYolov2 - load model before inference"
 
@@ -626,8 +627,9 @@ class EyeMovementDetection {
             const token = localStorage.getItem('token') || localStorage.getItem('authToken');
             const studentId = localStorage.getItem('studentId') || ('STU_' + Date.now());
             const sessionId = localStorage.getItem('sessionId') || ('sess_' + Date.now());
+            const apiBase = getApiBaseUrl();
 
-            fetch('/api/log-suspicious-activity', {
+            fetch(`${apiBase}/api/log-suspicious-activity`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -648,7 +650,7 @@ class EyeMovementDetection {
                 })
             }).catch(err => console.warn('Failed to post eye alert to server:', err.message));
 
-            fetch('/api/violations/log', {
+            fetch(`${apiBase}/api/violations/log`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',

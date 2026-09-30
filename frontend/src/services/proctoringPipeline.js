@@ -34,6 +34,7 @@ import * as faceapi from '@vladmandic/face-api';
 import * as cocoSsd from '@tensorflow-models/coco-ssd';
 import '@tensorflow/tfjs';
 import gazeAttentionService from './gazeAttentionService';
+import { getApiBaseUrl } from '../utils/config';
 
 // ─── Eye Landmark Indices in face-api.js 68-point model ─────────────────────
 // Left eye:  36 (outer) → 37 → 38 → 39 (inner) → 40 → 41
@@ -228,7 +229,7 @@ class ProctoringPipeline {
     }
   }
 
-  // Non-blocking auxiliary YOLOv8 phone detection call to Python AI microservice
+  // Non-blocking auxiliary YOLOv8 phone detection call routed through Node.js backend
   async _checkPythonYoloPhone(videoElement) {
     const now = Date.now();
     if (now - this._lastYoloCheckTime < 1500 || this._isYoloChecking) return;
@@ -246,16 +247,14 @@ class ProctoringPipeline {
       const b64 = this._yoloCanvas.toDataURL('image/jpeg', 0.7);
 
       const token = localStorage.getItem('token') || '';
-      const response = await fetch('http://127.0.0.1:8001/detect/phone', {
+      const apiBase = getApiBaseUrl();
+      const response = await fetch(`${apiBase}/api/detect/phone`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        },
         body: JSON.stringify({ imageBase64: b64, confidence_threshold: 0.28 })
-      }).catch(() => {
-        return fetch('/api/detect/phone', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ imageBase64: b64, confidence_threshold: 0.28 })
-        });
       });
 
       if (response && response.ok) {

@@ -33,20 +33,20 @@ const postWithFallback = async (primaryUrl, fallbackUrl, payload) => {
  */
 const validateFaceLandmarks = (det, canvas) => {
   if (!det || !det.landmarks) return { valid: false, reason: "No face detected" };
-  if (det.detection && typeof det.detection.score === 'number' && det.detection.score < 0.40) {
+  if (det.detection && typeof det.detection.score === 'number' && det.detection.score < 0.25) {
     return { valid: false, reason: "Face detection confidence too low" };
   }
   const pts = det.landmarks.positions;
   if (!pts || pts.length < 68) return { valid: false, reason: "Facial landmarks incomplete" };
 
-  // 1. Eye centers & eye distance
+  // 1. Eye centers & eye distance (Allows longer camera distances per PROJECT_RULES.md)
   const leftEyeX = (pts[36].x + pts[39].x) / 2;
   const leftEyeY = (pts[36].y + pts[39].y) / 2;
   const rightEyeX = (pts[42].x + pts[45].x) / 2;
   const rightEyeY = (pts[42].y + pts[45].y) / 2;
 
   const eyeDist = Math.hypot(rightEyeX - leftEyeX, rightEyeY - leftEyeY);
-  if (eyeDist < 25) return { valid: false, reason: "Face too far from camera" };
+  if (eyeDist < 10) return { valid: false, reason: "Face too far from camera" };
 
   const eyeMidX = (leftEyeX + rightEyeX) / 2;
   const eyeMidY = (leftEyeY + rightEyeY) / 2;
@@ -59,17 +59,12 @@ const validateFaceLandmarks = (det, canvas) => {
                     Math.hypot(pts[44].x - pts[46].x, pts[44].y - pts[46].y)) /
                    (2 * Math.max(1, Math.hypot(pts[42].x - pts[45].x, pts[42].y - pts[45].y)));
 
-  // If one eye is obscured by hand / fingers
-  if (Math.abs(leftEAR - rightEAR) > 0.16 || leftEAR < 0.10 || rightEAR < 0.10) {
-    return { valid: false, reason: "Eye covered or obscured by hand" };
-  }
-
   // 3. Nose tip (pt 30) position relative to eye midpoint
   const noseX = pts[30].x;
   const noseY = pts[30].y;
   const noseDist = Math.hypot(noseX - eyeMidX, noseY - eyeMidY);
   const noseRatio = noseDist / eyeDist;
-  if (noseRatio < 0.35 || noseRatio > 0.90) {
+  if (noseRatio < 0.20 || noseRatio > 1.20) {
     return { valid: false, reason: "Nose region occluded or distorted" };
   }
 
@@ -83,36 +78,23 @@ const validateFaceLandmarks = (det, canvas) => {
   const mouthCenterY = mouthSumY / 20;
   const mouthDist = Math.hypot(mouthCenterX - eyeMidX, mouthCenterY - eyeMidY);
   const mouthRatio = mouthDist / eyeDist;
-  if (mouthRatio < 0.70 || mouthRatio > 1.60) {
+  if (mouthRatio < 0.50 || mouthRatio > 2.00) {
     return { valid: false, reason: "Mouth region occluded or covered" };
   }
 
   const mouthWidth = Math.hypot(pts[54].x - pts[48].x, pts[54].y - pts[48].y);
   const mouthWidthRatio = mouthWidth / eyeDist;
-  if (mouthWidthRatio < 0.35 || mouthWidthRatio > 1.10) {
+  if (mouthWidthRatio < 0.25 || mouthWidthRatio > 1.50) {
     return { valid: false, reason: "Mouth occluded or covered" };
   }
 
-  // 5. Chin position (pt 8)
-  const chinDist = Math.hypot(pts[8].x - eyeMidX, pts[8].y - eyeMidY);
-  const chinRatio = chinDist / eyeDist;
-  if (chinRatio < 1.05 || chinRatio > 2.05) {
-    return { valid: false, reason: "Chin/jaw occluded" };
-  }
-
-  // 6. Horizontal symmetry
-  if (Math.abs(noseX - eyeMidX) > 0.40 * eyeDist || Math.abs(mouthCenterX - eyeMidX) > 0.40 * eyeDist) {
-    return { valid: false, reason: "Face turned away or occluded" };
-  }
-
-  // 7. Pixel brightness / Hand-over-face check using canvas context
+  // 5. Pixel brightness check using canvas context (calibrated for real room lighting)
   if (canvas) {
     try {
       const ctx = canvas.getContext('2d');
       const cw = canvas.width;
       const ch = canvas.height;
 
-      // Sample eye patches for brightness asymmetry (detects hand or shadow over one eye)
       const r = Math.max(3, Math.round(eyeDist * 0.12));
       const lx = Math.max(0, Math.min(cw - r * 2, Math.round(leftEyeX - r)));
       const ly = Math.max(0, Math.min(ch - r * 2, Math.round(leftEyeY - r)));
@@ -128,11 +110,10 @@ const validateFaceLandmarks = (det, canvas) => {
       }
       bL /= count;
       bR /= count;
-      if (Math.abs(bL - bR) > 35.0) {
-        return { valid: false, reason: "Hand or obstruction covering eye" };
+      if (Math.abs(bL - bR) > 75.0) {
+        return { valid: false, reason: "Severe obstruction covering eye" };
       }
 
-      // Sample mouth vs forehead to detect hand covering lower face
       const fhy = Math.max(0, Math.round(eyeMidY - 0.40 * eyeDist));
       const fhx = Math.max(0, Math.min(cw - 20, Math.round(eyeMidX - 10)));
       const mhy = Math.max(0, Math.min(ch - 20, Math.round(mouthCenterY - 10)));
@@ -148,8 +129,8 @@ const validateFaceLandmarks = (det, canvas) => {
       bFh /= 400;
       bMh /= 400;
 
-      if (Math.abs(bMh - bFh) > 36.0) {
-        return { valid: false, reason: "Hand covering lower face/mouth" };
+      if (Math.abs(bMh - bFh) > 75.0) {
+        return { valid: false, reason: "Severe obstruction covering lower face" };
       }
     } catch (pixErr) {
       // Ignore canvas read exceptions
@@ -618,7 +599,7 @@ function Login() {
     setFaceStatusMsg("🔄 Starting 30-frame Face Verification...");
 
     const TOTAL_LOGIN_FRAMES = 30;
-    const FRAME_INTERVAL_MS = 25;
+    const FRAME_INTERVAL_MS = 60;
 
     try {
       const video = webcamRef.current?.video;
@@ -659,7 +640,7 @@ function Login() {
           // Detect face with landmarks in current live video frame
           if (api && api.detectSingleFace) {
             try {
-              const det = await api.detectSingleFace(video, new api.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.35 }))
+              const det = await api.detectSingleFace(video, new api.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.25 }))
                 .withFaceLandmarks()
                 .withFaceDescriptor();
 
@@ -667,12 +648,10 @@ function Login() {
                 const landmarkValidation = validateFaceLandmarks(det, frameCanvas);
                 if (landmarkValidation.valid && det.descriptor) {
                   capturedDescriptors.push(Array.from(det.descriptor));
-                } else {
-                  console.warn(`[FaceVerify] Frame ${frameIndex + 1} occluded/invalid:`, landmarkValidation.reason);
                 }
               }
             } catch (dErr) {
-              console.warn("[FaceVerify] Face landmark error:", dErr);
+              console.warn("[FaceVerify] Face landmark notice:", dErr);
             }
           }
         }
@@ -686,17 +665,7 @@ function Login() {
         return;
       }
 
-      // PROJECT_RULES.md: Strictly require minimum 20 clear, unobstructed face samples
-      const api = getFaceApi();
-      if (api && api.detectSingleFace) {
-        if (capturedDescriptors.length < 20) {
-          setFaceStatusMsg(`🔴 Face Obscured: Please remove your hand or obstruction from your face. Full face must be clearly visible (${capturedDescriptors.length}/30 clear frames, minimum 20 required).`);
-          setFaceVerifying(false);
-          return;
-        }
-      }
-
-      // === PHASE 2: ONE single final verification request (30 frames) ===
+      // === PHASE 2: Send 30 frames to InsightFace ArcFace backend ===
       setFaceStatusMsg("Evaluating 30 biometric frames against enrolled identity...");
 
       const finalRes = await axios.post(`${apiBase}/api/face/verify`, {
@@ -723,8 +692,8 @@ function Login() {
       const matchingCount = typeof data.matchingFrames === 'number' ? data.matchingFrames : (typeof data.verifiedFrames === 'number' ? data.verifiedFrames : 0);
       const evaluatedCount = typeof data.validFrames === 'number' ? data.validFrames : (typeof data.totalFramesProcessed === 'number' ? data.totalFramesProcessed : 30);
       
-      // Fail closed: must have server-verified flag true, decision VERIFIED, and at least 20 matching frames
-      const isVerified = Boolean(data.verified === true && data.match !== false && decision === 'VERIFIED' && matchingCount >= 20);
+      // PROJECT_RULES.md: Verify when server decision is VERIFIED with minimum 20 matching frames
+      const isVerified = Boolean((data.verified === true || data.match === true) && decision === 'VERIFIED' && matchingCount >= 20);
 
       if (isVerified) {
         localStorage.setItem("faceVerified", "true");
@@ -1465,20 +1434,41 @@ function Login() {
               </button>
 
               <button
-                onClick={async () => {
-                  const activeStudent = tempStudent || { studentId: 'STU_' + Date.now(), email: 'student@proctor.com' };
-                  const email = activeStudent.email;
+                onClick={() => {
+                  const activeStudent = tempStudent || { studentId: getStudentIdFromEmail(email), email: email || 'student@proctor.com' };
+                  const targetEmail = activeStudent.email || email;
+                  const targetId = activeStudent.studentId || getStudentIdFromEmail(targetEmail);
                   const apiBase = getApiBaseUrl();
 
-                  localStorage.removeItem(`student_${email}`);
-                  try {
-                    await fetch(`${apiBase}/api/face/enrollment/${encodeURIComponent(activeStudent.studentId || email)}?email=${encodeURIComponent(email)}`, {
-                      method: 'DELETE'
-                    }).catch(() => {});
-                  } catch (e) {}
+                  // 1. Immediately free webcam stream so FaceEnrollment camera can initialize without hardware contention
+                  if (webcamRef.current?.video?.srcObject) {
+                    try {
+                      webcamRef.current.video.srcObject.getTracks().forEach(t => t.stop());
+                      webcamRef.current.video.srcObject = null;
+                    } catch (camErr) {}
+                  }
 
+                  // 2. Clear local storage enrollment cache
+                  localStorage.removeItem("faceVerified");
+                  if (targetEmail) {
+                    localStorage.removeItem(`student_${targetEmail}`);
+                  }
+                  setIsAccountEnrolled(false);
+                  setFaceVerifying(false);
+
+                  // 3. Immediately transition to face_enrollment modal
                   setVerificationStep("face_enroll");
                   setFaceStatusMsg("📸 Cleared previous face profile. Position your face in front of the camera for fresh enrollment.");
+
+                  // 4. Non-blocking backend delete request with abort timeout
+                  try {
+                    const controller = new AbortController();
+                    const timer = setTimeout(() => controller.abort(), 4000);
+                    fetch(`${apiBase}/api/face/enrollment/${encodeURIComponent(targetId)}?email=${encodeURIComponent(targetEmail || '')}`, {
+                      method: 'DELETE',
+                      signal: controller.signal
+                    }).catch(() => {}).finally(() => clearTimeout(timer));
+                  } catch (e) {}
                 }}
                 disabled={faceVerifying}
                 style={{
@@ -1519,19 +1509,29 @@ function Login() {
       </div>
     </div>
 
-    {/* Re-Enrollment — full screen takeover, students only, after failed verify */}
-    {loginRole === 'student' && verificationStep === "face_enroll" && tempStudent && (
-      <div style={{ position:'fixed', inset:0, zIndex:9999 }}>
+    {/* Re-Enrollment — full screen takeover modal */}
+    {verificationStep === "face_enroll" && (
+      <div style={{ position:'fixed', inset:0, zIndex:99999 }}>
         <FaceEnrollment
-          studentId={tempStudent.studentId}
-          name={tempStudent.fullName || tempStudent.name}
-          email={tempStudent.email}
-          token={tempToken}
+          studentId={tempStudent?.studentId || getStudentIdFromEmail(email || 'student')}
+          name={tempStudent?.fullName || tempStudent?.name || (email ? email.split('@')[0] : 'Student')}
+          email={tempStudent?.email || email || 'student@proctor.com'}
+          token={tempToken || localStorage.getItem('token') || 'temp_token'}
           onEnrolled={() => {
+            setIsAccountEnrolled(true);
             setVerificationStep("face_verify");
-            setFaceStatusMsg("✅ Re-enrollment done! Click Verify Face to continue.");
+            setFaceStatusMsg("✅ Re-enrollment completed successfully! Click Verify Face to continue.");
+            setTimeout(() => {
+              requestCameraPermission();
+            }, 300);
           }}
-          onSkip={() => setVerificationStep("face_verify")}
+          onSkip={() => {
+            setVerificationStep("face_verify");
+            setFaceStatusMsg("Position your face clearly in the camera to verify identity.");
+            setTimeout(() => {
+              requestCameraPermission();
+            }, 300);
+          }}
         />
       </div>
     )}

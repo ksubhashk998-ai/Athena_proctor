@@ -24,6 +24,13 @@ export default function FaceEnrollment({ studentId, name, email, token, onEnroll
 
   useEffect(() => {
     loadFaceModels().catch((e) => console.warn('face-api init:', e.message));
+    return () => {
+      if (webcamRef.current?.video?.srcObject) {
+        try {
+          webcamRef.current.video.srcObject.getTracks().forEach(t => t.stop());
+        } catch (e) {}
+      }
+    };
   }, []);
 
   const startEnrollment = useCallback(async () => {
@@ -156,6 +163,11 @@ export default function FaceEnrollment({ studentId, name, email, token, onEnroll
         setStatus('success');
         setStatusMsg('✅ Enrollment successful — 30 valid face samples captured.');
         setTimeout(() => {
+          if (webcamRef.current?.video?.srcObject) {
+            try {
+              webcamRef.current.video.srcObject.getTracks().forEach(t => t.stop());
+            } catch (e) {}
+          }
           if (onEnrolled) onEnrolled(data);
         }, 1200);
       } else {
@@ -196,6 +208,11 @@ export default function FaceEnrollment({ studentId, name, email, token, onEnroll
             width={340}
             height={255}
             screenshotFormat="image/jpeg"
+            videoConstraints={{
+              width: { ideal: 640 },
+              height: { ideal: 480 },
+              facingMode: "user"
+            }}
             style={styles.webcam}
             mirrored={true}
           />
@@ -237,7 +254,17 @@ export default function FaceEnrollment({ studentId, name, email, token, onEnroll
           )}
 
           {onSkip && status !== 'capturing' && status !== 'processing' && (
-            <button onClick={onSkip} style={styles.skipBtn}>
+            <button
+              onClick={() => {
+                if (webcamRef.current?.video?.srcObject) {
+                  try {
+                    webcamRef.current.video.srcObject.getTracks().forEach(t => t.stop());
+                  } catch (e) {}
+                }
+                if (onSkip) onSkip();
+              }}
+              style={styles.skipBtn}
+            >
               Skip Enrollment
             </button>
           )}

@@ -1,5 +1,6 @@
 const express = require('express');
 const mongoose = require('mongoose');
+mongoose.set('bufferCommands', false);
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const bcrypt = require('bcryptjs');
@@ -2807,27 +2808,13 @@ if (!process.env.VERCEL) {
 
             if (isLocal && process.env.NODE_ENV !== 'production') {
                 const http = require('http');
-                const { spawn } = require('child_process');
                 const pyReq = http.get('http://127.0.0.1:8001/health', (res) => {
                     if (res.statusCode === 200) {
                         console.log('🐍 Local Python AI microservice is ALIVE on http://127.0.0.1:8001');
                     }
                 });
                 pyReq.on('error', () => {
-                    console.log('🐍 Local Python AI service not active. Spawning python_detector...');
-                    const pyDir = path.resolve(__dirname, '../python_detector');
-                    try {
-                        const pyProc = spawn('python', ['-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', '8001'], {
-                            cwd: pyDir,
-                            detached: true,
-                            stdio: 'ignore',
-                            shell: true
-                        });
-                        pyProc.unref();
-                        console.log('🚀 Python AI microservice auto-spawned on port 8001');
-                    } catch (spErr) {
-                        console.warn('⚠️ Could not spawn python detector:', spErr.message);
-                    }
+                    console.log('💡 Note: Local Python AI service not detected on http://127.0.0.1:8001. Run it in your terminal with: cd python_detector && python -m uvicorn main:app --host 127.0.0.1 --port 8001');
                 });
                 pyReq.setTimeout(2000, () => pyReq.destroy());
             } else {

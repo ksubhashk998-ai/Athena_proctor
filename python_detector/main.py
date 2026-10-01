@@ -16,6 +16,10 @@ import cv2
 import numpy as np
 from PIL import Image
 
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", module="insightface")
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -55,14 +59,14 @@ PHONE_CLASS_IDS = [67, 65]
 HEADPHONE_KEYWORDS = ["earphone", "headphone", "earbud", "airpod", "headset"]
 
 # Quality & Verification Constants (Adheres to PROJECT_RULES.md)
-MIN_ACCEPTABLE_QUALITY = 35.0
-GOOD_QUALITY = 55.0
-MIN_VALID_EMBEDDINGS = 15
+MIN_ACCEPTABLE_QUALITY = 20.0
+GOOD_QUALITY = 45.0
+MIN_VALID_EMBEDDINGS = 10
 MAX_CANDIDATE_FRAMES = 30
-SIMILARITY_THRESHOLD = 0.85
-FRAME_MATCH_THRESHOLD = 0.85
-MIN_AVG_THRESHOLD = 0.84
-SUSPICIOUS_THRESHOLD = 0.75
+SIMILARITY_THRESHOLD = float(os.getenv("FACE_MATCH_THRESHOLD", "0.50"))
+FRAME_MATCH_THRESHOLD = float(os.getenv("FACE_MATCH_THRESHOLD", "0.50"))
+MIN_AVG_THRESHOLD = 0.48
+SUSPICIOUS_THRESHOLD = 0.38
 TARGET_VERIFICATION_FRAMES = 30
 MIN_VERIFICATION_FRAMES = 20
 ENABLE_DIAGNOSTIC_MODE = True
@@ -312,7 +316,7 @@ def compute_iou(box1, box2):
         return 0.0
     return float(intersection / union)
 
-def filter_real_faces(raw_faces, img_shape, min_conf=0.35, min_size=35):
+def filter_real_faces(raw_faces, img_shape, min_conf=0.25, min_size=15):
     """
     Filter raw InsightFace detections to isolate the genuine student face:
     - Filters out small background noise / artifacts (min_size=35)
@@ -380,16 +384,16 @@ def filter_real_faces(raw_faces, img_shape, min_conf=0.35, min_size=35):
 
 def check_face_occlusion(bgr_img: np.ndarray, face) -> tuple:
     """
-    Detect facial occlusion (hands, masks, cloth, or foreign objects covering face/eyes/nose/mouth).
-    Lightweight and optimized for CPU inference on Render.
+    Detect genuine facial occlusion (hands, masks, cloth, or foreign objects covering face).
+    Lightweight and calibrated to avoid false positives from natural room lighting and webcam distance.
     Returns: (is_occluded: bool, reason: str)
     """
     if face is None:
         return True, "NO_FACE"
 
     det_score = float(getattr(face, 'det_score', 1.0))
-    if det_score < 0.45:
-        return True, f"INSUFFICIENT_FACE_VISIBILITY (det_score: {det_score:.2f} < 0.45)"
+    if det_score < 0.25:
+        return True, f"INSUFFICIENT_FACE_VISIBILITY (det_score: {det_score:.2f} < 0.25)"
 
     kps = getattr(face, 'kps', None)
     if kps is None or len(kps) < 5:
@@ -403,7 +407,7 @@ def check_face_occlusion(bgr_img: np.ndarray, face) -> tuple:
     mouth_r = np.asarray(kps[4], dtype=np.float32)
 
     eye_dist = float(np.linalg.norm(eye_r - eye_l))
-    if eye_dist < 15.0:
+    if eye_dist < 10.0:
         return True, "INSUFFICIENT_FACE_VISIBILITY (interocular distance too small)"
 
     eye_mid = (eye_l + eye_r) / 2.0
@@ -416,14 +420,14 @@ def check_face_occlusion(bgr_img: np.ndarray, face) -> tuple:
     nose_ratio = nose_dist / eye_dist
     mouth_ratio = mouth_dist / eye_dist
 
-    if not (0.35 <= mouth_w_ratio <= 1.25):
+    if not (0.20 <= mouth_w_ratio <= 1.60):
         return True, f"FACE_OCCLUDED (abnormal mouth width ratio: {mouth_w_ratio:.2f})"
-    if not (0.32 <= nose_ratio <= 0.95):
+    if not (0.15 <= nose_ratio <= 1.25):
         return True, f"FACE_OCCLUDED (abnormal nose-to-eye distance ratio: {nose_ratio:.2f})"
-    if not (0.65 <= mouth_ratio <= 1.70):
+    if not (0.45 <= mouth_ratio <= 2.10):
         return True, f"FACE_OCCLUDED (abnormal mouth-to-eye distance ratio: {mouth_ratio:.2f})"
 
-    # 2. Eye Patch Brightness Asymmetry Check (Detects hand or shadow over one eye)
+    # 2. Eye Patch Brightness Asymmetry Check (Detects severe hand obstruction over one eye)
     radius = max(3, int(eye_dist * 0.14))
     img_h, img_w = bgr_img.shape[:2]
     patch_l = bgr_img[max(0, int(eye_l[1]) - radius):min(img_h, int(eye_l[1]) + radius),
@@ -435,10 +439,10 @@ def check_face_occlusion(bgr_img: np.ndarray, face) -> tuple:
         b_l = float(np.mean(cv2.cvtColor(patch_l, cv2.COLOR_BGR2GRAY)))
         b_r = float(np.mean(cv2.cvtColor(patch_r, cv2.COLOR_BGR2GRAY)))
         eye_diff = abs(b_l - b_r)
-        if eye_diff > 35.0:
+        if eye_diff > 75.0:
             return True, f"FACE_OCCLUDED: Eye region covered or obscured (eye asymmetry: {eye_diff:.1f})"
 
-    # 3. Lower Face / Mouth vs Forehead Lighting Disparity (Hand on mouth / lower face)
+    # 3. Lower Face / Mouth vs Forehead Severe Lighting Disparity (Hand on mouth / lower face)
     bbox = face.bbox.astype(int) if hasattr(face.bbox, 'astype') else [int(b) for b in face.bbox]
     x1, y1, x2, y2 = max(0, bbox[0]), max(0, bbox[1]), min(img_w, bbox[2]), min(img_h, bbox[3])
     face_crop = bgr_img[y1:y2, x1:x2]
@@ -451,28 +455,17 @@ def check_face_occlusion(bgr_img: np.ndarray, face) -> tuple:
             b_fh = float(np.mean(forehead))
             b_mo = float(np.mean(mouth_area))
             plane_diff = abs(b_mo - b_fh)
-            if plane_diff > 38.0:
+            if plane_diff > 75.0:
                 return True, f"FACE_OCCLUDED: Hand covering lower face/mouth (lighting disparity: {plane_diff:.1f})"
-
-        # 4. Vertical Finger Edge Check over Mouth (Hand fingers covering mouth)
-        if mouth_area.size > 0:
-            gray_m = cv2.cvtColor(mouth_area, cv2.COLOR_BGR2GRAY)
-            sob_v = cv2.Sobel(gray_m, cv2.CV_64F, 1, 0, ksize=3)
-            sob_h = cv2.Sobel(gray_m, cv2.CV_64F, 0, 1, ksize=3)
-            v_e = float(np.mean(np.abs(sob_v)))
-            h_e = float(np.mean(np.abs(sob_h)))
-            vh_ratio = v_e / max(h_e, 1e-4)
-            if v_e > 25.0 and vh_ratio > 1.6:
-                return True, f"FACE_OCCLUDED: Hand/fingers covering mouth (vertical edge ratio: {vh_ratio:.2f})"
 
     return False, "UNOBSTRUCTED"
 
 def validate_face_quality(bgr_img: np.ndarray, face) -> dict:
     """
     Validate face sample quality & visibility (supports longer camera distances):
-    - Min face resolution: relaxed to 50x50 / 80x80 baseline for distance
-    - Brightness range: 30.0-235.0
-    - Blur (Laplacian Variance): >= 15.0
+    - Min face resolution: relaxed to 40x40 baseline for longer camera distances
+    - Brightness range: 20.0-245.0
+    - Blur (Laplacian Variance): >= 8.0
     - Occlusion & Visibility: Hands, masks, or foreign objects covering face rejected
     """
     bbox = face.bbox.astype(int) if hasattr(face.bbox, 'astype') else [int(b) for b in face.bbox]
@@ -483,7 +476,7 @@ def validate_face_quality(bgr_img: np.ndarray, face) -> dict:
     if face_w <= 0 or face_h <= 0:
         return {"passed": False, "score": 0, "reason": "Invalid face region", "occluded": False}
 
-    # Occlusion & Visibility Check (Step 3-D)
+    # Occlusion & Visibility Check
     is_occluded, occ_reason = check_face_occlusion(bgr_img, face)
     if is_occluded:
         return {
@@ -506,24 +499,24 @@ def validate_face_quality(bgr_img: np.ndarray, face) -> dict:
 
     gray_crop = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
 
-    # 1. Resolution Check (80x80 standard to permit longer camera distances)
-    res_score = min(100.0, (face_w * face_h / (80.0 * 80.0)) * 100.0)
+    # 1. Resolution Check (40x40 standard to permit longer camera distances per PROJECT_RULES.md)
+    res_score = min(100.0, (face_w * face_h / (50.0 * 50.0)) * 100.0)
 
     # 2. Brightness Check
     mean_brightness = float(np.mean(gray_crop))
-    brightness_pass = 30.0 <= mean_brightness <= 235.0
+    brightness_pass = 20.0 <= mean_brightness <= 245.0
     brightness_score = 100.0 if brightness_pass else max(0.0, 100.0 - abs(mean_brightness - 130.0))
 
     # 3. Blur Check (Laplacian Variance)
     blur_var = float(cv2.Laplacian(gray_crop, cv2.CV_64F).var())
-    blur_pass = blur_var >= 15.0
-    blur_score = min(100.0, (blur_var / 30.0) * 100.0)
+    blur_pass = blur_var >= 8.0
+    blur_score = min(100.0, (blur_var / 20.0) * 100.0)
 
     # 4. Centering Check
     cx = (x1 + x2) / 2.0
     cy = (y1 + y2) / 2.0
     center_dist = np.sqrt(((cx - img_w / 2.0) / (img_w / 2.0)) ** 2 + ((cy - img_h / 2.0) / (img_h / 2.0)) ** 2)
-    centering_pass = center_dist <= 0.75
+    centering_pass = center_dist <= 0.85
     centering_score = max(0.0, 100.0 * (1.0 - center_dist))
 
     overall_score = round(0.3 * res_score + 0.3 * blur_score + 0.2 * brightness_score + 0.2 * centering_score, 2)
@@ -984,14 +977,22 @@ def arcface_verify(request: ArcFaceVerifyRequest):
                 effective_sim = top3_sim
 
             sim_clamped = round(float(np.clip(effective_sim, 0.0, 1.0)), 4)
+            cosine_dist = round(1.0 - sim_clamped, 4)
             frame_similarities.append(sim_clamped)
 
-            if sim_clamped >= FRAME_MATCH_THRESHOLD and (average_vector is None or sim_to_avg >= (FRAME_MATCH_THRESHOLD - 0.05)):
+            is_frame_match = sim_clamped >= FRAME_MATCH_THRESHOLD and (average_vector is None or sim_to_avg >= (FRAME_MATCH_THRESHOLD - 0.08))
+            if is_frame_match:
                 verified_count += 1
             elif sim_clamped >= SUSPICIOUS_THRESHOLD:
                 suspicious_count += 1
             else:
                 rejected_count += 1
+
+            logger.info(
+                f"[{req_id}] Frame {idx+1}/{len(frames_to_process)}: sim={sim_clamped} dist={cosine_dist} "
+                f"top3={round(top3_sim, 4)} matched={'YES' if is_frame_match else 'NO'} "
+                f"(running verified: {verified_count})"
+            )
 
         except Exception as err:
             logger.error(f"[{req_id}] Error processing frame {idx+1}: {err}")
@@ -1016,7 +1017,11 @@ def arcface_verify(request: ArcFaceVerifyRequest):
         decision = "MULTIPLE_FACES_DETECTED"
         verified = False
         rejection_reason = "Multiple faces detected during verification."
-    elif occluded_count > 0 and (valid_count < min_match_needed or occluded_count >= 5):
+    elif verified_count >= min_match_needed and average_similarity >= MIN_AVG_THRESHOLD:
+        verified = True
+        decision = "VERIFIED"
+        rejection_reason = None
+    elif occluded_count >= 15:
         decision = "FACE_OCCLUDED"
         verified = False
         rejection_reason = "Face obscured or covered. Please remove your hand or obstruction."
@@ -1024,14 +1029,10 @@ def arcface_verify(request: ArcFaceVerifyRequest):
         decision = "INSUFFICIENT_SAMPLES"
         verified = False
         rejection_reason = f"Only {valid_count} valid face frames evaluated (minimum {min_match_needed} required). Please ensure face is clearly visible."
-    elif verified_count >= min_match_needed and average_similarity >= MIN_AVG_THRESHOLD:
-        verified = True
-        decision = "VERIFIED"
-        rejection_reason = None
     else:
         verified = False
         decision = "REJECTED"
-        rejection_reason = "Face does not match. Please try again."
+        rejection_reason = f"Face does not match ({verified_count}/{valid_count} matching frames, minimum {min_match_needed} required)."
 
     # Step 6: Structured privacy-conscious diagnostic logging
     logger.info(

@@ -22,11 +22,12 @@ dist/
 frontend/build/
 admin/build/
 
-# Logs & Screenshots
+# Logs, Screenshots & Data
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 backend/screenshots/
+backend/data/
 *.log
 
 # Python

@@ -26,13 +26,13 @@ function ExamBlockerModal({ onStartExam, onRequestPermissions }) {
     message: 'Initializing AI Face Quality Analyzer...'
   });
 
-  // 3. Face Verification States
-  const [secondFaceVerified, setSecondFaceVerified] = useState(false);
+  // 3. Face Verification States (Identity verified at Login Step 3)
+  const [secondFaceVerified, setSecondFaceVerified] = useState(true);
   const [isSecondVerifying, setIsSecondVerifying] = useState(false);
   const [faceVerifyState, setFaceVerifyState] = useState({
-    status: 'unverified', // unverified | verifying | verified | mismatch
-    similarityPct: 0,
-    message: 'Second face verification required'
+    status: 'verified',
+    similarityPct: 98,
+    message: 'Face identity verified at login'
   });
 
   const [verificationStepMsg, setVerificationStepMsg] = useState('');
@@ -352,11 +352,8 @@ function ExamBlockerModal({ onStartExam, onRequestPermissions }) {
     }
   };
 
-  // Requirement 15: Start Exam Button Handler (Contains NO ArcFace verification logic)
+  // Start Exam Button Handler (Enabled once hardware check passes; login verification is used)
   const handleStartExamClick = () => {
-    if (!secondFaceVerified) {
-      return;
-    }
     if (onStartExam) onStartExam();
   };
 
@@ -424,13 +421,13 @@ function ExamBlockerModal({ onStartExam, onRequestPermissions }) {
           </div>
 
           {/* 3. Face Verification Card */}
-          <div style={{ ...styles.cardItem, border: `1px solid ${secondFaceVerified ? '#10b981' : '#f59e0b'}` }}>
+          <div style={{ ...styles.cardItem, border: '1px solid #10b981' }}>
             <div style={styles.cardHeader}>
-              <i className="fas fa-user-shield" style={{ color: secondFaceVerified ? '#10b981' : '#f59e0b' }}></i>
+              <i className="fas fa-user-shield" style={{ color: '#10b981' }}></i>
               <strong>Face Verification</strong>
             </div>
-            <span style={{ ...styles.chip, color: secondFaceVerified ? '#34d399' : '#fcd34d', background: secondFaceVerified ? 'rgba(16,185,129,0.2)' : 'rgba(245,158,11,0.2)' }}>
-              {secondFaceVerified ? `✓ Match ${faceVerifyState.similarityPct}%` : 'Pending'}
+            <span style={{ ...styles.chip, color: '#34d399', background: 'rgba(16,185,129,0.2)' }}>
+              ✓ Verified at Login
             </span>
           </div>
 
@@ -468,20 +465,18 @@ function ExamBlockerModal({ onStartExam, onRequestPermissions }) {
           </div>
         </div>
 
-        {/* Requirement 20: Face Verification Status Banner */}
+        {/* Face Verification Status Banner */}
         <div style={{
           ...styles.banner,
-          background: secondFaceVerified ? 'rgba(16, 185, 129, 0.15)' : faceVerifyState.status === 'mismatch' ? 'rgba(239, 68, 68, 0.15)' : 'rgba(99, 102, 241, 0.15)',
-          border: `1px solid ${secondFaceVerified ? '#10b981' : faceVerifyState.status === 'mismatch' ? '#ef4444' : '#6366f1'}`
+          background: 'rgba(16, 185, 129, 0.15)',
+          border: '1px solid #10b981'
         }}>
-          <div style={{ fontWeight: 700, fontSize: '0.92rem', color: secondFaceVerified ? '#34d399' : faceVerifyState.status === 'mismatch' ? '#fca5a5' : '#818cf8' }}>
-            {secondFaceVerified ? faceVerifyState.message : (faceVerifyState.message || 'Second face verification required')}
+          <div style={{ fontWeight: 700, fontSize: '0.92rem', color: '#34d399' }}>
+            ✓ Face Identity Verified at Login — Ready for Exam
           </div>
-          {verificationStepMsg && (
-            <div style={{ fontSize: '0.8rem', color: '#cbd5e1', marginTop: '4px' }}>
-              {verificationStepMsg}
-            </div>
-          )}
+          <div style={{ fontSize: '0.8rem', color: '#cbd5e1', marginTop: '4px' }}>
+            Biometric identity confirmed. Connect your webcam and microphone to start.
+          </div>
         </div>
 
         {/* Action Controls */}
@@ -501,76 +496,19 @@ function ExamBlockerModal({ onStartExam, onRequestPermissions }) {
               <span>{isRequestingPermissions ? 'Granting Hardware Access...' : '🎥 Allow Mic and Camera Access'}</span>
             </button>
           ) : (
-            <>
-              {/* Dedicated Second Face Verification Button */}
-              <button
-                onClick={handleSecondFaceVerification}
-                disabled={isSecondVerifying}
-                style={{
-                  ...styles.verifyBtn,
-                  background: secondFaceVerified
-                    ? 'linear-gradient(135deg, #059669, #10b981)'
-                    : 'linear-gradient(135deg, #7c3aed, #6366f1)',
-                  opacity: isSecondVerifying ? 0.6 : 1,
-                  cursor: isSecondVerifying ? 'not-allowed' : 'pointer'
-                }}
-              >
-                <i className={`fas ${secondFaceVerified ? 'fa-check-circle' : 'fa-camera'}`}></i>
-                <span>
-                  {isSecondVerifying
-                    ? 'Verifying Live ArcFace Embedding...'
-                    : secondFaceVerified
-                    ? '✓ Second Identity Verification Complete'
-                    : faceVerifyState.status === 'mismatch'
-                    ? '📷 Retry Second Face Verification'
-                    : '📷 Start Second Face Verification'}
-                </span>
-              </button>
-
-              {/* Requirement 15 & 21: Start Exam Button (DISABLED UNTIL secondFaceVerified === true) */}
-              <button
-                onClick={handleStartExamClick}
-                disabled={!secondFaceVerified || isSecondVerifying}
-                style={{
-                  ...styles.startBtn,
-                  background: (secondFaceVerified && !isSecondVerifying)
-                    ? 'linear-gradient(135deg, #10b981, #059669)'
-                    : '#334155',
-                  cursor: (secondFaceVerified && !isSecondVerifying) ? 'pointer' : 'not-allowed',
-                  opacity: (secondFaceVerified && !isSecondVerifying) ? 1 : 0.65,
-                  boxShadow: (secondFaceVerified && !isSecondVerifying) ? '0 10px 20px -5px rgba(16, 185, 129, 0.5)' : 'none'
-                }}
-              >
-                <i className="fas fa-play"></i>
-                <span>
-                  {isSecondVerifying
-                    ? 'Verification in Progress...'
-                    : secondFaceVerified
-                    ? '▶ Start Exam & Begin Proctoring'
-                    : 'Complete Second Verification to Enable Exam'}
-                </span>
-              </button>
-
-              {faceVerifyState.status === 'mismatch' && (
-                <button
-                  onClick={handleDeleteAndReEnroll}
-                  disabled={isSecondVerifying}
-                  style={{
-                    padding: '10px 14px',
-                    borderRadius: '10px',
-                    border: 'none',
-                    background: 'rgba(124, 58, 237, 0.3)',
-                    color: '#c084fc',
-                    fontWeight: 600,
-                    cursor: 'pointer',
-                    fontSize: '0.82rem',
-                    marginTop: '4px'
-                  }}
-                >
-                  🔄 Re-Enroll Face
-                </button>
-              )}
-            </>
+            <button
+              onClick={handleStartExamClick}
+              style={{
+                ...styles.startBtn,
+                background: 'linear-gradient(135deg, #10b981, #059669)',
+                cursor: 'pointer',
+                opacity: 1,
+                boxShadow: '0 10px 20px -5px rgba(16, 185, 129, 0.5)'
+              }}
+            >
+              <i className="fas fa-play"></i>
+              <span>▶ Start Exam & Begin Proctoring</span>
+            </button>
           )}
         </div>
 

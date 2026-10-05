@@ -18,8 +18,15 @@ const PYTHON_SERVICE_URL = rawPyUrl.includes('localhost')
   ? rawPyUrl.replace('localhost', '127.0.0.1').replace(/\/$/, '')
   : rawPyUrl.replace(/\/$/, '');
 
-// In-Memory store for resilient operation when MongoDB is offline / disconnected
+// In-Memory store for resilient operation when MongoDB is offline / disconnected (bounded to 100 entries max)
 const inMemoryFaceProfiles = new Map();
+function cacheFaceProfile(key, profile) {
+  if (inMemoryFaceProfiles.size >= 100) {
+    const oldestKey = inMemoryFaceProfiles.keys().next().value;
+    inMemoryFaceProfiles.delete(oldestKey);
+  }
+  inMemoryFaceProfiles.set(key, profile);
+}
 
 // Helper: Prune screenshots directory to strictly enforce Render 512MB storage limit (cap at 25MB / 50 files)
 function pruneScreenshotsDir(dirPath, maxFiles = 50, maxTotalBytes = 25 * 1024 * 1024) {
@@ -251,9 +258,9 @@ const enrollFace = async (req, res) => {
         updatedAt: new Date()
       };
 
-      // Always cache in memory for high availability
-      inMemoryFaceProfiles.set(cleanStudentId.toLowerCase(), profileData);
-      inMemoryFaceProfiles.set(cleanEmail.toLowerCase(), profileData);
+      // Always cache in memory for high availability (bounded)
+      cacheFaceProfile(cleanStudentId.toLowerCase(), profileData);
+      cacheFaceProfile(cleanEmail.toLowerCase(), profileData);
 
       let savedProfile = profileData;
 

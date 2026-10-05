@@ -31,6 +31,21 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this-in-pro
 const PORT = process.env.PORT || 5000;
 const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:5000';
 
+// ==================== MEMORY & RESOURCE OPTIMIZATION (RENDER 512MB TIER) ====================
+// Proactive memory management: monitor heap/RSS and run GC if available to strictly comply with 512MB limit
+if (process.env.NODE_ENV === 'production' || process.env.RENDER) {
+    setInterval(() => {
+        try {
+            const memory = process.memoryUsage();
+            const heapUsedMB = Math.round(memory.heapUsed / 1024 / 1024);
+            const rssMB = Math.round(memory.rss / 1024 / 1024);
+            if (global.gc && (heapUsedMB > 160 || rssMB > 320)) {
+                global.gc();
+            }
+        } catch (e) {}
+    }, 30000);
+}
+
 // ==================== SECURITY & PERFORMANCE MIDDLEWARE ====================
 
 // Security headers (Helmet)
@@ -2426,7 +2441,8 @@ io.on('connection', (socket) => {
 
             if (data.image) {
                 try {
-                    let session = await LiveSession.findOne({ $or: [{ studentId }, { usn: studentId }, { email: data.email }] });
+                    let session = await LiveSession.findOne({ $or: [{ studentId }, { usn: studentId }, { email: data.email }] })
+                        .select('_id status sessionId studentId studentName usn email examId examName department');
                     if (!session) {
                         session = new LiveSession({
                             sessionId: data.sessionId || `SESS_${studentId}`,
@@ -2439,15 +2455,21 @@ io.on('connection', (socket) => {
                             department: data.department || 'Computer Science & Engineering',
                             startTime: new Date(),
                             status: 'Online',
-                            riskLevel: 'Low'
+                            riskLevel: 'Low',
+                            lastWebcamFrame: data.image,
+                            lastActive: new Date()
                         });
+                        await session.save();
+                    } else {
+                        const newStatus = (!['Finished', 'Completed', 'Terminated'].includes(session.status)) ? 'Online' : session.status;
+                        await LiveSession.updateOne(
+                            { _id: session._id },
+                            { $set: { lastWebcamFrame: data.image, lastActive: new Date(), status: newStatus } }
+                        );
+                        session.lastWebcamFrame = data.image;
+                        session.lastActive = new Date();
+                        session.status = newStatus;
                     }
-                    session.lastWebcamFrame = data.image;
-                    session.lastActive = new Date();
-                    if (!['Finished', 'Completed', 'Terminated'].includes(session.status)) {
-                        session.status = 'Online';
-                    }
-                    await session.save();
                     io.to('admin_room').emit('student-updated', session);
                 } catch (err) {}
             }
@@ -2469,7 +2491,20 @@ io.on('connection', (socket) => {
                         { usn: studentId },
                         ...(data.email ? [{ email: data.email }] : [])
                     ]
-                });
+                }).select('_id status sessionId studentId studentName usn email examId examName department');
+
+                const newStatus = (!session || !['Finished', 'Completed', 'Terminated'].includes(session.status)) ? 'Online' : session.status;
+                const updateFields = {
+                    lastActive: new Date(),
+                    status: newStatus
+                };
+                if (data.image) updateFields.lastWebcamFrame = data.image;
+                if (data.tabSwitchingCount !== undefined) updateFields.tabSwitchingCount = data.tabSwitchingCount;
+                if (data.suspiciousActivityCount !== undefined) updateFields.suspiciousActivityCount = data.suspiciousActivityCount;
+                if (data.riskLevel) updateFields.riskLevel = data.riskLevel;
+                if (data.headPose) updateFields.headPose = data.headPose;
+                if (data.eyeGaze) updateFields.eyeGaze = data.eyeGaze;
+
                 if (!session) {
                     session = new LiveSession({
                         sessionId: targetSessionId,
@@ -2481,21 +2516,14 @@ io.on('connection', (socket) => {
                         examName: data.examName || 'Computer Science Final Assessment',
                         department: data.department || 'Computer Science & Engineering',
                         startTime: new Date(),
-                        status: 'Online',
-                        riskLevel: 'Low'
+                        riskLevel: 'Low',
+                        ...updateFields
                     });
+                    await session.save();
+                } else {
+                    await LiveSession.updateOne({ _id: session._id }, { $set: updateFields });
+                    Object.assign(session, updateFields);
                 }
-                session.lastActive = new Date();
-                if (!['Finished', 'Completed', 'Terminated'].includes(session.status)) {
-                    session.status = 'Online';
-                }
-                if (data.image) session.lastWebcamFrame = data.image;
-                if (data.tabSwitchingCount !== undefined) session.tabSwitchingCount = data.tabSwitchingCount;
-                if (data.suspiciousActivityCount !== undefined) session.suspiciousActivityCount = data.suspiciousActivityCount;
-                if (data.riskLevel) session.riskLevel = data.riskLevel;
-                if (data.headPose) session.headPose = data.headPose;
-                if (data.eyeGaze) session.eyeGaze = data.eyeGaze;
-                await session.save();
                 io.to('admin_room').emit('student-updated', session);
 
                 if (data.image) {
@@ -2505,11 +2533,12 @@ io.on('connection', (socket) => {
             } catch (err) {
                 if (err.code === 11000) {
                     try {
-                        const existingSession = await LiveSession.findOne({ sessionId: targetSessionId });
+                        const existingSession = await LiveSession.findOne({ sessionId: targetSessionId }).select('_id');
                         if (existingSession) {
-                            existingSession.lastActive = new Date();
-                            if (data.image) existingSession.lastWebcamFrame = data.image;
-                            await existingSession.save();
+                            await LiveSession.updateOne(
+                                { _id: existingSession._id },
+                                { $set: { lastActive: new Date(), ...(data.image ? { lastWebcamFrame: data.image } : {}) } }
+                            );
                         }
                     } catch (retryErr) {
                         console.error('Error updating telemetry session (retry):', retryErr.message);
@@ -2776,7 +2805,7 @@ setInterval(async () => {
                 { lastActive: { $lt: staleThreshold } },
                 { lastActive: { $exists: false } }
             ]
-        });
+        }).select('_id studentId status');
 
         if (staleSessions.length > 0) {
             await LiveSession.updateMany(

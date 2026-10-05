@@ -4,13 +4,30 @@ Optimized for 512 MB RAM / CPU-only Cloud Deployment (Render)
 Run locally: uvicorn main:app --host 127.0.0.1 --port 8001
 Run on Render: uvicorn main:app --host 0.0.0.0 --port $PORT
 """
+import os
+# Strict memory controls for 512MB RAM Linux container deployment (Render Free Tier)
+os.environ.setdefault("MALLOC_ARENA_MAX", "2")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+
 import base64
 import gc
 import io
 import logging
-import os
 import time
 from typing import Any, List, Optional
+
+def release_memory():
+    """Forces Python garbage collection and returns free memory pages to OS kernel via glibc malloc_trim."""
+    gc.collect()
+    try:
+        import ctypes
+        ctypes.CDLL('libc.so.6').malloc_trim(0)
+    except Exception:
+        pass
 
 import cv2
 import numpy as np
@@ -33,6 +50,12 @@ logger = logging.getLogger("detector")
 # ML Dependency Checks & Global Lazy Instances
 YOLO_AVAILABLE = False
 try:
+    import torch
+    torch.set_num_threads(1)
+    try:
+        torch.set_num_interop_threads(1)
+    except Exception:
+        pass
     from ultralytics import YOLO  # type: ignore
     YOLO_AVAILABLE = True
 except (ImportError, Exception):
@@ -222,7 +245,8 @@ async def startup_event():
             get_phone_model()
         except Exception as e:
             logger.error(f"❌ [Startup] YOLO preload error: {e}", exc_info=True)
-    logger.info("🚀 [Startup] Application initialization complete.")
+    release_memory()
+    logger.info("🚀 [Startup] Application initialization complete (512MB RAM safe mode active).")
 
 # ----------------- REQUEST & RESPONSE SCHEMAS -----------------
 
@@ -265,9 +289,11 @@ def preprocess_image_np(imageBase64: str, target_max_dim: int = 640) -> Optional
         if "," in imageBase64:
             imageBase64 = imageBase64.split(",", 1)[1]
         image_bytes = base64.b64decode(imageBase64)
-        pil_img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        rgb_arr = np.array(pil_img)
+        with Image.open(io.BytesIO(image_bytes)) as pil_img:
+            rgb_arr = np.array(pil_img.convert("RGB"))
+        del image_bytes
         bgr_img = cv2.cvtColor(rgb_arr, cv2.COLOR_RGB2BGR)
+        del rgb_arr
 
         h, w = bgr_img.shape[:2]
         if max(h, w) > target_max_dim:
@@ -541,8 +567,14 @@ def run_yolo_detection(model, image: Image.Image, target_class_ids: list, thresh
     if model is None:
         return []
     img_array = np.array(image)
-    # Force CPU inference and avoid unnecessary gradients/memory
-    results = model(img_array, verbose=False, device="cpu")[0]
+    # Force CPU single-thread inference with no gradients to conserve memory
+    try:
+        import torch
+        with torch.no_grad():
+            results = model(img_array, verbose=False, device="cpu")[0]
+    except Exception:
+        results = model(img_array, verbose=False, device="cpu")[0]
+    del img_array
     detections = []
     for box in results.boxes:
         cls_id = int(box.cls[0])
@@ -610,9 +642,11 @@ async def detect_phone(request: DetectionRequest):
         model = get_phone_model()
         threshold = request.confidence_threshold if request.confidence_threshold is not None else 0.28
         detections = run_yolo_detection(model, image, target_class_ids=PHONE_CLASS_IDS, threshold=threshold)
+        release_memory()
         return DetectionResponse(detected=len(detections) > 0, detections=detections, model="yolov8n", yolo_available=True)
     except Exception as e:
         logger.error(f"Phone detection error: {e}")
+        release_memory()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/detect/headphone", response_model=DetectionResponse)
@@ -664,6 +698,7 @@ async def detect_faces(request: DetectionRequest):
         # Explicit cleanup of image array
         del bgr_img
         del raw_faces
+        release_memory()
 
         return {
             "faceCount": len(faces),
@@ -673,6 +708,7 @@ async def detect_faces(request: DetectionRequest):
         }
     except Exception as e:
         logger.error(f"Multi-face detection error: {e}")
+        release_memory()
         return {"faceCount": 0, "multipleFaces": False, "faces": [], "error": str(e)}
 
 @app.post("/api/arcface/enroll")
@@ -753,6 +789,8 @@ def arcface_enroll(request: ArcFaceEnrollRequest):
         finally:
             if bgr_img is not None:
                 del bgr_img
+            if (idx + 1) % 5 == 0:
+                release_memory()
 
     # Select top candidates (up to 30)
     candidates.sort(key=lambda x: x["score"], reverse=True)
@@ -769,7 +807,7 @@ def arcface_enroll(request: ArcFaceEnrollRequest):
     # Garbage collection after batch processing
     del candidates
     del top_candidates
-    gc.collect()
+    release_memory()
 
     if valid_count < 5:
         return {
@@ -1000,6 +1038,8 @@ def arcface_verify(request: ArcFaceVerifyRequest):
         finally:
             if bgr_img is not None:
                 del bgr_img
+            if (idx + 1) % 5 == 0:
+                release_memory()
 
     valid_count = len(frame_similarities)
     best_similarity = round(float(np.max(frame_similarities)), 4) if frame_similarities else 0.0
@@ -1008,7 +1048,7 @@ def arcface_verify(request: ArcFaceVerifyRequest):
     total_elapsed = round(time.time() - verification_start, 2)
 
     # Garbage collection
-    gc.collect()
+    release_memory()
 
     # Minimum match needed: PROJECT_RULES.md specifies minimum 20 out of 30 matching frames
     min_match_needed = 20 if total_requested >= 25 else max(4, int(np.ceil(total_requested * 0.70)))
@@ -1113,5 +1153,5 @@ def arcface_debug_verify(request: ArcFaceVerifyRequest):
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8001))
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
+    uvicorn.run("main:app", host="0.0.0.0", port=port, workers=1)
     

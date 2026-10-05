@@ -4,7 +4,7 @@
   "description": "AI-Powered Smart Exam Proctoring System with Real-time Monitoring",
   "main": "server.js",
   "scripts": {
-    "start": "node --max-old-space-size=256 server.js",
+    "start": "node --max-old-space-size=256 --optimize_for_size --expose-gc server.js",
     "dev": "nodemon server.js",
     "test": "echo \"Error: no test specified\" && exit 1",
     "seed": "node seed.js",

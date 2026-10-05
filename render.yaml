@@ -5,10 +5,14 @@ services:
     plan: free
     rootDir: backend
     buildCommand: npm install
-    startCommand: node server.js
+    startCommand: node --max-old-space-size=256 --optimize_for_size --expose-gc server.js
     envVars:
       - key: NODE_ENV
         value: production
+      - key: NODE_OPTIONS
+        value: --max-old-space-size=256 --optimize_for_size --expose-gc
+      - key: MALLOC_ARENA_MAX
+        value: "2"
       - key: MONGODB_URI
         sync: false
       - key: JWT_SECRET
@@ -22,4 +26,6 @@ services:
       - key: EMAIL_APP_PASSWORD
         sync: false
       - key: ARCFACE_API_KEY
+        sync: false
+      - key: PYTHON_DETECTOR_URL
         sync: false

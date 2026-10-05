@@ -166,11 +166,11 @@ const getDashboardOverview = async (req, res) => {
       ).catch(() => {});
 
       [allSessions, allUsers, allStudents, examReports, suspiciousActivities, alerts] = await Promise.all([
-        LiveSession.find().sort({ updatedAt: -1 }).lean().catch(() => []),
+        LiveSession.find().select('-answers -mcqStats -codingStats -theoryStats').sort({ updatedAt: -1 }).lean().catch(() => []),
         User.find().select('-password -faceEmbeddings').lean().catch(() => []),
         Student.find().select('-password -passwordHash').lean().catch(() => []),
-        ExamReport.find().lean().catch(() => []),
-        SuspiciousActivity.find().sort({ timestamp: -1 }).lean().catch(() => []),
+        ExamReport.find().select('-screenshots -answers -codingAnswers -theoryAnswers').lean().catch(() => []),
+        SuspiciousActivity.find().select('-screenshot -screenshotBase64 -screenshotPath').sort({ timestamp: -1 }).lean().catch(() => []),
         Alert.find().sort({ timestamp: -1 }).limit(10).lean().catch(() => [])
       ]);
     } catch (e) {
@@ -358,8 +358,8 @@ const getLiveStudents = async (req, res) => {
     const [registeredUsers, registeredStudents, activeSessions, examReports] = await Promise.all([
       User.find({}, '-password -faceEmbeddings').sort({ createdAt: -1 }).lean().catch(() => []),
       Student.find({}, '-password -passwordHash').sort({ createdAt: -1 }).lean().catch(() => []),
-      LiveSession.find({}).sort({ updatedAt: -1, lastActive: -1 }).lean().catch(() => []),
-      ExamReport.find({}).sort({ createdAt: -1 }).lean().catch(() => [])
+      LiveSession.find({}).select('-answers -mcqStats -codingStats -theoryStats').sort({ updatedAt: -1, lastActive: -1 }).lean().catch(() => []),
+      ExamReport.find({}).select('-screenshots -answers -codingAnswers -theoryAnswers').sort({ createdAt: -1 }).lean().catch(() => [])
     ]);
 
     const studentRegistryMap = new Map();
@@ -1135,7 +1135,7 @@ const getTerminatedStudents = async (req, res) => {
       terminatedList.map(async s => {
         const violations = await SuspiciousActivity.find({
           $or: [{ studentId: s.studentId }, { studentEmail: s.email }]
-        }).sort({ timestamp: -1 }).lean().catch(() => []);
+        }).select('-screenshot -screenshotBase64').sort({ timestamp: -1 }).limit(10).lean().catch(() => []);
 
         return {
           ...s,
@@ -1168,8 +1168,8 @@ const getFinishedStudents = async (req, res) => {
     const { search, department, statusFilter } = req.query;
 
     const [finishedSessions, examReports, completedExamSessions] = await Promise.all([
-      LiveSession.find({ status: { $in: ['Finished', 'Completed', 'Submitted'] } }).sort({ updatedAt: -1 }).lean().catch(() => []),
-      ExamReport.find().sort({ createdAt: -1 }).lean().catch(() => []),
+      LiveSession.find({ status: { $in: ['Finished', 'Completed', 'Submitted'] } }).select('-lastWebcamFrame').sort({ updatedAt: -1 }).lean().catch(() => []),
+      ExamReport.find().select('-screenshots').sort({ createdAt: -1 }).lean().catch(() => []),
       ExamSession.find({ status: 'completed' }).sort({ endTime: -1 }).lean().catch(() => [])
     ]);
 

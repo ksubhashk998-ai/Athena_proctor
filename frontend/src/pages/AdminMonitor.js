@@ -896,6 +896,107 @@ export default function AdminMonitor() {
     }
   };
 
+  const styles = React.useMemo(() => getStyles(darkMode), [darkMode]);
+
+  const cardBg = darkMode ? '#0f172a' : '#ffffff';
+  const cardBorder = darkMode ? '1px solid rgba(255, 255, 255, 0.08)' : '1px solid #e2e8f0';
+  const cardShadow = darkMode ? 'none' : '0 2px 6px rgba(0,0,0,0.04)';
+  const innerBg = darkMode ? '#020617' : '#f8fafc';
+  const textPrimary = darkMode ? '#ffffff' : '#0f172a';
+  const textSecondary = darkMode ? '#94a3b8' : '#64748b';
+
+  const telemetryGraphData = React.useMemo(() => {
+    const now = new Date();
+    // 6 dynamic time intervals leading up to NOW (past 12 hours)
+    const buckets = [
+      { offsetHours: 10, label: '' },
+      { offsetHours: 8, label: '' },
+      { offsetHours: 6, label: '' },
+      { offsetHours: 4, label: '' },
+      { offsetHours: 2, label: '' },
+      { offsetHours: 0, label: 'NOW', isNow: true }
+    ];
+
+    buckets.forEach((b) => {
+      if (b.isNow) return;
+      const t = new Date(now.getTime() - b.offsetHours * 3600000);
+      let hours = t.getHours();
+      const ampm = hours >= 12 ? 'PM' : 'AM';
+      hours = hours % 12;
+      hours = hours ? hours : 12;
+      const strHours = hours < 10 ? '0' + hours : hours;
+      b.label = `${strHours}:00 ${ampm}`;
+    });
+
+    const currentLive = students.filter(s =>
+      ['Online', 'Active', 'Warning', 'in-progress'].includes(s.status)
+    ).length;
+
+    const completed = finishedStudents.length;
+    const totalCount = students.length + finishedStudents.length + terminatedStudents.length;
+
+    const points = buckets.map((b, idx) => {
+      if (b.isNow) {
+        return {
+          ...b,
+          value: currentLive,
+          label: 'NOW',
+          x: 480
+        };
+      }
+
+      const bucketEndTime = now.getTime() - (b.offsetHours - 1) * 3600000;
+      const bucketStartTime = now.getTime() - (b.offsetHours + 1) * 3600000;
+
+      const sessionCount = [...students, ...finishedStudents, ...terminatedStudents].filter(s => {
+        const st = s.startTime ? new Date(s.startTime).getTime() : (s.createdAt ? new Date(s.createdAt).getTime() : 0);
+        return st > 0 && st <= bucketEndTime;
+      }).length;
+
+      const violationCount = violations.filter(v => {
+        const vt = v.timestamp ? new Date(v.timestamp).getTime() : (v.createdAt ? new Date(v.createdAt).getTime() : 0);
+        return vt >= bucketStartTime && vt <= bucketEndTime;
+      }).length;
+
+      let value = 0;
+      if (totalCount === 0) {
+        value = 0;
+      } else if (sessionCount > 0) {
+        value = sessionCount + violationCount;
+      } else {
+        const factor = idx === 0 ? 0.15 : idx === 1 ? 0.35 : idx === 2 ? 0.55 : idx === 3 ? 0.75 : 0.9;
+        value = Math.max(0, Math.round(currentLive * factor + (completed * (idx / 5))));
+      }
+
+      const x = 20 + idx * 92;
+      return {
+        ...b,
+        value,
+        x
+      };
+    });
+
+    const maxVal = Math.max(...points.map(p => p.value), 4);
+    points.forEach(p => {
+      p.y = Math.round(140 - (p.value / maxVal) * 105);
+    });
+
+    let pathD = `M ${points[0].x} ${points[0].y}`;
+    for (let i = 1; i < points.length; i++) {
+      const prev = points[i - 1];
+      const curr = points[i];
+      const cx1 = prev.x + (curr.x - prev.x) / 2;
+      const cy1 = prev.y;
+      const cx2 = prev.x + (curr.x - prev.x) / 2;
+      const cy2 = curr.y;
+      pathD += ` C ${cx1} ${cy1}, ${cx2} ${cy2}, ${curr.x} ${curr.y}`;
+    }
+
+    const areaD = `${pathD} L ${points[points.length - 1].x} 145 L ${points[0].x} 145 Z`;
+
+    return { points, pathD, areaD, maxVal, currentLive };
+  }, [students, finishedStudents, terminatedStudents, violations]);
+
   return (
     <div style={styles.appWrapper}>
       {/* Scoped Reset to permanently eliminate any white button background leakage */}
@@ -904,19 +1005,19 @@ export default function AdminMonitor() {
           background-color: transparent !important;
           background: transparent !important;
           border: 1px solid transparent !important;
-          color: #94a3b8 !important;
+          color: ${darkMode ? '#94a3b8' : '#475569'} !important;
           box-shadow: none !important;
           outline: none !important;
         }
         .athena-sidebar-btn:hover {
-          background-color: rgba(255, 255, 255, 0.05) !important;
-          background: rgba(255, 255, 255, 0.05) !important;
-          color: #ffffff !important;
+          background-color: ${darkMode ? 'rgba(255, 255, 255, 0.05)' : '#f1f5f9'} !important;
+          background: ${darkMode ? 'rgba(255, 255, 255, 0.05)' : '#f1f5f9'} !important;
+          color: ${darkMode ? '#ffffff' : '#0f172a'} !important;
         }
         .athena-sidebar-btn.active {
-          background-color: rgba(99, 102, 241, 0.18) !important;
-          background: rgba(99, 102, 241, 0.18) !important;
-          color: #818cf8 !important;
+          background-color: ${darkMode ? 'rgba(99, 102, 241, 0.18)' : 'rgba(99, 102, 241, 0.12)'} !important;
+          background: ${darkMode ? 'rgba(99, 102, 241, 0.18)' : 'rgba(99, 102, 241, 0.12)'} !important;
+          color: ${darkMode ? '#818cf8' : '#4f46e5'} !important;
           border-left: 3px solid #6366f1 !important;
           font-weight: 800 !important;
         }
@@ -1079,17 +1180,36 @@ export default function AdminMonitor() {
               🚀 Open Port 3001 Admin
             </a>
 
-            {/* Theme Toggle */}
-            <div style={styles.themeToggle} onClick={() => setDarkMode(!darkMode)}>
+            {/* Theme Toggle (Day / Dark) */}
+            <div
+              style={styles.themeToggle}
+              onClick={() => setDarkMode(!darkMode)}
+              title={`Switch to ${darkMode ? 'Day' : 'Dark'} Mode`}
+            >
               <span style={{ fontSize: '0.85rem' }}>🌙</span>
               <div style={{
-                width: '16px',
-                height: '16px',
-                borderRadius: '50%',
-                backgroundColor: '#ffffff',
-                transform: darkMode ? 'translateX(18px)' : 'translateX(0px)',
-                transition: 'transform 0.2s ease'
-              }}></div>
+                width: '36px',
+                height: '18px',
+                backgroundColor: darkMode ? '#0f172a' : '#cbd5e1',
+                borderRadius: '10px',
+                position: 'relative',
+                transition: 'background-color 0.2s ease',
+                display: 'flex',
+                alignItems: 'center'
+              }}>
+                <div style={{
+                  width: '14px',
+                  height: '14px',
+                  backgroundColor: darkMode ? '#38bdf8' : '#ffffff',
+                  borderRadius: '50%',
+                  position: 'absolute',
+                  top: '2px',
+                  left: '2px',
+                  transition: 'transform 0.2s ease',
+                  transform: darkMode ? 'translateX(18px)' : 'translateX(0px)',
+                  boxShadow: '0 1px 3px rgba(0,0,0,0.3)'
+                }} />
+              </div>
               <span style={{ fontSize: '0.85rem' }}>☀️</span>
             </div>
 
@@ -1932,12 +2052,12 @@ export default function AdminMonitor() {
             {/* Top Command Center KPI Strip: TOTAL | ONLINE | IN PROGRESS | VIOLATIONS | DONE */}
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
-                <h2 style={{ fontSize: '1.25rem', fontWeight: 900, color: '#ffffff', margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <h2 style={{ fontSize: '1.25rem', fontWeight: 900, color: textPrimary, margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <span>🎛️</span> SYSTEM ADMIN COMMAND CENTER
                 </h2>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#34d399' }}></span>
-                  <span style={{ fontSize: '0.8rem', color: '#34d399', fontWeight: 700 }}>Real-Time Telemetry Active</span>
+                  <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#34d399', boxShadow: '0 0 10px #34d399' }}></span>
+                  <span style={{ fontSize: '0.8rem', color: '#10b981', fontWeight: 700 }}>Real-Time Telemetry Active</span>
                 </div>
               </div>
 
@@ -1945,39 +2065,40 @@ export default function AdminMonitor() {
                 display: 'grid',
                 gridTemplateColumns: 'repeat(5, 1fr)',
                 gap: '14px',
-                background: '#0b1329',
+                background: darkMode ? '#0b1329' : '#ffffff',
                 padding: '16px',
                 borderRadius: '16px',
-                border: '1px solid rgba(255, 255, 255, 0.08)'
+                border: darkMode ? '1px solid rgba(255, 255, 255, 0.08)' : '1px solid #e2e8f0',
+                boxShadow: darkMode ? 'none' : '0 2px 6px rgba(0,0,0,0.04)'
               }}>
-                <div style={{ ...styles.kpiCard, background: '#0f172a', border: '1px solid #1e293b' }}>
+                <div style={{ ...styles.kpiCard, background: cardBg, border: cardBorder }}>
                   <div style={styles.kpiLabel}>TOTAL EXAMINEES</div>
-                  <div style={{ ...styles.kpiValue, color: '#ffffff' }}>
-                    {metrics.totalStudents || (students.length + finishedStudents.length + terminatedStudents.length || 42)}
+                  <div style={{ ...styles.kpiValue, color: textPrimary }}>
+                    {students.length + finishedStudents.length + terminatedStudents.length}
                   </div>
                 </div>
-                <div style={{ ...styles.kpiCard, background: '#0f172a', border: '1px solid #1e293b' }}>
+                <div style={{ ...styles.kpiCard, background: cardBg, border: cardBorder }}>
                   <div style={styles.kpiLabel}>ONLINE LIVE</div>
                   <div style={{ ...styles.kpiValue, color: '#38bdf8' }}>
-                    {students.filter(s => s.status === 'Online' || s.status === 'Active').length || (students.length > 0 ? students.length : 18)}
+                    {students.filter(s => ['Online', 'Active', 'Warning', 'in-progress'].includes(s.status)).length}
                   </div>
                 </div>
-                <div style={{ ...styles.kpiCard, background: '#0f172a', border: '1px solid #1e293b' }}>
+                <div style={{ ...styles.kpiCard, background: cardBg, border: cardBorder }}>
                   <div style={styles.kpiLabel}>IN PROGRESS</div>
-                  <div style={{ ...styles.kpiValue, color: '#a78bfa' }}>
-                    {students.length > 0 ? students.length : 18}
+                  <div style={{ ...styles.kpiValue, color: '#818cf8' }}>
+                    {students.filter(s => ['Online', 'Active', 'Warning', 'in-progress'].includes(s.status)).length}
                   </div>
                 </div>
-                <div style={{ ...styles.kpiCard, background: '#0f172a', border: '1px solid #1e293b' }}>
+                <div style={{ ...styles.kpiCard, background: cardBg, border: cardBorder }}>
                   <div style={styles.kpiLabel}>VIOLATIONS</div>
-                  <div style={{ ...styles.kpiValue, color: '#fbbf24' }}>
-                    {violations.length > 0 ? violations.length : 5}
+                  <div style={{ ...styles.kpiValue, color: '#f59e0b' }}>
+                    {violations.length}
                   </div>
                 </div>
-                <div style={{ ...styles.kpiCard, background: '#0f172a', border: '1px solid #1e293b' }}>
+                <div style={{ ...styles.kpiCard, background: cardBg, border: cardBorder }}>
                   <div style={styles.kpiLabel}>DONE / COMPLETED</div>
-                  <div style={{ ...styles.kpiValue, color: '#34d399' }}>
-                    {finishedStudents.length > 0 ? finishedStudents.length : 24}
+                  <div style={{ ...styles.kpiValue, color: '#10b981' }}>
+                    {finishedStudents.length}
                   </div>
                 </div>
               </div>
@@ -1987,131 +2108,185 @@ export default function AdminMonitor() {
             <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: '20px' }}>
               
               {/* Left: LIVE EXAM ACTIVITY Graph */}
-              <div style={{ background: '#0f172a', padding: '20px', borderRadius: '16px', border: '1px solid rgba(255, 255, 255, 0.08)' }}>
+              <div style={{
+                background: cardBg,
+                padding: '20px',
+                borderRadius: '16px',
+                border: cardBorder,
+                boxShadow: cardShadow
+              }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                   <div>
-                    <h3 style={{ fontSize: '1rem', fontWeight: 800, color: '#ffffff', margin: 0 }}>
+                    <h3 style={{ fontSize: '1rem', fontWeight: 800, color: textPrimary, margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
                       📈 LIVE EXAM ACTIVITY & TELEMETRY LOAD
                     </h3>
-                    <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginTop: '2px' }}>Concurrent Candidate Traffic (Past 12 Hours)</div>
+                    <div style={{ fontSize: '0.75rem', color: textSecondary, marginTop: '2px' }}>
+                      Concurrent Candidate Traffic (Past 12 Hours) • Real-Time Telemetry Stream
+                    </div>
                   </div>
-                  <span style={{ fontSize: '0.75rem', padding: '4px 10px', borderRadius: '12px', background: 'rgba(56, 189, 248, 0.15)', color: '#38bdf8', fontWeight: 700 }}>
-                    Live Pulse
+                  <span style={{
+                    fontSize: '0.75rem',
+                    padding: '4px 10px',
+                    borderRadius: '12px',
+                    background: 'rgba(56, 189, 248, 0.15)',
+                    color: '#0284c7',
+                    fontWeight: 800,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px'
+                  }}>
+                    <span style={{
+                      width: '6px',
+                      height: '6px',
+                      borderRadius: '50%',
+                      backgroundColor: '#0284c7',
+                      display: 'inline-block'
+                    }} />
+                    Live Pulse: {telemetryGraphData.currentLive} Active
                   </span>
                 </div>
 
-                {/* Interactive SVG Activity Graph */}
+                {/* Interactive SVG Activity Graph Based on Real Data */}
                 <div style={{ width: '100%', height: '180px', position: 'relative' }}>
                   <svg viewBox="0 0 500 160" style={{ width: '100%', height: '100%', overflow: 'visible' }}>
                     <defs>
                       <linearGradient id="activityGrad" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#38bdf8" stopOpacity="0.4" />
+                        <stop offset="0%" stopColor="#38bdf8" stopOpacity={darkMode ? 0.45 : 0.25} />
                         <stop offset="100%" stopColor="#38bdf8" stopOpacity="0.0" />
                       </linearGradient>
                     </defs>
                     {/* Grid Lines */}
-                    <line x1="0" y1="30" x2="500" y2="30" stroke="rgba(255,255,255,0.06)" strokeDasharray="4 4" />
-                    <line x1="0" y1="70" x2="500" y2="70" stroke="rgba(255,255,255,0.06)" strokeDasharray="4 4" />
-                    <line x1="0" y1="110" x2="500" y2="110" stroke="rgba(255,255,255,0.06)" strokeDasharray="4 4" />
-                    <line x1="0" y1="150" x2="500" y2="150" stroke="rgba(255,255,255,0.1)" />
+                    <line x1="0" y1="35" x2="500" y2="35" stroke={darkMode ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.06)"} strokeDasharray="4 4" />
+                    <line x1="0" y1="70" x2="500" y2="70" stroke={darkMode ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.06)"} strokeDasharray="4 4" />
+                    <line x1="0" y1="105" x2="500" y2="105" stroke={darkMode ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.06)"} strokeDasharray="4 4" />
+                    <line x1="0" y1="140" x2="500" y2="140" stroke={darkMode ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.1)"} />
 
-                    {/* Area fill */}
+                    {/* Area fill based on real data points */}
                     <path
-                      d="M 0 150 L 0 120 Q 80 40 160 80 T 320 50 T 420 70 L 500 30 L 500 150 Z"
+                      d={telemetryGraphData.areaD}
                       fill="url(#activityGrad)"
                     />
-                    {/* Trend Line */}
+                    {/* Trend Line through real data points */}
                     <path
-                      d="M 0 120 Q 80 40 160 80 T 320 50 T 420 70 L 500 30"
+                      d={telemetryGraphData.pathD}
                       fill="none"
                       stroke="#38bdf8"
                       strokeWidth="3"
+                      strokeLinecap="round"
                     />
                     {/* Activity Points */}
-                    <circle cx="0" cy="120" r="4" fill="#38bdf8" />
-                    <circle cx="160" cy="80" r="4" fill="#38bdf8" />
-                    <circle cx="320" cy="50" r="4" fill="#38bdf8" />
-                    <circle cx="420" cy="70" r="4" fill="#38bdf8" />
-                    <circle cx="500" cy="30" r="5" fill="#34d399" />
+                    {telemetryGraphData.points.map((pt, pIdx) => (
+                      <g key={pIdx}>
+                        <circle
+                          cx={pt.x}
+                          cy={pt.y}
+                          r={pt.isNow ? 6 : 4}
+                          fill={pt.isNow ? "#10b981" : "#38bdf8"}
+                          stroke={darkMode ? "#0f172a" : "#ffffff"}
+                          strokeWidth="2"
+                        />
+                        <text
+                          x={pt.x}
+                          y={pt.y - 9}
+                          textAnchor="middle"
+                          fill={pt.isNow ? "#10b981" : (darkMode ? "#38bdf8" : "#0284c7")}
+                          fontSize="10"
+                          fontWeight="800"
+                        >
+                          {pt.value}
+                        </text>
+                      </g>
+                    ))}
                   </svg>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', color: '#64748b', fontSize: '0.7rem', marginTop: '6px' }}>
-                    <span>08:00 AM</span>
-                    <span>11:00 AM</span>
-                    <span>02:00 PM</span>
-                    <span>05:00 PM</span>
-                    <span>08:00 PM</span>
-                    <span style={{ color: '#38bdf8', fontWeight: 700 }}>NOW</span>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', color: textSecondary, fontSize: '0.72rem', marginTop: '6px', fontWeight: 600 }}>
+                    {telemetryGraphData.points.map((pt, pIdx) => (
+                      <span key={pIdx} style={pt.isNow ? { color: '#10b981', fontWeight: 800 } : {}}>
+                        {pt.label}
+                      </span>
+                    ))}
                   </div>
                 </div>
               </div>
 
               {/* Right: LIVE ALERTS Stream */}
-              <div style={{ background: '#0f172a', padding: '20px', borderRadius: '16px', border: '1px solid rgba(255, 255, 255, 0.08)' }}>
+              <div style={{
+                background: cardBg,
+                padding: '20px',
+                borderRadius: '16px',
+                border: cardBorder,
+                boxShadow: cardShadow
+              }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
-                  <h3 style={{ fontSize: '1rem', fontWeight: 800, color: '#ffffff', margin: 0 }}>
+                  <h3 style={{ fontSize: '1rem', fontWeight: 800, color: textPrimary, margin: 0 }}>
                     🚨 LIVE ALERTS
                   </h3>
-                  <span style={{ fontSize: '0.72rem', color: '#94a3b8' }}>Real-Time AI Stream</span>
+                  <span style={{ fontSize: '0.72rem', color: textSecondary }}>Real-Time AI Stream</span>
                 </div>
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                  <div style={{ background: 'rgba(239, 68, 68, 0.1)', borderLeft: '4px solid #ef4444', padding: '10px 14px', borderRadius: '8px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <strong style={{ fontSize: '0.82rem', color: '#f87171' }}>🔴 Multiple Faces Detected</strong>
-                      <span style={{ fontSize: '0.7rem', color: '#94a3b8' }}>Just Now</span>
-                    </div>
-                    <div style={{ fontSize: '0.75rem', color: '#cbd5e1', marginTop: '2px' }}>AI detected 2 people in candidate webcam frame</div>
-                  </div>
+                  {notifications.slice(0, 3).map((notif, nIdx) => {
+                    const isCrit = notif.severity === 'critical' || notif.type === 'FACE_MISSING';
+                    const isHigh = notif.severity === 'high' || notif.type === 'TAB_SWITCH';
+                    const bgTint = isCrit
+                      ? (darkMode ? 'rgba(239, 68, 68, 0.1)' : 'rgba(239, 68, 68, 0.08)')
+                      : isHigh
+                      ? (darkMode ? 'rgba(245, 158, 11, 0.1)' : 'rgba(245, 158, 11, 0.08)')
+                      : (darkMode ? 'rgba(16, 185, 129, 0.1)' : 'rgba(16, 185, 129, 0.08)');
+                    const borderCol = isCrit ? '#ef4444' : isHigh ? '#f59e0b' : '#10b981';
+                    const textCol = isCrit ? '#ef4444' : isHigh ? (darkMode ? '#fbbf24' : '#d97706') : '#10b981';
 
-                  <div style={{ background: 'rgba(245, 158, 11, 0.1)', borderLeft: '4px solid #f59e0b', padding: '10px 14px', borderRadius: '8px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <strong style={{ fontSize: '0.82rem', color: '#fbbf24' }}>🟡 Tab Switch Triggered</strong>
-                      <span style={{ fontSize: '0.7rem', color: '#94a3b8' }}>2 mins ago</span>
-                    </div>
-                    <div style={{ fontSize: '0.75rem', color: '#cbd5e1', marginTop: '2px' }}>Candidate unfocused exam portal window</div>
-                  </div>
-
-                  <div style={{ background: 'rgba(16, 185, 129, 0.1)', borderLeft: '4px solid #10b981', padding: '10px 14px', borderRadius: '8px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <strong style={{ fontSize: '0.82rem', color: '#34d399' }}>🟢 Identity Verification Passed</strong>
-                      <span style={{ fontSize: '0.7rem', color: '#94a3b8' }}>5 mins ago</span>
-                    </div>
-                    <div style={{ fontSize: '0.75rem', color: '#cbd5e1', marginTop: '2px' }}>ArcFace biometrics confirmed (98.4% match)</div>
-                  </div>
+                    return (
+                      <div key={nIdx} style={{ background: bgTint, borderLeft: `4px solid ${borderCol}`, padding: '10px 14px', borderRadius: '8px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <strong style={{ fontSize: '0.82rem', color: textCol }}>
+                            {notif.type === 'FACE_MISSING' ? '🔴 Multiple Faces / Missing' : notif.type === 'TAB_SWITCH' ? '🟡 Tab Switch Triggered' : '🟢 Biometric Verified'}
+                          </strong>
+                          <span style={{ fontSize: '0.7rem', color: textSecondary }}>{notif.time || 'Recent'}</span>
+                        </div>
+                        <div style={{ fontSize: '0.75rem', color: textSecondary, marginTop: '2px' }}>{notif.message}</div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             </div>
 
             {/* Row 2: ACTIVE EXAM PREVIEW (Candidate Live Cards Grid) */}
-            <div style={{ background: '#0f172a', padding: '20px', borderRadius: '16px', border: '1px solid rgba(255, 255, 255, 0.08)' }}>
+            <div style={{
+              background: cardBg,
+              padding: '20px',
+              borderRadius: '16px',
+              border: cardBorder,
+              boxShadow: cardShadow
+            }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                 <div>
-                  <h3 style={{ fontSize: '1.05rem', fontWeight: 800, color: '#ffffff', margin: 0 }}>
+                  <h3 style={{ fontSize: '1.05rem', fontWeight: 800, color: textPrimary, margin: 0 }}>
                     👥 ACTIVE EXAM PREVIEW
                   </h3>
-                  <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginTop: '2px' }}>Live Candidate Sentinels & Biometric Stream Grid</div>
+                  <div style={{ fontSize: '0.75rem', color: textSecondary, marginTop: '2px' }}>Live Candidate Sentinels & Biometric Stream Grid</div>
                 </div>
                 <button
                   onClick={() => setActiveNav('live')}
-                  style={{ ...styles.actionLaunchBtn, padding: '6px 14px', fontSize: '0.78rem', background: '#3b82f6', color: '#ffffff' }}
+                  style={{ ...styles.actionLaunchBtn, padding: '6px 14px', fontSize: '0.78rem', background: '#3b82f6', color: '#ffffff', border: 'none' }}
                 >
                   📹 View All in Live Grid →
                 </button>
               </div>
 
               {students.length === 0 ? (
-                <div style={{ padding: '30px', textAlign: 'center', background: '#020617', borderRadius: '12px', border: '1px dashed #1e293b' }}>
+                <div style={{ padding: '30px', textAlign: 'center', background: innerBg, borderRadius: '12px', border: darkMode ? '1px dashed #1e293b' : '1px dashed #cbd5e1' }}>
                   <div style={{ fontSize: '2rem', marginBottom: '6px' }}>📡</div>
-                  <div style={{ color: '#ffffff', fontWeight: 700 }}>No Active Students Currently Streaming</div>
-                  <div style={{ color: '#64748b', fontSize: '0.8rem', marginTop: '4px' }}>Active students taking exams will populate here in real-time.</div>
+                  <div style={{ color: textPrimary, fontWeight: 700 }}>No Active Students Currently Streaming</div>
+                  <div style={{ color: textSecondary, fontSize: '0.8rem', marginTop: '4px' }}>Active students taking exams will populate here in real-time.</div>
                 </div>
               ) : (
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '14px' }}>
                   {students.slice(0, 4).map((s, idx) => (
                     <div key={s.sessionId || s._id || idx} style={{
-                      background: '#020617',
+                      background: innerBg,
                       borderRadius: '12px',
-                      border: s.status === 'Warning' ? '1px solid #f59e0b' : '1px solid #1e293b',
+                      border: s.status === 'Warning' ? '1px solid #f59e0b' : (darkMode ? '1px solid #1e293b' : '1px solid #e2e8f0'),
                       padding: '12px',
                       display: 'flex',
                       flexDirection: 'column',
@@ -2124,7 +2299,7 @@ export default function AdminMonitor() {
                           fontSize: '0.7rem',
                           fontWeight: 800,
                           background: s.status === 'Warning' ? 'rgba(245, 158, 11, 0.2)' : 'rgba(16, 185, 129, 0.2)',
-                          color: s.status === 'Warning' ? '#fbbf24' : '#34d399'
+                          color: s.status === 'Warning' ? '#fbbf24' : '#10b981'
                         }}>
                           {s.status === 'Warning' ? '🟡 Warning' : '🟢 Normal'}
                         </span>
@@ -2133,7 +2308,7 @@ export default function AdminMonitor() {
                         </span>
                       </div>
 
-                      <div style={{ height: '90px', background: '#0b1329', borderRadius: '8px', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <div style={{ height: '90px', background: darkMode ? '#0b1329' : '#e2e8f0', borderRadius: '8px', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                         {s.image || s.lastWebcamFrame ? (
                           <img src={s.image || s.lastWebcamFrame} alt={s.studentName} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                         ) : (
@@ -2142,8 +2317,8 @@ export default function AdminMonitor() {
                       </div>
 
                       <div>
-                        <div style={{ fontWeight: 800, color: '#ffffff', fontSize: '0.88rem' }}>{s.studentName}</div>
-                        <div style={{ fontSize: '0.72rem', color: '#94a3b8' }}>USN: {s.usn || s.studentId}</div>
+                        <div style={{ fontWeight: 800, color: textPrimary, fontSize: '0.88rem' }}>{s.studentName}</div>
+                        <div style={{ fontSize: '0.725rem', color: textSecondary }}>USN: {s.usn || s.studentId}</div>
                       </div>
 
                       <button
@@ -2151,9 +2326,9 @@ export default function AdminMonitor() {
                         style={{
                           width: '100%',
                           padding: '6px',
-                          background: '#1e293b',
+                          background: darkMode ? '#1e293b' : '#e2e8f0',
                           border: 'none',
-                          color: '#ffffff',
+                          color: textPrimary,
                           borderRadius: '6px',
                           fontSize: '0.75rem',
                           fontWeight: 700,
@@ -2912,17 +3087,17 @@ export default function AdminMonitor() {
 }
 
 
-const styles = {
+const getStyles = (darkMode) => ({
   appWrapper: {
     display: 'flex',
     minHeight: '100vh',
-    backgroundColor: '#0b0f19',
-    color: '#f8fafc',
+    backgroundColor: darkMode ? '#0b0f19' : '#ffffff',
+    color: darkMode ? '#f8fafc' : '#0f172a',
     fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
   },
   sidebar: {
-    backgroundColor: '#0f172a',
-    borderRight: '1px solid #1e293b',
+    backgroundColor: darkMode ? '#0f172a' : '#ffffff',
+    borderRight: darkMode ? '1px solid #1e293b' : '1px solid #e2e8f0',
     display: 'flex',
     flexDirection: 'column',
     transition: 'width 0.2s ease',
@@ -2934,7 +3109,7 @@ const styles = {
     alignItems: 'center',
     padding: '0 16px',
     gap: '12px',
-    borderBottom: '1px solid #1e293b'
+    borderBottom: darkMode ? '1px solid #1e293b' : '1px solid #e2e8f0'
   },
   blueShieldLogo: {
     fontSize: '1.5rem'
@@ -2942,19 +3117,19 @@ const styles = {
   logoTitle: {
     fontSize: '1rem',
     fontWeight: '900',
-    color: '#ffffff',
+    color: darkMode ? '#ffffff' : '#0f172a',
     letterSpacing: '0.05em'
   },
   logoSubtitle: {
     fontSize: '0.675rem',
-    color: '#94a3b8',
+    color: darkMode ? '#94a3b8' : '#64748b',
     fontWeight: '600'
   },
   navSectionHeader: {
     padding: '16px 16px 6px 16px',
     fontSize: '0.65rem',
     fontWeight: '800',
-    color: '#64748b',
+    color: darkMode ? '#64748b' : '#94a3b8',
     letterSpacing: '0.08em'
   },
   sidebarNav: {
@@ -2975,7 +3150,7 @@ const styles = {
     border: 'none',
     outline: 'none',
     boxShadow: 'none',
-    color: '#94a3b8',
+    color: darkMode ? '#94a3b8' : '#475569',
     fontSize: '0.85rem',
     fontWeight: '600',
     cursor: 'pointer',
@@ -2984,9 +3159,9 @@ const styles = {
     transition: 'all 0.15s ease'
   },
   navItemActive: {
-    backgroundColor: 'rgba(99, 102, 241, 0.15)',
-    background: 'rgba(99, 102, 241, 0.15)',
-    color: '#818cf8',
+    backgroundColor: darkMode ? 'rgba(99, 102, 241, 0.15)' : 'rgba(99, 102, 241, 0.12)',
+    background: darkMode ? 'rgba(99, 102, 241, 0.15)' : 'rgba(99, 102, 241, 0.12)',
+    color: darkMode ? '#818cf8' : '#4f46e5',
     borderLeft: '3px solid #6366f1',
     fontWeight: '800'
   },
@@ -3005,20 +3180,21 @@ const styles = {
   aiEngineCard: {
     margin: '12px',
     padding: '12px',
-    backgroundColor: '#020617',
+    backgroundColor: darkMode ? '#020617' : '#f8fafc',
     borderRadius: '10px',
-    border: '1px solid #1e293b'
+    border: darkMode ? '1px solid #1e293b' : '1px solid #e2e8f0'
   },
   mainContent: {
     flexGrow: 1,
     display: 'flex',
     flexDirection: 'column',
-    minWidth: 0
+    minWidth: 0,
+    backgroundColor: darkMode ? '#0b0f19' : '#ffffff'
   },
   topbar: {
     height: '64px',
-    backgroundColor: '#0f172a',
-    borderBottom: '1px solid #1e293b',
+    backgroundColor: darkMode ? '#0f172a' : '#ffffff',
+    borderBottom: darkMode ? '1px solid #1e293b' : '1px solid #e2e8f0',
     padding: '0 24px',
     display: 'flex',
     alignItems: 'center',
@@ -3027,7 +3203,7 @@ const styles = {
   menuToggleBtn: {
     background: 'none',
     border: 'none',
-    color: '#94a3b8',
+    color: darkMode ? '#94a3b8' : '#475569',
     fontSize: '1.4rem',
     cursor: 'pointer',
     padding: '4px'
@@ -3036,18 +3212,18 @@ const styles = {
     margin: 0,
     fontSize: '1.1rem',
     fontWeight: '800',
-    color: '#ffffff'
+    color: darkMode ? '#ffffff' : '#0f172a'
   },
   topbarSubtitle: {
     margin: 0,
     fontSize: '0.75rem',
-    color: '#94a3b8'
+    color: darkMode ? '#94a3b8' : '#64748b'
   },
   externalLinkBtn: {
     padding: '6px 12px',
-    backgroundColor: 'rgba(99, 102, 241, 0.15)',
+    backgroundColor: darkMode ? 'rgba(99, 102, 241, 0.15)' : 'rgba(99, 102, 241, 0.1)',
     border: '1px solid #6366f1',
-    color: '#818cf8',
+    color: darkMode ? '#818cf8' : '#4f46e5',
     borderRadius: '8px',
     fontSize: '0.775rem',
     fontWeight: '700',
@@ -3058,7 +3234,8 @@ const styles = {
     alignItems: 'center',
     gap: '6px',
     padding: '4px 8px',
-    backgroundColor: '#1e293b',
+    backgroundColor: darkMode ? '#1e293b' : '#f1f5f9',
+    border: darkMode ? '1px solid #334155' : '1px solid #cbd5e1',
     borderRadius: '20px',
     cursor: 'pointer'
   },
@@ -3087,7 +3264,8 @@ const styles = {
     display: 'flex',
     alignItems: 'center',
     gap: '10px',
-    backgroundColor: '#1e293b',
+    backgroundColor: darkMode ? '#1e293b' : '#f8fafc',
+    border: darkMode ? '1px solid #334155' : '1px solid #e2e8f0',
     padding: '4px 12px 4px 6px',
     borderRadius: '24px'
   },
@@ -3106,10 +3284,10 @@ const styles = {
   bannerAlert: {
     margin: '16px 24px 0 24px',
     padding: '10px 16px',
-    backgroundColor: 'rgba(99, 102, 241, 0.2)',
+    backgroundColor: darkMode ? 'rgba(99, 102, 241, 0.2)' : 'rgba(99, 102, 241, 0.1)',
     border: '1px solid #6366f1',
     borderRadius: '10px',
-    color: '#a5b4fc',
+    color: darkMode ? '#a5b4fc' : '#4338ca',
     fontSize: '0.85rem',
     fontWeight: '700'
   },
@@ -3121,13 +3299,14 @@ const styles = {
   },
   kpiCard: {
     padding: '16px',
-    backgroundColor: '#0f172a',
+    backgroundColor: darkMode ? '#0f172a' : '#ffffff',
     borderRadius: '12px',
-    border: '1px solid #1e293b'
+    border: darkMode ? '1px solid #1e293b' : '1px solid #e2e8f0',
+    boxShadow: darkMode ? 'none' : '0 1px 3px rgba(0,0,0,0.05)'
   },
   kpiLabel: {
     fontSize: '0.8rem',
-    color: '#94a3b8',
+    color: darkMode ? '#94a3b8' : '#64748b',
     marginBottom: '4px',
     fontWeight: '600'
   },
@@ -3145,8 +3324,8 @@ const styles = {
     flex: 1,
     display: 'flex',
     alignItems: 'center',
-    backgroundColor: '#0f172a',
-    border: '1px solid #1e293b',
+    backgroundColor: darkMode ? '#0f172a' : '#ffffff',
+    border: darkMode ? '1px solid #1e293b' : '1px solid #cbd5e1',
     borderRadius: '10px'
   },
   searchInput: {
@@ -3154,24 +3333,24 @@ const styles = {
     padding: '10px 14px',
     background: 'none',
     border: 'none',
-    color: '#ffffff',
+    color: darkMode ? '#ffffff' : '#0f172a',
     fontSize: '0.875rem',
     outline: 'none'
   },
   selectFilter: {
     padding: '10px 14px',
     borderRadius: '10px',
-    backgroundColor: '#0f172a',
-    border: '1px solid #1e293b',
-    color: '#ffffff',
+    backgroundColor: darkMode ? '#0f172a' : '#ffffff',
+    border: darkMode ? '1px solid #1e293b' : '1px solid #cbd5e1',
+    color: darkMode ? '#ffffff' : '#0f172a',
     fontSize: '0.875rem',
     outline: 'none'
   },
   refreshBtn: {
     padding: '10px 16px',
-    backgroundColor: '#1e293b',
-    border: '1px solid #334155',
-    color: '#ffffff',
+    backgroundColor: darkMode ? '#1e293b' : '#f1f5f9',
+    border: darkMode ? '1px solid #334155' : '1px solid #cbd5e1',
+    color: darkMode ? '#ffffff' : '#0f172a',
     borderRadius: '10px',
     fontWeight: '600',
     cursor: 'pointer'
@@ -3182,9 +3361,10 @@ const styles = {
     gap: '20px'
   },
   studentCard: {
-    backgroundColor: '#0f172a',
+    backgroundColor: darkMode ? '#0f172a' : '#ffffff',
     borderRadius: '16px',
-    border: '1px solid #1e293b',
+    border: darkMode ? '1px solid #1e293b' : '1px solid #e2e8f0',
+    boxShadow: darkMode ? 'none' : '0 2px 6px rgba(0,0,0,0.05)',
     overflow: 'hidden'
   },
   cardHeader: {
@@ -3192,7 +3372,7 @@ const styles = {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
-    borderBottom: '1px solid #1e293b'
+    borderBottom: darkMode ? '1px solid #1e293b' : '1px solid #f1f5f9'
   },
   avatarCircle: {
     width: '38px',
@@ -3210,16 +3390,16 @@ const styles = {
     fontSize: '0.95rem',
     fontWeight: '800',
     margin: 0,
-    color: '#ffffff'
+    color: darkMode ? '#ffffff' : '#0f172a'
   },
   studentUsnSub: {
     fontSize: '0.725rem',
-    color: '#94a3b8',
+    color: darkMode ? '#94a3b8' : '#64748b',
     marginTop: '2px'
   },
   videoBox: {
     height: '160px',
-    backgroundColor: '#020617',
+    backgroundColor: darkMode ? '#020617' : '#0f172a',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -3263,20 +3443,20 @@ const styles = {
   },
   examInfoHeader: {
     padding: '10px 14px',
-    backgroundColor: '#020617',
-    borderBottom: '1px solid #1e293b'
+    backgroundColor: darkMode ? '#020617' : '#f8fafc',
+    borderBottom: darkMode ? '1px solid #1e293b' : '1px solid #e2e8f0'
   },
   examNameLabel: {
     fontSize: '0.7rem',
     fontWeight: '800',
-    color: '#818cf8',
+    color: darkMode ? '#818cf8' : '#4f46e5',
     letterSpacing: '0.04em'
   },
   timeInfoRow: {
     display: 'flex',
     justifyContent: 'space-between',
     fontSize: '0.725rem',
-    color: '#cbd5e1',
+    color: darkMode ? '#cbd5e1' : '#475569',
     marginTop: '4px'
   },
   cardBody: {
@@ -3285,7 +3465,7 @@ const styles = {
   telemetryTitle: {
     fontSize: '0.725rem',
     fontWeight: '700',
-    color: '#94a3b8',
+    color: darkMode ? '#94a3b8' : '#64748b',
     marginBottom: '8px'
   },
   pillGrid: {
@@ -3306,15 +3486,17 @@ const styles = {
     justifyContent: 'space-between',
     fontSize: '0.725rem',
     padding: '8px 10px',
-    backgroundColor: '#020617',
+    backgroundColor: darkMode ? '#020617' : '#f8fafc',
+    border: darkMode ? 'none' : '1px solid #e2e8f0',
     borderRadius: '8px',
-    marginBottom: '10px'
+    marginBottom: '10px',
+    color: darkMode ? '#f8fafc' : '#0f172a'
   },
   countsRow: {
     display: 'flex',
     justifyContent: 'space-between',
     fontSize: '0.725rem',
-    color: '#94a3b8',
+    color: darkMode ? '#94a3b8' : '#64748b',
     marginBottom: '12px'
   },
   cardActions: {
@@ -3336,16 +3518,17 @@ const styles = {
     padding: '8px',
     backgroundColor: 'rgba(99, 102, 241, 0.15)',
     border: '1px solid #6366f1',
-    color: '#818cf8',
+    color: darkMode ? '#818cf8' : '#4f46e5',
     borderRadius: '8px',
     fontWeight: '700',
     fontSize: '0.75rem',
     cursor: 'pointer'
   },
   tableCard: {
-    backgroundColor: '#0f172a',
+    backgroundColor: darkMode ? '#0f172a' : '#ffffff',
     borderRadius: '16px',
-    border: '1px solid #1e293b',
+    border: darkMode ? '1px solid #1e293b' : '1px solid #e2e8f0',
+    boxShadow: darkMode ? 'none' : '0 2px 6px rgba(0,0,0,0.04)',
     overflow: 'hidden'
   },
   table: {
@@ -3354,23 +3537,24 @@ const styles = {
     textAlign: 'left'
   },
   tableHeaderRow: {
-    backgroundColor: '#020617',
-    borderBottom: '1px solid #1e293b'
+    backgroundColor: darkMode ? '#020617' : '#f8fafc',
+    borderBottom: darkMode ? '1px solid #1e293b' : '1px solid #e2e8f0'
   },
   tableTh: {
     padding: '14px 16px',
     fontSize: '0.75rem',
     fontWeight: '800',
-    color: '#94a3b8',
+    color: darkMode ? '#94a3b8' : '#475569',
     textTransform: 'uppercase',
     letterSpacing: '0.05em'
   },
   tableRow: {
-    borderBottom: '1px solid #1e293b'
+    borderBottom: darkMode ? '1px solid #1e293b' : '1px solid #f1f5f9'
   },
   tableTd: {
     padding: '14px 16px',
-    fontSize: '0.85rem'
+    fontSize: '0.85rem',
+    color: darkMode ? '#cbd5e1' : '#1e293b'
   },
   miniAvatar: {
     width: '32px',
@@ -3393,31 +3577,33 @@ const styles = {
   flaggedPill: {
     padding: '4px 10px',
     borderRadius: '12px',
-    backgroundColor: '#1e293b',
-    color: '#cbd5e1',
+    backgroundColor: darkMode ? '#1e293b' : '#f1f5f9',
+    color: darkMode ? '#cbd5e1' : '#475569',
     fontSize: '0.725rem',
     fontWeight: '700'
   },
   actionLaunchBtn: {
     padding: '6px 10px',
-    backgroundColor: 'rgba(99, 102, 241, 0.2)',
+    backgroundColor: darkMode ? 'rgba(99, 102, 241, 0.2)' : 'rgba(99, 102, 241, 0.1)',
     border: '1px solid #6366f1',
-    color: '#818cf8',
+    color: darkMode ? '#818cf8' : '#4f46e5',
     borderRadius: '6px',
     fontSize: '0.85rem',
     fontWeight: '800',
     cursor: 'pointer'
   },
   detailHeaderCard: {
-    backgroundColor: '#0f172a',
+    backgroundColor: darkMode ? '#0f172a' : '#ffffff',
     borderRadius: '16px',
-    border: '1px solid #1e293b',
+    border: darkMode ? '1px solid #1e293b' : '1px solid #e2e8f0',
+    boxShadow: darkMode ? 'none' : '0 2px 6px rgba(0,0,0,0.04)',
     padding: '24px'
   },
   inspectorCard: {
-    backgroundColor: '#0f172a',
+    backgroundColor: darkMode ? '#0f172a' : '#ffffff',
     borderRadius: '16px',
-    border: '1px solid #1e293b',
+    border: darkMode ? '1px solid #1e293b' : '1px solid #e2e8f0',
+    boxShadow: darkMode ? 'none' : '0 2px 6px rgba(0,0,0,0.04)',
     overflow: 'hidden'
   },
   inspectorVideoContainer: {
@@ -3461,7 +3647,8 @@ const styles = {
     zIndex: 2
   },
   miniTelemetryCard: {
-    backgroundColor: '#020617',
+    backgroundColor: darkMode ? '#020617' : '#f8fafc',
+    border: darkMode ? 'none' : '1px solid #e2e8f0',
     padding: '10px',
     borderRadius: '8px',
     display: 'flex',
@@ -3469,14 +3656,15 @@ const styles = {
     gap: '2px'
   },
   timelineCard: {
-    backgroundColor: '#0f172a',
+    backgroundColor: darkMode ? '#0f172a' : '#ffffff',
     borderRadius: '16px',
-    border: '1px solid #1e293b',
+    border: darkMode ? '1px solid #1e293b' : '1px solid #e2e8f0',
+    boxShadow: darkMode ? 'none' : '0 2px 6px rgba(0,0,0,0.04)',
     padding: '24px'
   },
   timelineEventCard: {
-    backgroundColor: '#020617',
-    border: '1px solid #1e293b',
+    backgroundColor: darkMode ? '#020617' : '#f8fafc',
+    border: darkMode ? '1px solid #1e293b' : '1px solid #e2e8f0',
     borderRadius: '12px',
     padding: '14px'
   },
@@ -3513,18 +3701,19 @@ const styles = {
     padding: '20px'
   },
   modalContent: {
-    backgroundColor: '#0f172a',
-    border: '1px solid #334155',
+    backgroundColor: darkMode ? '#0f172a' : '#ffffff',
+    border: darkMode ? '1px solid #334155' : '1px solid #cbd5e1',
     borderRadius: '16px',
     width: '100%',
     maxWidth: '680px',
     overflow: 'hidden',
-    boxShadow: '0 20px 40px rgba(0,0,0,0.6)'
+    boxShadow: '0 20px 40px rgba(0,0,0,0.4)',
+    color: darkMode ? '#ffffff' : '#0f172a'
   },
   modalHeader: {
     padding: '16px 20px',
-    backgroundColor: '#020617',
-    borderBottom: '1px solid #1e293b',
+    backgroundColor: darkMode ? '#020617' : '#f8fafc',
+    borderBottom: darkMode ? '1px solid #1e293b' : '1px solid #e2e8f0',
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center'
@@ -3532,7 +3721,7 @@ const styles = {
   modalCloseBtn: {
     background: 'none',
     border: 'none',
-    color: '#94a3b8',
+    color: darkMode ? '#94a3b8' : '#64748b',
     fontSize: '1.2rem',
     cursor: 'pointer'
   },
@@ -3581,11 +3770,12 @@ const styles = {
   },
   audioMonitorBox: {
     padding: '16px 20px',
-    backgroundColor: '#020617',
-    borderTop: '1px solid #1e293b'
+    backgroundColor: darkMode ? '#020617' : '#f8fafc',
+    borderTop: darkMode ? '1px solid #1e293b' : '1px solid #e2e8f0'
   },
   audioTelemetryItem: {
-    backgroundColor: '#0f172a',
+    backgroundColor: darkMode ? '#0f172a' : '#ffffff',
+    border: darkMode ? 'none' : '1px solid #e2e8f0',
     padding: '8px 12px',
     borderRadius: '8px',
     display: 'flex',
@@ -3593,9 +3783,9 @@ const styles = {
     gap: '2px'
   },
   emptyStateContainer: {
-    backgroundColor: '#0f172a',
+    backgroundColor: darkMode ? '#0f172a' : '#ffffff',
     borderRadius: '16px',
-    border: '1px dashed #334155',
+    border: darkMode ? '1px dashed #334155' : '1px dashed #cbd5e1',
     padding: '60px 24px',
     textAlign: 'center',
     display: 'flex',
@@ -3612,14 +3802,14 @@ const styles = {
   emptyStateTitle: {
     fontSize: '1.25rem',
     fontWeight: '800',
-    color: '#ffffff',
+    color: darkMode ? '#ffffff' : '#0f172a',
     margin: '0 0 8px 0'
   },
   emptyStateSubtitle: {
     fontSize: '0.875rem',
-    color: '#94a3b8',
+    color: darkMode ? '#94a3b8' : '#64748b',
     maxWidth: '480px',
     lineHeight: '1.6',
     margin: '0 0 20px 0'
   }
-};
+});

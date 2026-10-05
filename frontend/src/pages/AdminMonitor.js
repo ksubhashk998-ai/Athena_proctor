@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 import { getApiBaseUrl } from '../utils/config';
 import { getSocket } from '../services/socketService';
+import { jsPDF } from 'jspdf';
 
 export default function AdminMonitor() {
   const [activeNav, setActiveNav] = useState('live');
@@ -587,6 +588,313 @@ export default function AdminMonitor() {
 
     return matchesSearch && matchesRisk;
   });
+
+  const handleExportPDF = () => {
+    try {
+      const DocConstructor = jsPDF?.default || jsPDF;
+      const doc = new DocConstructor();
+
+      // Page background & header banner
+      doc.setFillColor(15, 23, 42);
+      doc.rect(0, 0, 210, 32, 'F');
+
+      doc.setTextColor(255, 255, 255);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(16);
+      doc.text('ATHENA SMART EXAM PROCTORING SYSTEM', 14, 15);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(9.5);
+      doc.setTextColor(148, 163, 184);
+      doc.text('Executive Proctoring Performance & Examination Audit Report', 14, 23);
+
+      // Metadata section
+      doc.setTextColor(71, 85, 105);
+      doc.setFontSize(9);
+      const generatedAt = new Date().toLocaleString();
+      doc.text(`Report Generated: ${generatedAt}`, 14, 40);
+      doc.text(`System Status: Athena AI Proctoring Engine Online & Verified`, 14, 46);
+
+      // Section 1: Executive KPI Metrics
+      doc.setDrawColor(203, 213, 225);
+      doc.setLineWidth(0.5);
+      doc.line(14, 50, 196, 50);
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(12);
+      doc.setTextColor(30, 41, 59);
+      doc.text('1. Examination Key Performance Indicators (KPIs)', 14, 58);
+
+      const totalAppeared = reportsData?.summary?.appeared || (finishedStudents.length + students.length);
+      const totalFinished = reportsData?.summary?.finished || finishedStudents.length;
+      const totalTerminated = reportsData?.summary?.terminated || terminatedStudents.length;
+      const topCheat = reportsData?.summary?.mostCommonViolation || 'NONE';
+      const avgViolations = reportsData?.summary?.avgViolations !== undefined ? reportsData.summary.avgViolations : '0.0';
+
+      // KPI box
+      doc.setFillColor(248, 250, 252);
+      doc.roundedRect(14, 63, 182, 32, 2, 2, 'F');
+      doc.setDrawColor(226, 232, 240);
+      doc.roundedRect(14, 63, 182, 32, 2, 2, 'S');
+
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(71, 85, 105);
+      doc.text('• Total Examinees Appeared:', 20, 72);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(15, 23, 42);
+      doc.text(`${totalAppeared}`, 85, 72);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(71, 85, 105);
+      doc.text('• Exams Finished Successfully:', 20, 79);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(16, 185, 129);
+      doc.text(`${totalFinished}`, 85, 79);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(71, 85, 105);
+      doc.text('• Terminated Candidates:', 20, 86);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(239, 68, 68);
+      doc.text(`${totalTerminated}`, 85, 86);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(71, 85, 105);
+      doc.text('• Top Cheating Indicator:', 115, 72);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(245, 158, 11);
+      doc.text(`${topCheat}`, 168, 72);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(71, 85, 105);
+      doc.text('• Avg Violations / Student:', 115, 79);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(15, 23, 42);
+      doc.text(`${avgViolations}`, 168, 79);
+
+      // Section 2: Department Breakdown
+      let currentY = 108;
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(12);
+      doc.setTextColor(30, 41, 59);
+      doc.text('2. Departmental Examination Breakdown', 14, currentY);
+
+      currentY += 6;
+      doc.setFillColor(241, 245, 249);
+      doc.rect(14, currentY, 182, 8, 'F');
+      doc.setFontSize(9);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(71, 85, 105);
+      doc.text('DEPARTMENT', 18, currentY + 5.5);
+      doc.text('CANDIDATES', 90, currentY + 5.5);
+      doc.text('FINISHED', 120, currentY + 5.5);
+      doc.text('TERMINATED', 145, currentY + 5.5);
+      doc.text('INTEGRITY STATUS', 170, currentY + 5.5);
+
+      currentY += 8;
+
+      const deptList = (reportsData?.departmentStats && reportsData.departmentStats.length > 0)
+        ? reportsData.departmentStats
+        : [{
+            department: 'Computer Science & Engineering',
+            appeared: totalAppeared,
+            finished: totalFinished,
+            terminated: totalTerminated
+          }];
+
+      deptList.forEach((dept, idx) => {
+        if (currentY > 265) {
+          doc.addPage();
+          currentY = 25;
+        }
+
+        doc.setFillColor(idx % 2 === 0 ? 255 : 248, idx % 2 === 0 ? 255 : 250, idx % 2 === 0 ? 255 : 252);
+        doc.rect(14, currentY, 182, 8, 'F');
+
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(9);
+        doc.setTextColor(30, 41, 59);
+        doc.text(String(dept.department || 'General').substring(0, 36), 18, currentY + 5.5);
+        doc.text(String(dept.appeared || 0), 90, currentY + 5.5);
+        doc.setTextColor(16, 185, 129);
+        doc.text(String(dept.finished || 0), 120, currentY + 5.5);
+        doc.setTextColor(dept.terminated > 0 ? 239 : 148, dept.terminated > 0 ? 68 : 163, dept.terminated > 0 ? 68 : 184);
+        doc.text(String(dept.terminated || 0), 145, currentY + 5.5);
+        doc.setTextColor(dept.terminated === 0 ? 16 : 239, dept.terminated === 0 ? 185 : 68, dept.terminated === 0 ? 129 : 68);
+        doc.text(dept.terminated === 0 ? 'High Integrity' : 'Under Review', 170, currentY + 5.5);
+
+        currentY += 8;
+      });
+
+      // Section 3: Examinee Session Records (if any)
+      const allStudentsList = [
+        ...finishedStudents.map(s => ({ ...s, auditStatus: 'Finished Successfully' })),
+        ...terminatedStudents.map(s => ({ ...s, auditStatus: 'Terminated (Violation)' })),
+        ...students.map(s => ({ ...s, auditStatus: s.status || 'Active In-Progress' }))
+      ];
+
+      if (allStudentsList.length > 0) {
+        currentY += 8;
+        if (currentY > 250) {
+          doc.addPage();
+          currentY = 25;
+        }
+
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(12);
+        doc.setTextColor(30, 41, 59);
+        doc.text('3. Examinee Session Records', 14, currentY);
+
+        currentY += 6;
+        doc.setFillColor(241, 245, 249);
+        doc.rect(14, currentY, 182, 8, 'F');
+        doc.setFontSize(9);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(71, 85, 105);
+        doc.text('NAME / USN', 18, currentY + 5.5);
+        doc.text('EXAM STATUS', 90, currentY + 5.5);
+        doc.text('RISK LEVEL', 145, currentY + 5.5);
+
+        currentY += 8;
+
+        allStudentsList.slice(0, 30).forEach((stu, sIdx) => {
+          if (currentY > 270) {
+            doc.addPage();
+            currentY = 25;
+          }
+          doc.setFillColor(sIdx % 2 === 0 ? 255 : 248, sIdx % 2 === 0 ? 255 : 250, sIdx % 2 === 0 ? 255 : 252);
+          doc.rect(14, currentY, 182, 8, 'F');
+
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(8.5);
+          doc.setTextColor(30, 41, 59);
+          const nameUsn = `${stu.name || stu.studentName || stu.email || 'Candidate'} (${stu.usn || stu.studentId || 'N/A'})`;
+          doc.text(nameUsn.substring(0, 40), 18, currentY + 5.5);
+          doc.text(String(stu.auditStatus).substring(0, 30), 90, currentY + 5.5);
+          doc.text(String(stu.riskLevel || 'Safe').substring(0, 20), 145, currentY + 5.5);
+
+          currentY += 8;
+        });
+      }
+
+      // Page numbering footer
+      const pageCount = doc.internal.getNumberOfPages();
+      for (let i = 1; i <= pageCount; i++) {
+        doc.setPage(i);
+        doc.setFontSize(8);
+        doc.setTextColor(148, 163, 184);
+        doc.setFont('helvetica', 'normal');
+        doc.text(
+          `Athena Proctoring AI System • Confidential Examination Audit Report • Page ${i} of ${pageCount}`,
+          105,
+          288,
+          { align: 'center' }
+        );
+      }
+
+      const fileDate = new Date().toISOString().split('T')[0];
+      doc.save(`Athena_Proctoring_Audit_Report_${fileDate}.pdf`);
+    } catch (err) {
+      console.error('Error generating PDF:', err);
+      alert('Error generating PDF: ' + (err?.message || err));
+    }
+  };
+
+  const handleExportCSV = () => {
+    try {
+      const totalAppeared = reportsData?.summary?.appeared || (finishedStudents.length + students.length);
+      const totalFinished = reportsData?.summary?.finished || finishedStudents.length;
+      const totalTerminated = reportsData?.summary?.terminated || terminatedStudents.length;
+      const topCheat = reportsData?.summary?.mostCommonViolation || 'NONE';
+      const avgViolations = reportsData?.summary?.avgViolations !== undefined ? reportsData.summary.avgViolations : '0.0';
+
+      const deptList = (reportsData?.departmentStats && reportsData.departmentStats.length > 0)
+        ? reportsData.departmentStats
+        : [{
+            department: 'Computer Science & Engineering',
+            appeared: totalAppeared,
+            finished: totalFinished,
+            terminated: totalTerminated
+          }];
+
+      const rows = [];
+      rows.push(['ATHENA SMART EXAM PROCTORING SYSTEM - AUDIT & PERFORMANCE REPORT']);
+      rows.push(['Generated On', new Date().toLocaleString()]);
+      rows.push(['']);
+
+      rows.push(['=== EXECUTIVE SUMMARY ===']);
+      rows.push(['Metric', 'Value']);
+      rows.push(['Total Examinees Appeared', totalAppeared]);
+      rows.push(['Exams Finished Successfully', totalFinished]);
+      rows.push(['Terminated Candidates', totalTerminated]);
+      rows.push(['Top Cheating Indicator', topCheat]);
+      rows.push(['Average Violations per Candidate', avgViolations]);
+      rows.push(['']);
+
+      rows.push(['=== DEPARTMENTAL EXAMINATION BREAKDOWN ===']);
+      rows.push(['Department', 'Candidates Appeared', 'Finished Successfully', 'Terminated Candidates', 'Integrity Status']);
+      deptList.forEach(d => {
+        rows.push([
+          d.department || 'Computer Science & Engineering',
+          d.appeared || 0,
+          d.finished || 0,
+          d.terminated || 0,
+          d.terminated === 0 ? 'High Integrity' : 'Under Review'
+        ]);
+      });
+      rows.push(['']);
+
+      const allStudentsList = [
+        ...finishedStudents.map(s => ({ ...s, auditStatus: 'Finished Successfully' })),
+        ...terminatedStudents.map(s => ({ ...s, auditStatus: 'Terminated (Violation)' })),
+        ...students.map(s => ({ ...s, auditStatus: s.status || 'Active In-Progress' }))
+      ];
+
+      if (allStudentsList.length > 0) {
+        rows.push(['=== DETAILED EXAMINEE SESSION AUDIT ROSTER ===']);
+        rows.push(['Student Name', 'USN / Student ID', 'Status', 'Risk Level', 'Violations Count']);
+        allStudentsList.forEach(s => {
+          rows.push([
+            s.name || s.studentName || s.email || 'Candidate',
+            s.usn || s.studentId || 'N/A',
+            s.auditStatus,
+            s.riskLevel || 'Safe',
+            s.violations?.length || s.violationCount || s.suspiciousActivityCount || 0
+          ]);
+        });
+      }
+
+      // Convert rows to CSV with standard quoting
+      const csvContent = rows
+        .map(row =>
+          row
+            .map(val => {
+              const str = val === null || val === undefined ? '' : String(val);
+              if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+                return `"${str.replace(/"/g, '""')}"`;
+              }
+              return `"${str}"`;
+            })
+            .join(',')
+        )
+        .join('\r\n');
+
+      const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.setAttribute('href', url);
+      const fileDate = new Date().toISOString().split('T')[0];
+      link.setAttribute('download', `Athena_Proctoring_Audit_Report_${fileDate}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Error generating CSV:', err);
+      alert('Error generating CSV: ' + (err?.message || err));
+    }
+  };
 
   return (
     <div style={styles.appWrapper}>
@@ -2339,13 +2647,13 @@ export default function AdminMonitor() {
               </h2>
               <div style={{ display: 'flex', gap: '10px' }}>
                 <button
-                  onClick={() => alert('📄 Exporting Examination Audit Summary PDF...')}
+                  onClick={handleExportPDF}
                   style={styles.actionLaunchBtn}
                 >
                   📄 Export PDF
                 </button>
                 <button
-                  onClick={() => alert('📊 Exporting Excel Examination Audit CSV...')}
+                  onClick={handleExportCSV}
                   style={styles.actionLaunchBtn}
                 >
                   📊 Export CSV

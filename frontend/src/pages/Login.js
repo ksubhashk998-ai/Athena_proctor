@@ -144,6 +144,7 @@ function Login() {
   const navigate = useNavigate();
   const webcamRef = useRef(null);
 
+  const [loginRole, setLoginRole] = useState("student"); // "student" | "admin"
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -204,10 +205,10 @@ function Login() {
   }, []);
 
   useEffect(() => {
-    if (verificationStep === "face_verify") {
+    if (loginRole === "student" && verificationStep === "face_verify") {
       requestCameraPermission();
     }
-  }, [verificationStep, requestCameraPermission]);
+  }, [loginRole, verificationStep, requestCameraPermission]);
 
   // OTP State
   const [otpInput, setOtpInput] = useState("");
@@ -231,7 +232,6 @@ function Login() {
   const [forgotCooldown, setForgotCooldown] = useState(0);
 
   // Admin Login State
-  const [loginRole, setLoginRole] = useState("student"); // "student" | "admin"
   const [adminEmail, setAdminEmail] = useState("admin@proctor.com");
   const [adminPassword, setAdminPassword] = useState("Admin@123");
   const [showAdminPassword, setShowAdminPassword] = useState(false);
@@ -799,7 +799,16 @@ function Login() {
           </button>
           <button
             type="button"
-            onClick={() => setLoginRole("admin")}
+            onClick={() => {
+              if (webcamRef.current?.video?.srcObject) {
+                try {
+                  webcamRef.current.video.srcObject.getTracks().forEach(t => t.stop());
+                  webcamRef.current.video.srcObject = null;
+                } catch (e) {}
+              }
+              setCameraActive(false);
+              setLoginRole("admin");
+            }}
             style={{
               flex: 1,
               padding: "10px",
@@ -1029,7 +1038,7 @@ function Login() {
           )
         )}
 
-        {verificationStep === "forgot_password" && (
+        {loginRole === "student" && verificationStep === "forgot_password" && (
           <div>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
               <div style={styles.stepTitle}>🔑 Password Reset</div>
@@ -1235,7 +1244,7 @@ function Login() {
           </div>
         )}
 
-        {verificationStep === "otp_verify" && (
+        {loginRole === "student" && verificationStep === "otp_verify" && (
           <div>
             <div style={styles.stepTitle}>✉️ Step 2: Email OTP Verification</div>
             <p style={{ fontSize: "0.85rem", color: "#94a3b8", marginBottom: "16px", lineHeight: "1.5" }}>
@@ -1359,7 +1368,7 @@ function Login() {
           </div>
         )}
 
-        {verificationStep === "face_verify" && (
+        {loginRole === "student" && verificationStep === "face_verify" && (
           <div style={styles.faceVerifyContainer}>
             <div style={styles.stepTitle}>📷 Step 3: Face Identity Verification</div>
             <p style={{ fontSize: '0.8rem', color: '#cbd5e1', marginBottom: '14px' }}>
@@ -1430,7 +1439,7 @@ function Login() {
                 disabled={faceVerifying}
                 style={{ ...styles.loginButton, flex: 2 }}
               >
-                {faceVerifying ? "Verifying 30-Frame ArcFace..." : "📸 Verify Face"}
+                {faceVerifying ? "Verifying 30-Frame ArcFace..." : "Verify Face"}
               </button>
 
               <button
@@ -1484,7 +1493,7 @@ function Login() {
                   boxShadow: '0 4px 14px rgba(124, 58, 237, 0.4)'
                 }}
               >
-                🔄 Re-Enroll Face
+                Enroll Face
               </button>
 
               <button
@@ -1510,7 +1519,7 @@ function Login() {
     </div>
 
     {/* Re-Enrollment — full screen takeover modal */}
-    {verificationStep === "face_enroll" && (
+    {loginRole === "student" && verificationStep === "face_enroll" && (
       <div style={{ position:'fixed', inset:0, zIndex:99999 }}>
         <FaceEnrollment
           studentId={tempStudent?.studentId || getStudentIdFromEmail(email || 'student')}

@@ -6,6 +6,76 @@ import { ensureModelsLoaded, getFaceApi } from '../utils/faceModelLoader';
 
 const TARGET_SAMPLES = 30;
 
+// Crisp SVG Icons for Show/Hide Password
+const EyeIcon = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+    <circle cx="12" cy="12" r="3" />
+  </svg>
+);
+
+const EyeOffIcon = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+    <line x1="1" y1="1" x2="23" y2="23" />
+  </svg>
+);
+
+// Evaluates password against: length, uppercase, lowercase, numbers, special characters
+const evaluatePasswordStrength = (pwd) => {
+  if (!pwd) {
+    return {
+      score: 0,
+      label: '',
+      color: '#64748b',
+      percentage: 0,
+      criteria: {
+        length: false,
+        uppercase: false,
+        lowercase: false,
+        number: false,
+        special: false
+      }
+    };
+  }
+
+  const criteria = {
+    length: pwd.length >= 8,
+    uppercase: /[A-Z]/.test(pwd),
+    lowercase: /[a-z]/.test(pwd),
+    number: /[0-9]/.test(pwd),
+    special: /[^A-Za-z0-9]/.test(pwd)
+  };
+
+  const count = Object.values(criteria).filter(Boolean).length;
+
+  let label = 'Weak';
+  let color = '#ef4444';
+  let percentage = 33;
+
+  if (pwd.length >= 8 && count >= 4) {
+    label = 'Strong';
+    color = '#10b981';
+    percentage = 100;
+  } else if (pwd.length >= 6 && count >= 2) {
+    label = 'Medium';
+    color = '#f59e0b';
+    percentage = 66;
+  } else {
+    label = 'Weak';
+    color = '#ef4444';
+    percentage = 33;
+  }
+
+  return {
+    score: count,
+    label,
+    color,
+    percentage,
+    criteria
+  };
+};
+
 export default function Register() {
   const navigate = useNavigate();
   const webcamRef = useRef(null);
@@ -25,6 +95,15 @@ export default function Register() {
   });
 
   const [formErrors, setFormErrors] = useState({});
+
+  // Show / Hide Password visibility state
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+
+  // Real-time validations
+  const passwordStrength = evaluatePasswordStrength(formData.password);
+  const isValidEmailFormat = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(formData.email.trim());
+  const isPasswordMatch = formData.password.length > 0 && formData.password === formData.confirmPassword;
 
   // Enrollment State
   const [step, setStep] = useState(1); // 1: Info, 2: Face Enrollment, 3: Complete
@@ -346,6 +425,23 @@ export default function Register() {
 
   return (
     <div style={styles.container}>
+      <style>{`
+        .register-input:focus {
+          border-color: #6366f1 !important;
+          box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25) !important;
+        }
+        .register-eye-btn:hover {
+          color: #f8fafc !important;
+        }
+        .register-submit-btn:hover {
+          filter: brightness(1.08);
+          transform: translateY(-1px);
+          box-shadow: 0 6px 18px rgba(99, 102, 241, 0.5) !important;
+        }
+        .register-submit-btn:active {
+          transform: translateY(0);
+        }
+      `}</style>
       <div style={styles.card}>
         <div style={styles.header}>
           <div style={styles.logoBadge}>🛡️</div>
@@ -382,6 +478,7 @@ export default function Register() {
                   value={formData.firstName}
                   onChange={handleInputChange}
                   placeholder="e.g. John"
+                  className="register-input"
                   style={{ ...styles.input, ...(formErrors.firstName ? styles.inputError : {}) }}
                 />
                 {formErrors.firstName && <span style={styles.errorText}>{formErrors.firstName}</span>}
@@ -395,6 +492,7 @@ export default function Register() {
                   value={formData.lastName}
                   onChange={handleInputChange}
                   placeholder="e.g. Smith"
+                  className="register-input"
                   style={{ ...styles.input, ...(formErrors.lastName ? styles.inputError : {}) }}
                 />
                 {formErrors.lastName && <span style={styles.errorText}>{formErrors.lastName}</span>}
@@ -409,40 +507,134 @@ export default function Register() {
                 value={formData.email}
                 onChange={handleInputChange}
                 placeholder="john.smith@university.edu"
+                className="register-input"
                 style={{ ...styles.input, ...(formErrors.email ? styles.inputError : {}) }}
               />
-              {formErrors.email && <span style={styles.errorText}>{formErrors.email}</span>}
+              {formErrors.email && !formData.email.trim().length && (
+                <span style={styles.errorText}>{formErrors.email}</span>
+              )}
+              {formData.email.trim().length > 0 && (
+                <span style={{
+                  ...styles.feedbackText,
+                  color: isValidEmailFormat ? '#10b981' : '#f87171'
+                }}>
+                  {isValidEmailFormat ? '✓ Valid Email Format' : '✗ Invalid Email Format'}
+                </span>
+              )}
             </div>
 
-            <div style={styles.row}>
-              <div style={styles.inputGroup}>
-                <label style={styles.label}>Password *</label>
+            <div style={styles.inputGroup}>
+              <label style={styles.label}>Password *</label>
+              <div style={styles.inputWrapper}>
                 <input
-                  type="password"
+                  type={showPassword ? 'text' : 'password'}
                   name="password"
                   value={formData.password}
                   onChange={handleInputChange}
                   placeholder="••••••••"
-                  style={{ ...styles.input, ...(formErrors.password ? styles.inputError : {}) }}
+                  className="register-input"
+                  style={{
+                    ...styles.input,
+                    paddingRight: '44px',
+                    ...(formErrors.password ? styles.inputError : {})
+                  }}
                 />
-                {formErrors.password && <span style={styles.errorText}>{formErrors.password}</span>}
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  style={styles.eyeButton}
+                  className="register-eye-btn"
+                  title={showPassword ? 'Hide password' : 'Show password'}
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                >
+                  {showPassword ? <EyeOffIcon /> : <EyeIcon />}
+                </button>
               </div>
+              {formErrors.password && <span style={styles.errorText}>{formErrors.password}</span>}
 
-              <div style={styles.inputGroup}>
-                <label style={styles.label}>Confirm Password *</label>
+              {/* Real-time Password Strength Meter */}
+              {formData.password.length > 0 && (
+                <div style={styles.strengthContainer}>
+                  <div style={styles.strengthHeader}>
+                    <span style={styles.strengthLabel}>Password Strength</span>
+                    <span style={{ ...styles.strengthCategory, color: passwordStrength.color }}>
+                      {passwordStrength.label}
+                    </span>
+                  </div>
+                  <div style={styles.strengthTrack}>
+                    <div
+                      style={{
+                        ...styles.strengthFill,
+                        width: `${passwordStrength.percentage}%`,
+                        backgroundColor: passwordStrength.color,
+                        boxShadow: `0 0 10px ${passwordStrength.color}55`
+                      }}
+                    />
+                  </div>
+                  <div style={styles.criteriaRow}>
+                    <span style={{ ...styles.criteriaBadge, color: passwordStrength.criteria.length ? '#10b981' : '#64748b' }}>
+                      {passwordStrength.criteria.length ? '✓' : '•'} 8+ Characters
+                    </span>
+                    <span style={{ ...styles.criteriaBadge, color: passwordStrength.criteria.uppercase ? '#10b981' : '#64748b' }}>
+                      {passwordStrength.criteria.uppercase ? '✓' : '•'} Uppercase
+                    </span>
+                    <span style={{ ...styles.criteriaBadge, color: passwordStrength.criteria.lowercase ? '#10b981' : '#64748b' }}>
+                      {passwordStrength.criteria.lowercase ? '✓' : '•'} Lowercase
+                    </span>
+                    <span style={{ ...styles.criteriaBadge, color: passwordStrength.criteria.number ? '#10b981' : '#64748b' }}>
+                      {passwordStrength.criteria.number ? '✓' : '•'} Numbers
+                    </span>
+                    <span style={{ ...styles.criteriaBadge, color: passwordStrength.criteria.special ? '#10b981' : '#64748b' }}>
+                      {passwordStrength.criteria.special ? '✓' : '•'} Special (!@#$)
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div style={styles.inputGroup}>
+              <label style={styles.label}>Confirm Password *</label>
+              <div style={styles.inputWrapper}>
                 <input
-                  type="password"
+                  type={showConfirmPassword ? 'text' : 'password'}
                   name="confirmPassword"
                   value={formData.confirmPassword}
                   onChange={handleInputChange}
                   placeholder="••••••••"
-                  style={{ ...styles.input, ...(formErrors.confirmPassword ? styles.inputError : {}) }}
+                  className="register-input"
+                  style={{
+                    ...styles.input,
+                    paddingRight: '44px',
+                    ...(formErrors.confirmPassword ? styles.inputError : {})
+                  }}
                 />
-                {formErrors.confirmPassword && <span style={styles.errorText}>{formErrors.confirmPassword}</span>}
+                <button
+                  type="button"
+                  onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                  style={styles.eyeButton}
+                  className="register-eye-btn"
+                  title={showConfirmPassword ? 'Hide password' : 'Show password'}
+                  aria-label={showConfirmPassword ? 'Hide password' : 'Show password'}
+                >
+                  {showConfirmPassword ? <EyeOffIcon /> : <EyeIcon />}
+                </button>
               </div>
+              {formErrors.confirmPassword && !formData.confirmPassword.length && (
+                <span style={styles.errorText}>{formErrors.confirmPassword}</span>
+              )}
+
+              {/* Real-time Password Match Validation */}
+              {formData.confirmPassword.length > 0 && (
+                <span style={{
+                  ...styles.feedbackText,
+                  color: isPasswordMatch ? '#10b981' : '#f87171'
+                }}>
+                  {isPasswordMatch ? '✓ Passwords Match' : '✗ Passwords Do Not Match'}
+                </span>
+              )}
             </div>
 
-            <button type="submit" style={styles.primaryButton}>
+            <button type="submit" style={styles.primaryButton} className="register-submit-btn">
               Next: Enroll Face 📸
             </button>
 
@@ -561,7 +753,7 @@ export default function Register() {
               onClick={() => { setStep(2); setEnrollStatus('idle'); }}
               style={styles.textButton}
             >
-              Re-enroll Face
+              Enroll Face
             </button>
           </div>
         )}
@@ -692,7 +884,95 @@ const styles = {
     color: '#ffffff',
     fontSize: '14px',
     outline: 'none',
-    transition: 'all 0.2s'
+    transition: 'all 0.2s',
+    width: '100%',
+    boxSizing: 'border-box'
+  },
+  inputWrapper: {
+    position: 'relative',
+    display: 'flex',
+    alignItems: 'center',
+    width: '100%'
+  },
+  eyeButton: {
+    position: 'absolute',
+    right: '12px',
+    top: '50%',
+    transform: 'translateY(-50%)',
+    background: 'none',
+    border: 'none',
+    color: '#94a3b8',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '4px',
+    borderRadius: '4px',
+    transition: 'color 0.2s, transform 0.15s',
+    outline: 'none',
+    zIndex: 2
+  },
+  feedbackText: {
+    fontSize: '11px',
+    fontWeight: '600',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '4px',
+    marginTop: '2px',
+    transition: 'color 0.2s ease'
+  },
+  strengthContainer: {
+    marginTop: '6px',
+    background: 'rgba(30, 41, 59, 0.6)',
+    border: '1px solid rgba(51, 65, 85, 0.6)',
+    borderRadius: '8px',
+    padding: '10px 12px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '6px'
+  },
+  strengthHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center'
+  },
+  strengthLabel: {
+    fontSize: '11px',
+    color: '#94a3b8',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: '0.04em'
+  },
+  strengthCategory: {
+    fontSize: '12px',
+    fontWeight: '700',
+    transition: 'color 0.3s ease'
+  },
+  strengthTrack: {
+    width: '100%',
+    height: '6px',
+    backgroundColor: '#334155',
+    borderRadius: '3px',
+    overflow: 'hidden'
+  },
+  strengthFill: {
+    height: '100%',
+    borderRadius: '3px',
+    transition: 'width 0.3s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.3s ease'
+  },
+  criteriaRow: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: '6px 12px',
+    marginTop: '2px'
+  },
+  criteriaBadge: {
+    fontSize: '10.5px',
+    fontWeight: '500',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '3px',
+    transition: 'color 0.2s ease'
   },
   inputError: {
     borderColor: '#ef4444'

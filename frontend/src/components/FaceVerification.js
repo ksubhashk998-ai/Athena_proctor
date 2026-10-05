@@ -208,7 +208,7 @@ export default function FaceVerification({
 
         {onReEnroll && (
           <button onClick={onReEnroll} disabled={verifying} style={styles.reEnrollBtn}>
-            🔄 Re-Enroll Face
+            Enroll Face
           </button>
         )}
       </div>

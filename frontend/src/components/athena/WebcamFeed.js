@@ -7,7 +7,7 @@ import { getSocket } from '../../services/socketService';
 function WebcamFeed({ isProctoringActive, onDetectionUpdate, onViolationTriggered, identityVerification }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
-  const [modelStatus, setModelStatus] = useState('Initializing MediaPipe Face Mesh...');
+  const [modelStatus, setModelStatus] = useState('Initializing Athena Face AI...');
   const lastViolationTimes = useRef({});
   const [fps, setFps] = useState(30);
   const lastFrameTimeRef = useRef(Date.now());
@@ -78,13 +78,13 @@ function WebcamFeed({ isProctoringActive, onDetectionUpdate, onViolationTriggere
     return () => { if (stream) stream.getTracks().forEach(t => t.stop()); };
   }, []);
 
-  // ── 2. Initialize MediaPipe Face Mesh + COCO-SSD ─────────────
+  // ── 2. Initialize Athena Face AI (face-api.js) + COCO-SSD ─────────────
   useEffect(() => {
     let mounted = true;
     proctoringPipeline.initialize().then(ok => {
       if (mounted) {
         setModelStatus(ok
-          ? 'MediaPipe Face Mesh + COCO-SSD Active'
+          ? 'Athena Face AI + COCO-SSD Active'
           : 'Fallback Vision Engine Active');
       }
     });

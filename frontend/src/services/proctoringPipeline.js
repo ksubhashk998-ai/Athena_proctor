@@ -189,10 +189,16 @@ class ProctoringPipeline {
       await Promise.all([
         faceapi.nets.tinyFaceDetector.loadFromUri(FACE_MODEL_URL),
         faceapi.nets.faceLandmark68Net.loadFromUri(FACE_MODEL_URL),
+        faceapi.nets.faceRecognitionNet.loadFromUri(FACE_MODEL_URL).catch((e) => {
+          console.warn('[Athena] faceRecognitionNet optional load notice:', e.message);
+        }),
+        faceapi.nets.faceExpressionNet.loadFromUri(FACE_MODEL_URL).catch((e) => {
+          console.warn('[Athena] faceExpressionNet optional load notice:', e.message);
+        }),
       ]);
-      this.faceApiReady = true;
-      console.log('[Athena] face-api.js TinyFaceDetector + 68-Landmark model loaded ✓');
-      return true;
+      this.faceApiReady = Boolean(faceapi.nets.tinyFaceDetector.isLoaded && faceapi.nets.faceLandmark68Net.isLoaded);
+      console.log('[Athena] face-api.js TinyFaceDetector + 68-Landmark + FaceRecognition models loaded ✓');
+      return this.faceApiReady;
     } catch (err) {
       console.warn('[Athena] face-api.js init failed:', err.message);
       this.faceApiReady = false;
@@ -290,7 +296,7 @@ class ProctoringPipeline {
   // PROCESS FRAME — Main entry point called every 300ms
   // ═══════════════════════════════════════════════════════════
   async processFrame(videoElement, canvasElement, studentInfo = {}, options = {}) {
-    if (!videoElement || videoElement.readyState < 4 || !videoElement.videoWidth || !videoElement.videoHeight || videoElement.paused) {
+    if (!videoElement || videoElement.readyState < 2 || !videoElement.videoWidth || !videoElement.videoHeight || videoElement.paused) {
       return this.getDefaultTelemetry();
     }
 
@@ -304,7 +310,7 @@ class ProctoringPipeline {
 
     // ── A. Multi-Face Detection via face-api.js TinyFaceDetector ─────────
     let rawDetections = [];
-    if (this.faceApiReady && videoElement && videoElement.videoWidth > 0 && videoElement.videoHeight > 0 && videoElement.readyState >= 3 && !videoElement.paused) {
+    if (this.faceApiReady && videoElement && videoElement.videoWidth > 0 && videoElement.videoHeight > 0 && videoElement.readyState >= 2 && !videoElement.paused) {
       try {
         const dets = await faceapi
           .detectAllFaces(videoElement, new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.42 }))

@@ -5,7 +5,7 @@
   "scripts": {
     "start": "node scripts/start-all.js",
     "build": "cd frontend && npm run build",
-    "vercel-build": "cd frontend && npm install --legacy-peer-deps && cross-env NODE_OPTIONS=\"--max-old-space-size=4096 --no-deprecation\" npm run build",
+    "vercel-build": "cd frontend && npm install --legacy-peer-deps && cross-env NODE_OPTIONS=\"--max-old-space-size=2048 --no-deprecation\" npm run build",
     "backend": "cd backend && npm start",
     "frontend": "cd frontend && npm start",
     "admin": "cd admin && npm start"

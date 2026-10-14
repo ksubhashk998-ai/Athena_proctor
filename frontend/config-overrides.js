@@ -6,11 +6,25 @@ module.exports = {
     // Disable sourcemap generation to prevent memory exhaustion and drastically speed up compilation
     config.devtool = false;
 
-    // Use persistent filesystem caching for ultra-fast startup and hot reloads
-    config.cache = {
-      type: 'filesystem',
-      allowCollectingMemory: true,
-    };
+    // In production (Vercel CI), disable disk cache and throttle minifier to prevent container memory limit crashes (exit code 137)
+    if (env === 'production' || process.env.CI || process.env.VERCEL) {
+      config.cache = false;
+      if (config.optimization && config.optimization.minimizer) {
+        config.optimization.minimizer.forEach(minimizer => {
+          if (minimizer && minimizer.constructor && minimizer.constructor.name === 'TerserPlugin') {
+            if (minimizer.options) {
+              minimizer.options.parallel = false;
+            }
+          }
+        });
+      }
+    } else {
+      // Use persistent filesystem caching for ultra-fast startup and hot reloads in dev
+      config.cache = {
+        type: 'filesystem',
+        allowCollectingMemory: true,
+      };
+    }
 
     // Remove source-map-loader which severely slows down processing heavy packages like @tensorflow & face-api
     if (config.module && config.module.rules) {

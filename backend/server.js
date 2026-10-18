@@ -7,7 +7,18 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const path = require('path');
 const fs = require('fs');
-require('dotenv').config();
+
+const envPaths = [
+  path.resolve(__dirname, '.env'),
+  path.resolve(process.cwd(), 'backend/.env'),
+  path.resolve(process.cwd(), '.env')
+];
+for (const p of envPaths) {
+  if (fs.existsSync(p)) {
+    require('dotenv').config({ path: p });
+  }
+}
+
 const proctorApi = require('./routes/proctorApi');
 
 // Import Mongoose Models
@@ -322,16 +333,16 @@ const handleResendOtpRoute = async (req, res) => {
 };
 
 // Register Top-Level Direct Express Routes
-const { forgotPassword, resetPassword } = require('./controllers/otpController');
+const { sendOtp, verifyOtp, resendOtp, forgotPassword, resetPassword } = require('./controllers/otpController');
 
-app.post('/api/auth/send-otp', handleSendOtpRoute);
-app.post('/api/send-otp', handleSendOtpRoute);
+app.post('/api/auth/send-otp', sendOtp);
+app.post('/api/send-otp', sendOtp);
 
-app.post('/api/auth/verify-otp', handleVerifyOtpRoute);
-app.post('/api/verify-otp', handleVerifyOtpRoute);
+app.post('/api/auth/verify-otp', verifyOtp);
+app.post('/api/verify-otp', verifyOtp);
 
-app.post('/api/auth/resend-otp', handleResendOtpRoute);
-app.post('/api/resend-otp', handleResendOtpRoute);
+app.post('/api/auth/resend-otp', resendOtp);
+app.post('/api/resend-otp', resendOtp);
 
 app.post('/api/auth/forgot-password', forgotPassword);
 app.post('/api/forgot-password', forgotPassword);

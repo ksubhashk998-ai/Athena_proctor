@@ -304,19 +304,19 @@ const handleResendOtp = async (req, res) => {
 };
 
 // Route Registrations with Aliases
-const { forgotPassword, resetPassword } = require('../controllers/otpController');
+const { sendOtp, verifyOtp, resendOtp, forgotPassword, resetPassword } = require('../controllers/otpController');
 
-router.post('/auth/send-otp', handleSendOtp);
-router.post('/send-otp', handleSendOtp);
-router.post('/otp/send', handleSendOtp);
+router.post('/auth/send-otp', sendOtp);
+router.post('/send-otp', sendOtp);
+router.post('/otp/send', sendOtp);
 
-router.post('/auth/verify-otp', handleVerifyOtp);
-router.post('/verify-otp', handleVerifyOtp);
-router.post('/otp/verify', handleVerifyOtp);
+router.post('/auth/verify-otp', verifyOtp);
+router.post('/verify-otp', verifyOtp);
+router.post('/otp/verify', verifyOtp);
 
-router.post('/auth/resend-otp', handleResendOtp);
-router.post('/resend-otp', handleResendOtp);
-router.post('/otp/resend', handleResendOtp);
+router.post('/auth/resend-otp', resendOtp);
+router.post('/resend-otp', resendOtp);
+router.post('/otp/resend', resendOtp);
 
 router.post('/auth/forgot-password', forgotPassword);
 router.post('/forgot-password', forgotPassword);

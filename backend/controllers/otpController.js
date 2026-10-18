@@ -1,6 +1,23 @@
+const path = require('path');
+const fs = require('fs');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const mongoose = require('mongoose');
+
+// Load environment variables reliably
+const envPaths = [
+  path.resolve(__dirname, '../.env'),
+  path.resolve(__dirname, '../../.env'),
+  path.resolve(process.cwd(), 'backend/.env'),
+  path.resolve(process.cwd(), '.env')
+];
+for (const p of envPaths) {
+  if (fs.existsSync(p)) {
+    require('dotenv').config({ path: p });
+  }
+}
+
 const OTP = require('../models/OTP');
 const { sendOtpEmail } = require('../services/emailService');
 
@@ -11,6 +28,13 @@ try { Student = require('../models/Student'); } catch (e) {}
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secure-jwt-secret-key-here';
 const COOLDOWN_SECONDS = 30;
+
+// Resilient In-Memory OTP Store for disconnected MongoDB fallback
+const memoryOtpStore = new Map();
+
+function isMongoConnected() {
+  return mongoose.connection && mongoose.connection.readyState === 1;
+}
 
 /**
  * Helper to derive formatted student name from email
@@ -24,13 +48,98 @@ function deriveStudentName(email) {
 }
 
 /**
+ * Safe OTP lookup checking MongoDB (if connected) with Memory fallback
+ */
+async function findActiveOtp(cleanEmail) {
+  if (isMongoConnected() && OTP) {
+    try {
+      const record = await OTP.findOne({ email: cleanEmail });
+      if (record) return record;
+    } catch (err) {
+      console.warn('MongoDB OTP lookup notice:', err.message);
+    }
+  }
+
+  const mem = memoryOtpStore.get(cleanEmail);
+  if (mem) {
+    const now = Date.now();
+    if (now > mem.expiresAt) {
+      memoryOtpStore.delete(cleanEmail);
+      return null;
+    }
+    return mem;
+  }
+  return null;
+}
+
+/**
+ * Safe OTP save updating MongoDB (if connected) and Memory store
+ */
+async function saveOtpRecord(cleanEmail, studentName, otpHash, now) {
+  // Always update memory store
+  const memRecord = {
+    email: cleanEmail,
+    studentName,
+    otpHash,
+    attempts: 0,
+    lastResendAt: now,
+    createdAt: now,
+    expiresAt: now.getTime() + 5 * 60 * 1000,
+    save: async function () {
+      memoryOtpStore.set(cleanEmail, this);
+    }
+  };
+  memoryOtpStore.set(cleanEmail, memRecord);
+
+  // If MongoDB is connected, upsert MongoDB document per PROJECT_RULES.md
+  if (isMongoConnected() && OTP) {
+    try {
+      await OTP.findOneAndUpdate(
+        { email: cleanEmail },
+        {
+          email: cleanEmail,
+          studentName,
+          otpHash,
+          attempts: 0,
+          lastResendAt: now,
+          createdAt: now
+        },
+        { upsert: true, new: true }
+      );
+    } catch (err) {
+      console.warn('MongoDB OTP save notice:', err.message);
+    }
+  }
+
+  return memRecord;
+}
+
+/**
+ * Safe OTP delete removing from MongoDB and Memory store
+ */
+async function deleteOtpRecord(cleanEmail, mongoId) {
+  memoryOtpStore.delete(cleanEmail);
+  if (isMongoConnected() && OTP) {
+    try {
+      if (mongoId) {
+        await OTP.deleteOne({ _id: mongoId });
+      } else {
+        await OTP.deleteOne({ email: cleanEmail });
+      }
+    } catch (err) {
+      console.warn('MongoDB OTP deletion notice:', err.message);
+    }
+  }
+}
+
+/**
  * 1. Generate & Send OTP API
  * POST /api/otp/send
  */
 const sendOtp = async (req, res) => {
   try {
     const { email, name } = req.body;
-    if (!email || !email.includes('@')) {
+    if (!email || typeof email !== 'string' || !email.includes('@')) {
       return res.status(400).json({
         success: false,
         error: 'Valid email address is required'
@@ -42,7 +151,7 @@ const sendOtp = async (req, res) => {
     const now = new Date();
 
     // Check 30-second resend cooldown
-    const existingOtp = await OTP.findOne({ email: cleanEmail });
+    const existingOtp = await findActiveOtp(cleanEmail);
     if (existingOtp && existingOtp.lastResendAt) {
       const elapsedSeconds = (now.getTime() - new Date(existingOtp.lastResendAt).getTime()) / 1000;
       if (elapsedSeconds < COOLDOWN_SECONDS) {
@@ -59,40 +168,47 @@ const sendOtp = async (req, res) => {
     const otpCode = crypto.randomInt(100000, 999999).toString();
     const otpHash = await bcrypt.hash(otpCode, 10);
 
-    // Upsert temporary OTP record in MongoDB (5-minute TTL)
-    await OTP.findOneAndUpdate(
-      { email: cleanEmail },
-      {
+    // Upsert temporary OTP record
+    await saveOtpRecord(cleanEmail, studentName, otpHash, now);
+
+    // Dispatch real-time email via Nodemailer
+    const dispatchResult = await sendOtpEmail(cleanEmail, studentName, otpCode);
+
+    const isDev = process.env.NODE_ENV !== 'production';
+    console.log(`✉️ 6-Digit OTP generated for ${cleanEmail}: ${otpCode} (Delivered: ${dispatchResult.delivered})`);
+
+    if (dispatchResult.delivered) {
+      return res.json({
+        success: true,
+        message: `A 6-digit OTP code has been dispatched to ${cleanEmail}. Please check your Inbox and Spam / Junk folder.`,
         email: cleanEmail,
         studentName,
-        otpHash,
-        attempts: 0,
-        lastResendAt: now,
-        createdAt: now
-      },
-      { upsert: true, new: true }
-    );
-
-    // Asynchronously dispatch email via pooled Nodemailer (non-blocking for instant client response)
-    sendOtpEmail(cleanEmail, studentName, otpCode).then(() => {
-      console.log(`✉️ Real-time OTP email delivered to ${cleanEmail}`);
-    }).catch((emailErr) => {
-      console.warn(`✉️ Email dispatch notice (${emailErr.message}). Active OTP: [${otpCode}]`);
-    });
-
-    console.log(`✉️ 6-Digit OTP generated & stored in MongoDB for ${cleanEmail}: ${otpCode}`);
-
-    res.json({
-      success: true,
-      message: `A 6-digit OTP code has been dispatched to ${cleanEmail}`,
-      email: cleanEmail,
-      studentName,
-      cooldownSeconds: COOLDOWN_SECONDS,
-      expiresInSeconds: 300
-    });
+        cooldownSeconds: COOLDOWN_SECONDS,
+        expiresInSeconds: 300,
+        devOtp: isDev ? otpCode : undefined
+      });
+    } else {
+      if (isDev) {
+        console.warn(`⚠️ Dev Mode OTP Notice: Email delivery notice (${dispatchResult.reason}). Active OTP: [${otpCode}]`);
+        return res.json({
+          success: true,
+          message: `OTP generated for ${cleanEmail}. (Dev notice: ${dispatchResult.reason})`,
+          email: cleanEmail,
+          studentName,
+          cooldownSeconds: COOLDOWN_SECONDS,
+          expiresInSeconds: 300,
+          devOtp: otpCode
+        });
+      } else {
+        return res.status(500).json({
+          success: false,
+          error: `Failed to deliver OTP email: ${dispatchResult.reason || 'SMTP service error'}. Please check SMTP configuration.`
+        });
+      }
+    }
   } catch (error) {
     console.error('Error in sendOtp controller:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       error: 'Failed to process OTP request: ' + error.message
     });
@@ -116,7 +232,7 @@ const verifyOtp = async (req, res) => {
     const cleanEmail = email.trim().toLowerCase();
     const cleanOtp = otp.toString().trim();
 
-    const otpRecord = await OTP.findOne({ email: cleanEmail });
+    const otpRecord = await findActiveOtp(cleanEmail);
 
     if (!otpRecord) {
       return res.status(400).json({
@@ -127,7 +243,7 @@ const verifyOtp = async (req, res) => {
 
     // Check maximum verification attempts (limit to 5 attempts)
     if (otpRecord.attempts >= 5) {
-      await OTP.deleteOne({ _id: otpRecord._id });
+      await deleteOtpRecord(cleanEmail, otpRecord._id);
       return res.status(400).json({
         success: false,
         error: 'Maximum verification attempts exceeded. Please request a new OTP.'
@@ -138,8 +254,10 @@ const verifyOtp = async (req, res) => {
     const isMatch = await bcrypt.compare(cleanOtp, otpRecord.otpHash);
 
     if (!isMatch) {
-      otpRecord.attempts += 1;
-      await otpRecord.save();
+      otpRecord.attempts = (otpRecord.attempts || 0) + 1;
+      if (typeof otpRecord.save === 'function') {
+        await otpRecord.save();
+      }
       const remainingAttempts = 5 - otpRecord.attempts;
       return res.status(400).json({
         success: false,
@@ -147,8 +265,8 @@ const verifyOtp = async (req, res) => {
       });
     }
 
-    // Single-use guarantee: Delete OTP record immediately from MongoDB upon successful verification
-    await OTP.deleteOne({ _id: otpRecord._id });
+    // Single-use guarantee: Delete OTP record immediately upon successful verification
+    await deleteOtpRecord(cleanEmail, otpRecord._id);
 
     // Generate JWT token
     const studentId = 'STU_' + cleanEmail.replace(/[^a-z0-9]/g, '_');
@@ -156,36 +274,34 @@ const verifyOtp = async (req, res) => {
       {
         email: cleanEmail,
         studentId,
-        role: 'Student'
+        role: 'Student',
+        stage: 'otp_verified'
       },
       JWT_SECRET,
-      { expiresIn: '8h' }
+      { expiresIn: '24h' }
     );
 
-    console.log(`✅ OTP Verification Successful for ${cleanEmail}. OTP record deleted from MongoDB.`);
+    console.log(`✅ OTP Verification Successful for ${cleanEmail} (${studentId})`);
 
-    res.json({
+    return res.json({
       success: true,
-      message: 'OTP verified successfully! Access granted.',
+      message: 'OTP verified successfully! Identity confirmed.',
       token,
-      student: {
-        studentId,
-        name: otpRecord.studentName || deriveStudentName(cleanEmail),
-        email: cleanEmail,
-        role: 'Student'
-      }
+      otpToken: token,
+      studentId,
+      studentName: otpRecord.studentName || deriveStudentName(cleanEmail)
     });
   } catch (error) {
     console.error('Error in verifyOtp controller:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
-      error: 'Server error during OTP verification: ' + error.message
+      error: 'OTP verification failed: ' + error.message
     });
   }
 };
 
 /**
- * 3. Resend OTP API (Enforces 30s Cooldown)
+ * 3. Resend OTP API
  * POST /api/otp/resend
  */
 const resendOtp = async (req, res) => {
@@ -209,21 +325,23 @@ const forgotPassword = async (req, res) => {
     const cleanEmail = email.trim().toLowerCase();
     const now = new Date();
 
-    // Check if user exists in MongoDB database
+    // Check if user exists in database if available
     let existingUser = null;
-    try {
-      if (User) {
-        existingUser = await User.findOne({ email: cleanEmail });
-      }
-      if (!existingUser && Student) {
-        existingUser = await Student.findOne({ email: cleanEmail });
-      }
-    } catch (e) {}
+    if (isMongoConnected()) {
+      try {
+        if (User) {
+          existingUser = await User.findOne({ email: cleanEmail });
+        }
+        if (!existingUser && Student) {
+          existingUser = await Student.findOne({ email: cleanEmail });
+        }
+      } catch (e) {}
+    }
 
-    const studentName = existingUser?.name || deriveStudentName(cleanEmail);
+    const studentName = existingUser?.name || existingUser?.fullName || deriveStudentName(cleanEmail);
 
     // Enforce 30-second resend cooldown
-    const existingOtp = await OTP.findOne({ email: cleanEmail });
+    const existingOtp = await findActiveOtp(cleanEmail);
     if (existingOtp && existingOtp.lastResendAt) {
       const elapsedSeconds = (now.getTime() - new Date(existingOtp.lastResendAt).getTime()) / 1000;
       if (elapsedSeconds < COOLDOWN_SECONDS) {
@@ -240,43 +358,50 @@ const forgotPassword = async (req, res) => {
     const otpCode = crypto.randomInt(100000, 999999).toString();
     const otpHash = await bcrypt.hash(otpCode, 10);
 
-    // Upsert temporary OTP record in MongoDB (5-minute TTL)
-    await OTP.findOneAndUpdate(
-      { email: cleanEmail },
-      {
-        email: cleanEmail,
-        studentName,
-        otpHash,
-        attempts: 0,
-        lastResendAt: now,
-        createdAt: now
-      },
-      { upsert: true, new: true }
-    );
+    // Upsert temporary OTP record
+    await saveOtpRecord(cleanEmail, studentName, otpHash, now);
 
-    // Asynchronously dispatch email via pooled Nodemailer (non-blocking for instant client response)
-    sendOtpEmail(
+    // Dispatch real-time email
+    const dispatchResult = await sendOtpEmail(
       cleanEmail,
       studentName,
       otpCode,
       'Athena Smart Proctoring - Password Reset OTP',
       'Your One-Time Password (OTP) to reset your Athena Smart Proctoring account password is:'
-    ).then(() => {
-      console.log(`✉️ Real-time password reset OTP delivered to ${cleanEmail}`);
-    }).catch((emailErr) => {
-      console.warn(`✉️ Email dispatch notice (${emailErr.message}). Active Password Reset OTP: [${otpCode}]`);
-    });
+    );
 
-    console.log(`✉️ Password Reset 6-Digit OTP generated & stored in MongoDB for ${cleanEmail}: ${otpCode}`);
+    const isDev = process.env.NODE_ENV !== 'production';
+    console.log(`✉️ Password Reset 6-Digit OTP generated for ${cleanEmail}: ${otpCode} (Delivered: ${dispatchResult.delivered})`);
 
-    return res.json({
-      success: true,
-      message: `A 6-digit password reset OTP code has been sent to ${cleanEmail}`,
-      email: cleanEmail,
-      studentName,
-      cooldownSeconds: COOLDOWN_SECONDS,
-      expiresInSeconds: 300
-    });
+    if (dispatchResult.delivered) {
+      return res.json({
+        success: true,
+        message: `A 6-digit password reset OTP code has been sent to ${cleanEmail}. Please check your Inbox and Spam / Junk folder.`,
+        email: cleanEmail,
+        studentName,
+        cooldownSeconds: COOLDOWN_SECONDS,
+        expiresInSeconds: 300,
+        devOtp: isDev ? otpCode : undefined
+      });
+    } else {
+      if (isDev) {
+        console.warn(`⚠️ Dev Mode Password Reset Notice: Email delivery notice (${dispatchResult.reason}). Active OTP: [${otpCode}]`);
+        return res.json({
+          success: true,
+          message: `Password reset OTP generated for ${cleanEmail}. (Dev notice: ${dispatchResult.reason})`,
+          email: cleanEmail,
+          studentName,
+          cooldownSeconds: COOLDOWN_SECONDS,
+          expiresInSeconds: 300,
+          devOtp: otpCode
+        });
+      } else {
+        return res.status(500).json({
+          success: false,
+          error: `Failed to deliver password reset OTP email: ${dispatchResult.reason || 'SMTP service error'}. Please verify SMTP settings.`
+        });
+      }
+    }
   } catch (error) {
     console.error('Error in forgotPassword controller:', error);
     return res.status(500).json({
@@ -310,7 +435,7 @@ const resetPassword = async (req, res) => {
     const cleanEmail = email.trim().toLowerCase();
     const cleanOtp = otp.toString().trim();
 
-    const otpRecord = await OTP.findOne({ email: cleanEmail });
+    const otpRecord = await findActiveOtp(cleanEmail);
 
     if (!otpRecord) {
       return res.status(400).json({
@@ -321,7 +446,7 @@ const resetPassword = async (req, res) => {
 
     // Check maximum verification attempts (limit to 5 attempts)
     if (otpRecord.attempts >= 5) {
-      await OTP.deleteOne({ _id: otpRecord._id });
+      await deleteOtpRecord(cleanEmail, otpRecord._id);
       return res.status(400).json({
         success: false,
         error: 'Maximum verification attempts exceeded. Please request a new password reset OTP.'
@@ -332,8 +457,10 @@ const resetPassword = async (req, res) => {
     const isMatch = await bcrypt.compare(cleanOtp, otpRecord.otpHash);
 
     if (!isMatch) {
-      otpRecord.attempts += 1;
-      await otpRecord.save();
+      otpRecord.attempts = (otpRecord.attempts || 0) + 1;
+      if (typeof otpRecord.save === 'function') {
+        await otpRecord.save();
+      }
       const remainingAttempts = 5 - otpRecord.attempts;
       return res.status(400).json({
         success: false,
@@ -344,31 +471,33 @@ const resetPassword = async (req, res) => {
     // Update password in MongoDB documents
     let updatedCount = 0;
 
-    try {
-      const salt = await bcrypt.genSalt(10);
-      const hashedPassword = await bcrypt.hash(newPassword, salt);
+    if (isMongoConnected()) {
+      try {
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(newPassword, salt);
 
-      if (User) {
-        await User.updateOne(
-          { email: cleanEmail },
-          { $set: { password: hashedPassword } }
-        );
-        updatedCount++;
-      }
+        if (User) {
+          await User.updateOne(
+            { email: cleanEmail },
+            { $set: { password: hashedPassword } }
+          );
+          updatedCount++;
+        }
 
-      if (Student) {
-        await Student.updateOne(
-          { email: cleanEmail },
-          { $set: { password: hashedPassword, passwordHash: hashedPassword } }
-        );
-        updatedCount++;
+        if (Student) {
+          await Student.updateOne(
+            { email: cleanEmail },
+            { $set: { password: hashedPassword, passwordHash: hashedPassword } }
+          );
+          updatedCount++;
+        }
+      } catch (e) {
+        console.warn('Notice updating student password in MongoDB:', e.message);
       }
-    } catch (e) {
-      console.warn('Notice updating student password in MongoDB:', e.message);
     }
 
     // Delete used single-use OTP document
-    await OTP.deleteOne({ _id: otpRecord._id });
+    await deleteOtpRecord(cleanEmail, otpRecord._id);
 
     console.log(`🔑 Password successfully reset for ${cleanEmail}. Updated records: ${updatedCount}`);
 
@@ -391,5 +520,6 @@ module.exports = {
   verifyOtp,
   resendOtp,
   forgotPassword,
-  resetPassword
+  resetPassword,
+  memoryOtpStore
 };

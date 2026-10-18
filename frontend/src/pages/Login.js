@@ -409,8 +409,14 @@ function Login() {
       );
 
       if (res.data && res.data.success) {
-        setForgotSuccess(`✉️ 6-Digit OTP code dispatched to ${targetEmail}. Please check your email inbox.`);
-        setForgotOtp("");
+        let successMsg = `✉️ 6-Digit OTP code dispatched to ${targetEmail}. Please check your Inbox and Spam / Junk folder.`;
+        if (res.data.devOtp) {
+          successMsg += ` (Dev OTP: ${res.data.devOtp})`;
+          setForgotOtp(res.data.devOtp);
+        } else {
+          setForgotOtp("");
+        }
+        setForgotSuccess(successMsg);
         setForgotStep("otp_reset");
         setForgotCooldown(30);
       } else {
@@ -632,7 +638,12 @@ function Login() {
 
       if (res.data && res.data.success) {
         setOtpCooldown(30);
-        setOtpSuccess(`🔄 Brand new 6-digit OTP delivered to ${tempStudent.email}. Check your email.`);
+        let successMsg = `🔄 6-Digit OTP delivered to ${tempStudent.email}. Please check your Inbox and Spam / Junk folder.`;
+        if (res.data.devOtp) {
+          successMsg += ` (Dev OTP: ${res.data.devOtp})`;
+          setOtpInput(res.data.devOtp);
+        }
+        setOtpSuccess(successMsg);
       } else {
         setOtpError(res.data?.error || "Unable to resend OTP.");
       }
@@ -1193,6 +1204,9 @@ function Login() {
                 <p style={{ fontSize: "0.85rem", color: "#94a3b8", marginBottom: "16px", lineHeight: "1.5" }}>
                   OTP code dispatched to <strong style={{ color: "#38bdf8" }}>{forgotEmail}</strong>.<br />
                   Enter the 6-digit code and your new password below.
+                  <span style={{ display: "block", color: "#fbbf24", fontSize: "0.8rem", marginTop: "6px" }}>
+                    💡 Tip: If not found in your Inbox, please check your <strong>Spam / Junk</strong> folder.
+                  </span>
                 </p>
 
                 <div style={styles.formGroup}>
@@ -1355,6 +1369,9 @@ function Login() {
             <p style={{ fontSize: "0.85rem", color: "#94a3b8", marginBottom: "16px", lineHeight: "1.5" }}>
               A 6-digit security OTP has been sent to your email:<br />
               <strong style={{ color: "#38bdf8" }}>{tempStudent?.email}</strong>
+              <span style={{ display: "block", color: "#fbbf24", fontSize: "0.8rem", marginTop: "6px" }}>
+                💡 Tip: If not found in your Inbox, please check your <strong>Spam / Junk</strong> folder.
+              </span>
             </p>
 
             {otpError && <div style={styles.errorBanner}>{otpError}</div>}

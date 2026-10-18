@@ -1,4 +1,19 @@
+const path = require('path');
+const fs = require('fs');
 const nodemailer = require('nodemailer');
+
+// Load environment variables reliably regardless of cwd or import order
+const envPaths = [
+  path.resolve(__dirname, '../.env'),
+  path.resolve(__dirname, '../../.env'),
+  path.resolve(process.cwd(), 'backend/.env'),
+  path.resolve(process.cwd(), '.env')
+];
+for (const p of envPaths) {
+  if (fs.existsSync(p)) {
+    require('dotenv').config({ path: p });
+  }
+}
 
 function normalizeEmailCredential(value) {
   if (typeof value !== 'string') return '';
@@ -8,50 +23,36 @@ function normalizeEmailCredential(value) {
 let cachedTransporter = null;
 
 /**
- * Returns a pooled, reusable Nodemailer Transporter instance.
- * Using Gmail Direct SSL (Port 465) with connection pooling (pool: true)
- * eliminates redundant TCP/TLS handshakes and drastically speeds up OTP dispatch.
+ * Returns a robust Nodemailer Transporter instance for Gmail.
+ * Uses service: 'gmail' with standard secure TLS.
  */
 function getTransporter() {
+  const emailUser = normalizeEmailCredential(process.env.EMAIL_USER);
+  const emailPass = normalizeEmailCredential(process.env.EMAIL_APP_PASSWORD || process.env.EMAIL_PASS);
+
+  if (!emailUser || !emailPass) {
+    return null;
+  }
+
   if (cachedTransporter) {
     return cachedTransporter;
   }
 
-  const emailUser = normalizeEmailCredential(process.env.EMAIL_USER);
-  const emailPass = normalizeEmailCredential(process.env.EMAIL_APP_PASSWORD || process.env.EMAIL_PASS);
+  cachedTransporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      user: emailUser,
+      pass: emailPass
+    },
+    tls: {
+      rejectUnauthorized: false
+    },
+    connectionTimeout: 10000,
+    greetingTimeout: 5000,
+    socketTimeout: 15000
+  });
 
-  if (emailUser && emailPass) {
-    cachedTransporter = nodemailer.createTransport({
-      host: 'smtp.gmail.com',
-      port: 465,
-      secure: true, // Direct SSL is significantly faster and lower latency than STARTTLS
-      pool: true,   // Connection pooling reuses open TLS connections
-      maxConnections: 5,
-      maxMessages: 100,
-      rateDelta: 1000,
-      rateLimit: 5,
-      auth: {
-        user: emailUser,
-        pass: emailPass
-      },
-      tls: {
-        rejectUnauthorized: false
-      },
-      connectionTimeout: 8000, // 8s connection timeout
-      greetingTimeout: 4000,   // 4s greeting timeout
-      socketTimeout: 12000     // 12s socket timeout
-    });
-
-    // Verify and pre-warm the pool connection in the background
-    cachedTransporter.verify().then(() => {
-      console.log('✅ SMTP connection pool verified and pre-warmed for rapid OTP delivery');
-    }).catch((err) => {
-      console.warn('⚠️ SMTP pre-warm notice:', err.message);
-    });
-
-    return cachedTransporter;
-  }
-  return null;
+  return cachedTransporter;
 }
 
 /**
@@ -113,26 +114,44 @@ async function sendOtpEmail(toEmail, studentName, otpCode, customSubject, purpos
     </div>
   `;
 
+  const emailUser = normalizeEmailCredential(process.env.EMAIL_USER);
+
   if (!transporter) {
-    console.warn(`⚠️ EMAIL_USER & EMAIL_APP_PASSWORD not set in .env. Real-time OTP [${otpCode}] created for ${toEmail}`);
-    return true;
+    const reason = 'EMAIL_USER & EMAIL_APP_PASSWORD are not configured in environment';
+    console.warn(`⚠️ ${reason}. Real-time OTP [${otpCode}] created for ${toEmail}`);
+    return {
+      success: false,
+      delivered: false,
+      reason,
+      otpCode
+    };
   }
 
   const mailOptions = {
-    from: `"Athena Smart Proctoring" <${normalizeEmailCredential(process.env.EMAIL_USER) || 'athena@localhost'}>`,
+    from: `"Athena Smart Proctoring" <${emailUser || 'athena@localhost'}>`,
     to: toEmail,
     subject: subject,
     html: htmlContent,
-    text: `Hello ${studentName},\n\n${actionDescription} ${otpCode}\n\nThis OTP is valid for 5 minutes.\n\nRegards,\nAthena Smart Proctoring Team`
+    text: `Hello ${studentName},\n\n${actionDescription} ${otpCode}\n\nThis OTP is valid for 5 minutes. If you do not see this email in your inbox, please check your spam or junk folder.\n\nRegards,\nAthena Smart Proctoring Team`
   };
 
   try {
     const info = await transporter.sendMail(mailOptions);
     console.log(`✉️ Real-time OTP email delivered to ${toEmail}. Message ID: ${info.messageId}`);
-    return true;
+    return {
+      success: true,
+      delivered: true,
+      messageId: info.messageId,
+      otpCode
+    };
   } catch (error) {
-    console.error('OTP email delivery failed:', error.message);
-    throw new Error(`Failed to send OTP email: ${error.message}`);
+    console.error(`OTP email delivery failed for ${toEmail}:`, error.message);
+    return {
+      success: false,
+      delivered: false,
+      reason: error.message,
+      otpCode
+    };
   }
 }
 

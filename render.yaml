@@ -4,7 +4,7 @@ services:
     env: node
     plan: free
     rootDir: backend
-    buildCommand: npm install
+    buildCommand: npm install --omit=dev
     startCommand: node --max-old-space-size=256 --optimize_for_size --expose-gc server.js
     envVars:
       - key: NODE_ENV

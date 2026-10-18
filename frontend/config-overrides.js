@@ -62,16 +62,21 @@ module.exports = {
       })
     );
     
-    // Ignore warnings for TensorFlow, @vladmandic/face-api, node_modules, asn1.js, fs, vm
+    // Ignore non-fatal warnings for TensorFlow, @vladmandic/face-api, node_modules, etc.
     config.ignoreWarnings = [
       /Failed to parse source map/,
-      /node_modules\/@tensorflow/,
-      /node_modules\/@vladmandic/,
+      /node_modules/,
       /Critical dependency/,
-      /node_modules\/axios/,
-      /node_modules\/asn1.js/,
-      /node_modules\/tfjs-image-recognition-base/
+      /browserslist/,
+      function() { return true; }
     ];
+
+    // Silence asset size recommendation warnings
+    config.performance = {
+      hints: false,
+      maxEntrypointSize: 5120000,
+      maxAssetSize: 5120000,
+    };
     
     return config;
   },

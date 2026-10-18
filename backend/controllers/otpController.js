@@ -175,30 +175,24 @@ const sendOtp = async (req, res) => {
     const dispatchResult = await sendOtpEmail(cleanEmail, studentName, otpCode);
 
     const isDev = process.env.NODE_ENV !== 'production';
-    console.log(`✉️ 6-Digit OTP generated for ${cleanEmail}: ${otpCode} (Delivered: ${dispatchResult.delivered})`);
+    console.log(`✉️ 6-Digit OTP generated for ${cleanEmail} (Delivered: ${dispatchResult.delivered})`);
 
-    if (dispatchResult.delivered) {
-      return res.json({
-        success: true,
-        message: `A 6-digit OTP code has been dispatched to ${cleanEmail}. Please check your Inbox and Spam / Junk folder.`,
-        email: cleanEmail,
-        studentName,
-        cooldownSeconds: COOLDOWN_SECONDS,
-        expiresInSeconds: 300,
-        devOtp: isDev ? otpCode : undefined
-      });
-    } else {
-      console.warn(`⚠️ Cloud Email Notice: ${dispatchResult.reason}. Active OTP: [${otpCode}]`);
-      return res.json({
-        success: true,
-        message: `A 6-digit OTP code has been generated for ${cleanEmail}. (Cloud notice: Outbound SMTP timed out; OTP provided via secure channel).`,
-        email: cleanEmail,
-        studentName,
-        cooldownSeconds: COOLDOWN_SECONDS,
-        expiresInSeconds: 300,
-        devOtp: otpCode
+    if (!dispatchResult.delivered) {
+      console.warn(`⚠️ Cloud Email Delivery Notice: ${dispatchResult.reason}`);
+      return res.status(502).json({
+        success: false,
+        error: `Could not send OTP email to ${cleanEmail}. (${dispatchResult.reason || 'Email service connection failed'}). Please verify email settings.`
       });
     }
+
+    return res.json({
+      success: true,
+      message: `A 6-digit OTP code has been dispatched to ${cleanEmail}. Please check your Inbox and Spam / Junk folder.`,
+      email: cleanEmail,
+      studentName,
+      cooldownSeconds: COOLDOWN_SECONDS,
+      expiresInSeconds: 300
+    });
   } catch (error) {
     console.error('Error in sendOtp controller:', error);
     return res.status(500).json({
@@ -364,30 +358,24 @@ const forgotPassword = async (req, res) => {
     );
 
     const isDev = process.env.NODE_ENV !== 'production';
-    console.log(`✉️ Password Reset 6-Digit OTP generated for ${cleanEmail}: ${otpCode} (Delivered: ${dispatchResult.delivered})`);
+    console.log(`✉️ Password Reset 6-Digit OTP generated for ${cleanEmail} (Delivered: ${dispatchResult.delivered})`);
 
-    if (dispatchResult.delivered) {
-      return res.json({
-        success: true,
-        message: `A 6-digit password reset OTP code has been sent to ${cleanEmail}. Please check your Inbox and Spam / Junk folder.`,
-        email: cleanEmail,
-        studentName,
-        cooldownSeconds: COOLDOWN_SECONDS,
-        expiresInSeconds: 300,
-        devOtp: isDev ? otpCode : undefined
-      });
-    } else {
-      console.warn(`⚠️ Cloud Password Reset Notice: ${dispatchResult.reason}. Active OTP: [${otpCode}]`);
-      return res.json({
-        success: true,
-        message: `A 6-digit password reset OTP has been generated for ${cleanEmail}. (Cloud notice: Outbound SMTP timed out; OTP provided via secure channel).`,
-        email: cleanEmail,
-        studentName,
-        cooldownSeconds: COOLDOWN_SECONDS,
-        expiresInSeconds: 300,
-        devOtp: otpCode
+    if (!dispatchResult.delivered) {
+      console.warn(`⚠️ Cloud Password Reset Notice: ${dispatchResult.reason}`);
+      return res.status(502).json({
+        success: false,
+        error: `Could not send password reset OTP to ${cleanEmail}. (${dispatchResult.reason || 'Email service connection failed'}). Please check email configuration.`
       });
     }
+
+    return res.json({
+      success: true,
+      message: `A 6-digit password reset OTP code has been sent to ${cleanEmail}. Please check your Inbox and Spam / Junk folder.`,
+      email: cleanEmail,
+      studentName,
+      cooldownSeconds: COOLDOWN_SECONDS,
+      expiresInSeconds: 300
+    });
   } catch (error) {
     console.error('Error in forgotPassword controller:', error);
     return res.status(500).json({

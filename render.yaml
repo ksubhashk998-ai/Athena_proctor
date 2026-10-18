@@ -25,6 +25,12 @@ services:
         sync: false
       - key: EMAIL_APP_PASSWORD
         sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: BREVO_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
       - key: ARCFACE_API_KEY
         sync: false
       - key: PYTHON_DETECTOR_URL

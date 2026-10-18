@@ -409,13 +409,8 @@ function Login() {
       );
 
       if (res.data && res.data.success) {
-        let successMsg = `✉️ 6-Digit OTP code dispatched to ${targetEmail}. Please check your Inbox and Spam / Junk folder.`;
-        if (res.data.devOtp) {
-          successMsg += ` (Dev OTP: ${res.data.devOtp})`;
-          setForgotOtp(res.data.devOtp);
-        } else {
-          setForgotOtp("");
-        }
+        const successMsg = `✉️ 6-Digit OTP code dispatched to ${targetEmail}. Please check your Inbox and Spam / Junk folder.`;
+        setForgotOtp("");
         setForgotSuccess(successMsg);
         setForgotStep("otp_reset");
         setForgotCooldown(30);
@@ -646,11 +641,8 @@ function Login() {
 
       if (res.data && res.data.success) {
         setOtpCooldown(30);
-        let successMsg = `🔄 6-Digit OTP delivered to ${tempStudent.email}. Please check your Inbox and Spam / Junk folder.`;
-        if (res.data.devOtp) {
-          successMsg += ` (Dev OTP: ${res.data.devOtp})`;
-          setOtpInput(res.data.devOtp);
-        }
+        const successMsg = `🔄 6-Digit OTP delivered to ${tempStudent.email}. Please check your Inbox and Spam / Junk folder.`;
+        setOtpInput("");
         setOtpSuccess(successMsg);
       } else {
         setOtpError(res.data?.error || "Unable to resend OTP.");

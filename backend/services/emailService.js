@@ -39,7 +39,9 @@ function getTransporter() {
   }
 
   cachedTransporter = nodemailer.createTransport({
-    service: 'gmail',
+    host: process.env.SMTP_HOST || 'smtp.gmail.com',
+    port: parseInt(process.env.SMTP_PORT, 10) || 587,
+    secure: process.env.SMTP_SECURE === 'true' || false,
     auth: {
       user: emailUser,
       pass: emailPass
@@ -47,9 +49,9 @@ function getTransporter() {
     tls: {
       rejectUnauthorized: false
     },
-    connectionTimeout: 10000,
-    greetingTimeout: 5000,
-    socketTimeout: 15000
+    connectionTimeout: 4000, // Fast 4s timeout so cloud firewall blocks fail fast
+    greetingTimeout: 2500,
+    socketTimeout: 5000
   });
 
   return cachedTransporter;
@@ -69,6 +71,39 @@ async function sendOtpEmail(toEmail, studentName, otpCode, customSubject, purpos
 
   const subject = customSubject || 'Athena Smart Proctoring - Verification OTP';
   const actionDescription = purposeText || 'Your One-Time Password (OTP) for Athena Smart Proctoring is:';
+
+  // Check for HTTPS email API key (Resend - uses Port 443, immune to cloud SMTP blocks)
+  if (process.env.RESEND_API_KEY) {
+    try {
+      const axios = require('axios');
+      const fromEmail = process.env.EMAIL_FROM || 'Athena Proctoring <onboarding@resend.dev>';
+      const resendRes = await axios.post(
+        'https://api.resend.com/emails',
+        {
+          from: fromEmail,
+          to: [toEmail],
+          subject: subject,
+          html: htmlContent
+        },
+        {
+          headers: {
+            'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 6000
+        }
+      );
+      console.log(`✉️ Real-time OTP delivered via Resend HTTPS to ${toEmail}. ID: ${resendRes.data?.id}`);
+      return {
+        success: true,
+        delivered: true,
+        messageId: resendRes.data?.id,
+        otpCode
+      };
+    } catch (resendErr) {
+      console.warn('Resend HTTPS notice:', resendErr.response?.data?.message || resendErr.message);
+    }
+  }
 
   const htmlContent = `
     <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #070c18; padding: 40px 20px; color: #f8fafc;">

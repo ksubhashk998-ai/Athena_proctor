@@ -423,6 +423,14 @@ function Login() {
         setForgotError(res.data?.error || "Failed to send password reset OTP.");
       }
     } catch (err) {
+      if (err.response && err.response.status === 429) {
+        const remaining = err.response.data?.cooldownRemaining || 20;
+        setForgotCooldown(remaining);
+        setForgotStep("otp_reset");
+        setForgotError("");
+        setForgotSuccess(`⏳ An OTP was recently generated for ${targetEmail}. Please enter the 6-digit code below (or wait ${remaining}s to resend).`);
+        return;
+      }
       const errMsg = err.response?.data?.error || err.message || "Unable to send reset OTP";
       setForgotError(`❌ ${errMsg}`);
     } finally {
@@ -1192,12 +1200,37 @@ function Login() {
                   onClick={handleSendForgotOtp}
                   style={{
                     ...styles.loginButton,
-                    ...(forgotLoading && styles.disabledButton)
+                    ...((forgotLoading || forgotCooldown > 0) && styles.disabledButton)
                   }}
-                  disabled={forgotLoading}
+                  disabled={forgotLoading || forgotCooldown > 0}
                 >
-                  {forgotLoading ? "Dispatching OTP..." : "Send Password Reset OTP ➔"}
+                  {forgotLoading
+                    ? "Dispatching OTP..."
+                    : forgotCooldown > 0
+                    ? `⏳ Please wait ${forgotCooldown}s`
+                    : "Send Password Reset OTP ➔"}
                 </button>
+
+                <div style={{ textAlign: "center", marginTop: "14px" }}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setForgotStep("otp_reset");
+                      setForgotError("");
+                    }}
+                    style={{
+                      background: "transparent",
+                      border: "none",
+                      color: "#818cf8",
+                      fontSize: "0.85rem",
+                      cursor: "pointer",
+                      textDecoration: "underline",
+                      fontWeight: 500
+                    }}
+                  >
+                    Already requested an OTP code? Enter Code ➔
+                  </button>
+                </div>
               </div>
             ) : (
               <div>

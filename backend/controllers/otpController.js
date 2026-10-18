@@ -73,12 +73,12 @@ const sendOtp = async (req, res) => {
       { upsert: true, new: true }
     );
 
-    // Dispatch responsive HTML email via Gmail Nodemailer
-    try {
-      await sendOtpEmail(cleanEmail, studentName, otpCode);
-    } catch (emailErr) {
+    // Asynchronously dispatch email via pooled Nodemailer (non-blocking for instant client response)
+    sendOtpEmail(cleanEmail, studentName, otpCode).then(() => {
+      console.log(`✉️ Real-time OTP email delivered to ${cleanEmail}`);
+    }).catch((emailErr) => {
       console.warn(`✉️ Email dispatch notice (${emailErr.message}). Active OTP: [${otpCode}]`);
-    }
+    });
 
     console.log(`✉️ 6-Digit OTP generated & stored in MongoDB for ${cleanEmail}: ${otpCode}`);
 
@@ -254,18 +254,18 @@ const forgotPassword = async (req, res) => {
       { upsert: true, new: true }
     );
 
-    // Dispatch responsive HTML email via Nodemailer
-    try {
-      await sendOtpEmail(
-        cleanEmail,
-        studentName,
-        otpCode,
-        'Athena Smart Proctoring - Password Reset OTP',
-        'Your One-Time Password (OTP) to reset your Athena Smart Proctoring account password is:'
-      );
-    } catch (emailErr) {
+    // Asynchronously dispatch email via pooled Nodemailer (non-blocking for instant client response)
+    sendOtpEmail(
+      cleanEmail,
+      studentName,
+      otpCode,
+      'Athena Smart Proctoring - Password Reset OTP',
+      'Your One-Time Password (OTP) to reset your Athena Smart Proctoring account password is:'
+    ).then(() => {
+      console.log(`✉️ Real-time password reset OTP delivered to ${cleanEmail}`);
+    }).catch((emailErr) => {
       console.warn(`✉️ Email dispatch notice (${emailErr.message}). Active Password Reset OTP: [${otpCode}]`);
-    }
+    });
 
     console.log(`✉️ Password Reset 6-Digit OTP generated & stored in MongoDB for ${cleanEmail}: ${otpCode}`);
 

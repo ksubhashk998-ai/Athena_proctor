@@ -5,24 +5,51 @@ function normalizeEmailCredential(value) {
   return value.trim().replace(/\s+/g, '');
 }
 
+let cachedTransporter = null;
+
 /**
- * Create Nodemailer Transporter using environment variables
+ * Returns a pooled, reusable Nodemailer Transporter instance.
+ * Using Gmail Direct SSL (Port 465) with connection pooling (pool: true)
+ * eliminates redundant TCP/TLS handshakes and drastically speeds up OTP dispatch.
  */
-function createTransporter() {
+function getTransporter() {
+  if (cachedTransporter) {
+    return cachedTransporter;
+  }
+
   const emailUser = normalizeEmailCredential(process.env.EMAIL_USER);
   const emailPass = normalizeEmailCredential(process.env.EMAIL_APP_PASSWORD || process.env.EMAIL_PASS);
 
   if (emailUser && emailPass) {
-    return nodemailer.createTransport({
-      service: 'gmail',
+    cachedTransporter = nodemailer.createTransport({
+      host: 'smtp.gmail.com',
+      port: 465,
+      secure: true, // Direct SSL is significantly faster and lower latency than STARTTLS
+      pool: true,   // Connection pooling reuses open TLS connections
+      maxConnections: 5,
+      maxMessages: 100,
+      rateDelta: 1000,
+      rateLimit: 5,
       auth: {
         user: emailUser,
         pass: emailPass
       },
       tls: {
         rejectUnauthorized: false
-      }
+      },
+      connectionTimeout: 8000, // 8s connection timeout
+      greetingTimeout: 4000,   // 4s greeting timeout
+      socketTimeout: 12000     // 12s socket timeout
     });
+
+    // Verify and pre-warm the pool connection in the background
+    cachedTransporter.verify().then(() => {
+      console.log('✅ SMTP connection pool verified and pre-warmed for rapid OTP delivery');
+    }).catch((err) => {
+      console.warn('⚠️ SMTP pre-warm notice:', err.message);
+    });
+
+    return cachedTransporter;
   }
   return null;
 }
@@ -37,7 +64,7 @@ function createTransporter() {
  * @returns {Promise<boolean>}
  */
 async function sendOtpEmail(toEmail, studentName, otpCode, customSubject, purposeText) {
-  const transporter = createTransporter();
+  const transporter = getTransporter();
 
   const subject = customSubject || 'Athena Smart Proctoring - Verification OTP';
   const actionDescription = purposeText || 'Your One-Time Password (OTP) for Athena Smart Proctoring is:';

@@ -416,11 +416,14 @@ const forgotPassword = async (req, res) => {
     await saveOtpRecord(cleanEmail, studentName, otpHash, tokenHash, now);
 
     // Construct password reset link using deployed frontend URL
-    const frontendBase =
+    let frontendBase =
       (process.env.FRONTEND_URL || '').trim() ||
       (process.env.CLIENT_URL && !process.env.CLIENT_URL.includes('localhost') ? process.env.CLIENT_URL : '').trim() ||
       (req.headers.origin && !req.headers.origin.includes('localhost') ? req.headers.origin : '').trim() ||
       'https://athena-proctor.vercel.app';
+    if (frontendBase && !/^https?:\/\//i.test(frontendBase)) {
+      frontendBase = `https://${frontendBase}`;
+    }
     const cleanFrontendUrl = frontendBase.replace(/\/+$/, '');
     const resetLink = `${cleanFrontendUrl}/reset-password?token=${resetToken}&email=${encodeURIComponent(cleanEmail)}`;
 

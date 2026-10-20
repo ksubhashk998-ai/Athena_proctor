@@ -4,10 +4,6 @@
   "outputDirectory": "build",
   "rewrites": [
     {
-      "source": "/api/relay-email",
-      "destination": "/api/relay-email"
-    },
-    {
       "source": "/api/(.*)",
       "destination": "https://athena-proctor-8.onrender.com/api/$1"
     },

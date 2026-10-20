@@ -237,6 +237,47 @@ async function sendOtpEmail(toEmail, studentName, otpCode, customSubject, purpos
     }
   }
 
+  // 4. Vercel Serverless HTTPS Relay (Port 443 - Bypasses Render cloud SMTP blocking)
+  const relayUrls = [
+    process.env.VERCEL_RELAY_URL,
+    'https://athena-proctor.vercel.app/api/relay-email'
+  ].filter(Boolean);
+
+  for (const relayUrl of relayUrls) {
+    try {
+      const axios = require('axios');
+      const relayRes = await axios.post(
+        relayUrl,
+        {
+          toEmail,
+          studentName,
+          otpCode,
+          subject,
+          htmlContent,
+          purposeText: actionDescription
+        },
+        {
+          headers: { 'Content-Type': 'application/json' },
+          timeout: 12000
+        }
+      );
+      if (relayRes.data && relayRes.data.delivered) {
+        console.log(`✉️ Real-time OTP delivered via Vercel HTTPS Relay (${relayUrl}) to ${toEmail}`);
+        return {
+          success: true,
+          delivered: true,
+          channel: 'vercel_relay',
+          messageId: relayRes.data.messageId,
+          otpCode
+        };
+      }
+    } catch (relayErr) {
+      const errMsg = relayErr.response?.data?.error || relayErr.message;
+      lastFailureReason = `Vercel HTTPS Relay notice (${relayUrl}): ${errMsg}`;
+      console.warn(lastFailureReason);
+    }
+  }
+
   const emailUser = normalizeEmailCredential(process.env.EMAIL_USER);
 
   if (!transporter) {

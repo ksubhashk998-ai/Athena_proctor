@@ -409,18 +409,8 @@ function Login() {
       );
 
       if (res.data && res.data.success) {
-        if (res.data.delivered === true) {
-          const successMsg = `✉️ 6-Digit OTP code dispatched to ${targetEmail}. Please check your Inbox and Spam / Junk folder.`;
-          setForgotOtp("");
-          setForgotSuccess(successMsg);
-        } else if (res.data.backupOtp) {
-          const successMsg = `🔑 6-Digit OTP generated for ${targetEmail}: ${res.data.backupOtp} (Cloud notice: External email delayed).`;
-          setForgotOtp(res.data.backupOtp);
-          setForgotSuccess(successMsg);
-        } else {
-          setForgotSuccess(`✉️ 6-Digit OTP code dispatched to ${targetEmail}. Please check your Inbox and Spam / Junk folder.`);
-          setForgotOtp("");
-        }
+        setForgotOtp("");
+        setForgotSuccess(`✉️ 6-Digit OTP code dispatched to ${targetEmail}. Please check your Gmail Inbox and Spam / Junk folder.`);
         setForgotStep("otp_reset");
         setForgotCooldown(res.data.cooldownSeconds || 30);
       } else {
@@ -650,14 +640,8 @@ function Login() {
 
       if (res.data && res.data.success) {
         setOtpCooldown(res.data.cooldownSeconds || 30);
-        if (res.data.backupOtp) {
-          setOtpInput(res.data.backupOtp);
-          setOtpSuccess(`🔄 6-Digit OTP: ${res.data.backupOtp}`);
-        } else {
-          const successMsg = `🔄 6-Digit OTP delivered to ${tempStudent.email}. Please check your Inbox and Spam / Junk folder.`;
-          setOtpInput("");
-          setOtpSuccess(successMsg);
-        }
+        setOtpInput("");
+        setOtpSuccess(`🔄 6-Digit OTP delivered to ${tempStudent.email}. Please check your Gmail Inbox and Spam / Junk folder.`);
       } else {
         setOtpError(res.data?.error || "Unable to resend OTP.");
       }

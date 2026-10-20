@@ -190,17 +190,11 @@ const sendOtp = async (req, res) => {
       });
     }
 
-    console.warn(`⚠️ Cloud Email Delivery Notice: ${dispatchResult.reason}. Active OTP: [${otpCode}]`);
-    return res.json({
-      success: true,
+    console.warn(`⚠️ Cloud Email Delivery Notice: ${dispatchResult.reason}`);
+    return res.status(502).json({
+      success: false,
       delivered: false,
-      message: `A 6-digit OTP code has been generated for ${cleanEmail}.`,
-      email: cleanEmail,
-      studentName,
-      cooldownSeconds: COOLDOWN_SECONDS,
-      expiresInSeconds: 300,
-      backupOtp: otpCode,
-      deliveryNotice: dispatchResult.reason
+      error: `Could not send OTP email to ${cleanEmail}: ${dispatchResult.reason || 'Email service connection error'}. Please verify email configuration.`
     });
   } catch (error) {
     console.error('Error in sendOtp controller:', error);
@@ -382,17 +376,11 @@ const forgotPassword = async (req, res) => {
       });
     }
 
-    console.warn(`⚠️ Cloud Password Reset Notice: ${dispatchResult.reason}. Active OTP: [${otpCode}]`);
-    return res.json({
-      success: true,
+    console.warn(`⚠️ Cloud Password Reset Notice: ${dispatchResult.reason}`);
+    return res.status(502).json({
+      success: false,
       delivered: false,
-      message: `A 6-digit password reset OTP has been generated for ${cleanEmail}.`,
-      email: cleanEmail,
-      studentName,
-      cooldownSeconds: COOLDOWN_SECONDS,
-      expiresInSeconds: 300,
-      backupOtp: otpCode,
-      deliveryNotice: dispatchResult.reason
+      error: `Could not send password reset OTP to ${cleanEmail}: ${dispatchResult.reason || 'Email service connection error'}. Please check email configuration.`
     });
   } catch (error) {
     console.error('Error in forgotPassword controller:', error);

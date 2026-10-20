@@ -132,24 +132,25 @@ async function sendOtpEmail(toEmail, studentName, otpCode, customSubject, purpos
   let lastFailureReason = '';
 
   // 1. Check for Brevo HTTPS API Key (Port 443 - 100% bypasses cloud SMTP restrictions)
-  if (process.env.BREVO_API_KEY) {
+  const brevoApiKey = (process.env.BREVO_API_KEY || '').trim().replace(/^['"]|['"]$/g, '');
+  if (brevoApiKey) {
     try {
       const axios = require('axios');
-      const senderEmail = process.env.EMAIL_FROM || process.env.EMAIL_USER || 'ksubhashk998@gmail.com';
+      const senderEmail = (process.env.EMAIL_FROM || process.env.EMAIL_USER || 'ksubhashk998@gmail.com').trim();
       const brevoRes = await axios.post(
         'https://api.brevo.com/v3/smtp/email',
         {
           sender: { name: 'Athena Proctoring', email: senderEmail },
-          to: [{ email: toEmail, name: studentName }],
+          to: [{ email: toEmail.trim().toLowerCase(), name: studentName || 'Student' }],
           subject: subject,
           htmlContent: htmlContent
         },
         {
           headers: {
-            'api-key': process.env.BREVO_API_KEY,
+            'api-key': brevoApiKey,
             'Content-Type': 'application/json'
           },
-          timeout: 7000
+          timeout: 8000
         }
       );
       console.log(`✉️ Real-time OTP delivered via Brevo HTTPS to ${toEmail}. Message ID: ${brevoRes.data?.messageId}`);
@@ -161,7 +162,8 @@ async function sendOtpEmail(toEmail, studentName, otpCode, customSubject, purpos
         otpCode
       };
     } catch (brevoErr) {
-      lastFailureReason = `Brevo HTTPS error: ${brevoErr.response?.data?.message || brevoErr.message}`;
+      const errMsg = brevoErr.response?.data?.message || brevoErr.message;
+      lastFailureReason = `Brevo HTTPS notice: ${errMsg}`;
       console.warn(lastFailureReason);
     }
   }

@@ -129,7 +129,44 @@ async function sendOtpEmail(toEmail, studentName, otpCode, customSubject, purpos
     </div>
   `;
 
-  // 1. Check for Resend HTTPS API Key (Port 443 - 100% bypasses cloud SMTP restrictions)
+  let lastFailureReason = '';
+
+  // 1. Check for Brevo HTTPS API Key (Port 443 - 100% bypasses cloud SMTP restrictions)
+  if (process.env.BREVO_API_KEY) {
+    try {
+      const axios = require('axios');
+      const senderEmail = process.env.EMAIL_FROM || process.env.EMAIL_USER || 'ksubhashk998@gmail.com';
+      const brevoRes = await axios.post(
+        'https://api.brevo.com/v3/smtp/email',
+        {
+          sender: { name: 'Athena Proctoring', email: senderEmail },
+          to: [{ email: toEmail, name: studentName }],
+          subject: subject,
+          htmlContent: htmlContent
+        },
+        {
+          headers: {
+            'api-key': process.env.BREVO_API_KEY,
+            'Content-Type': 'application/json'
+          },
+          timeout: 7000
+        }
+      );
+      console.log(`✉️ Real-time OTP delivered via Brevo HTTPS to ${toEmail}. Message ID: ${brevoRes.data?.messageId}`);
+      return {
+        success: true,
+        delivered: true,
+        channel: 'brevo_https',
+        messageId: brevoRes.data?.messageId,
+        otpCode
+      };
+    } catch (brevoErr) {
+      lastFailureReason = `Brevo HTTPS error: ${brevoErr.response?.data?.message || brevoErr.message}`;
+      console.warn(lastFailureReason);
+    }
+  }
+
+  // 2. Check for Resend HTTPS API Key (Port 443 - 100% bypasses cloud SMTP restrictions)
   if (process.env.RESEND_API_KEY) {
     try {
       const axios = require('axios');
@@ -147,51 +184,56 @@ async function sendOtpEmail(toEmail, studentName, otpCode, customSubject, purpos
             'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
             'Content-Type': 'application/json'
           },
-          timeout: 6000
+          timeout: 7000
         }
       );
       console.log(`✉️ Real-time OTP delivered via Resend HTTPS to ${toEmail}. ID: ${resendRes.data?.id}`);
       return {
         success: true,
         delivered: true,
+        channel: 'resend_https',
         messageId: resendRes.data?.id,
         otpCode
       };
     } catch (resendErr) {
-      console.warn('Resend HTTPS notice:', resendErr.response?.data?.message || resendErr.message);
+      lastFailureReason = `Resend HTTPS error: ${resendErr.response?.data?.message || resendErr.message}`;
+      console.warn(lastFailureReason);
     }
   }
 
-  // 2. Check for Brevo HTTPS API Key (Port 443 - 100% bypasses cloud SMTP restrictions)
-  if (process.env.BREVO_API_KEY) {
+  // 3. Check for SendGrid HTTPS API Key (Port 443 - 100% bypasses cloud SMTP restrictions)
+  if (process.env.SENDGRID_API_KEY) {
     try {
       const axios = require('axios');
-      const senderEmail = process.env.EMAIL_USER || 'ksubhashk998@gmail.com';
-      const brevoRes = await axios.post(
-        'https://api.brevo.com/v3/smtp/email',
+      const senderEmail = process.env.EMAIL_FROM || process.env.EMAIL_USER || 'ksubhashk998@gmail.com';
+      const sendgridRes = await axios.post(
+        'https://api.sendgrid.com/v3/mail/send',
         {
-          sender: { name: 'Athena Proctoring', email: senderEmail },
-          to: [{ email: toEmail, name: studentName }],
+          personalizations: [{ to: [{ email: toEmail, name: studentName }] }],
+          from: { email: senderEmail, name: 'Athena Proctoring' },
           subject: subject,
-          htmlContent: htmlContent
+          content: [{ type: 'text/html', value: htmlContent }]
         },
         {
           headers: {
-            'api-key': process.env.BREVO_API_KEY,
+            'Authorization': `Bearer ${process.env.SENDGRID_API_KEY}`,
             'Content-Type': 'application/json'
           },
-          timeout: 6000
+          timeout: 7000
         }
       );
-      console.log(`✉️ Real-time OTP delivered via Brevo HTTPS to ${toEmail}. Message ID: ${brevoRes.data?.messageId}`);
+      const msgId = sendgridRes.headers?.['x-message-id'] || 'sendgrid-' + Date.now();
+      console.log(`✉️ Real-time OTP delivered via SendGrid HTTPS to ${toEmail}. Message ID: ${msgId}`);
       return {
         success: true,
         delivered: true,
-        messageId: brevoRes.data?.messageId,
+        channel: 'sendgrid_https',
+        messageId: msgId,
         otpCode
       };
-    } catch (brevoErr) {
-      console.warn('Brevo HTTPS notice:', brevoErr.response?.data?.message || brevoErr.message);
+    } catch (sendgridErr) {
+      lastFailureReason = `SendGrid HTTPS error: ${sendgridErr.response?.data?.errors?.[0]?.message || sendgridErr.message}`;
+      console.warn(lastFailureReason);
     }
   }
 
@@ -203,7 +245,7 @@ async function sendOtpEmail(toEmail, studentName, otpCode, customSubject, purpos
     return {
       success: false,
       delivered: false,
-      reason,
+      reason: lastFailureReason || reason,
       otpCode
     };
   }
@@ -218,19 +260,24 @@ async function sendOtpEmail(toEmail, studentName, otpCode, customSubject, purpos
 
   try {
     const info = await transporter.sendMail(mailOptions);
-    console.log(`✉️ Real-time OTP email delivered to ${toEmail}. Message ID: ${info.messageId}`);
+    console.log(`✉️ Real-time OTP email delivered via SMTP to ${toEmail}. Message ID: ${info.messageId}`);
     return {
       success: true,
       delivered: true,
+      channel: 'smtp',
       messageId: info.messageId,
       otpCode
     };
   } catch (error) {
-    console.error(`OTP email delivery failed for ${toEmail}:`, error.message);
+    const isTimeout = error.message?.includes('timeout') || error.code === 'ETIMEDOUT';
+    const failureReason = isTimeout
+      ? 'Outbound SMTP port blocked or timed out on cloud host. (Use Brevo or Resend HTTPS API key for cloud email delivery).'
+      : error.message;
+    console.error(`OTP email delivery failed for ${toEmail}:`, failureReason);
     return {
       success: false,
       delivered: false,
-      reason: error.message,
+      reason: failureReason,
       otpCode
     };
   }

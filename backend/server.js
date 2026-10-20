@@ -346,8 +346,10 @@ app.post('/api/resend-otp', resendOtp);
 
 app.post('/api/auth/forgot-password', forgotPassword);
 app.post('/api/forgot-password', forgotPassword);
+app.post('/api/otp/forgot-password', forgotPassword);
 app.post('/api/auth/reset-password', resetPassword);
 app.post('/api/reset-password', resetPassword);
+app.post('/api/otp/reset-password', resetPassword);
 
 // Session configuration with memory fallback
 let sessionStore;

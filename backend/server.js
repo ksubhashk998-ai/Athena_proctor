@@ -333,7 +333,15 @@ const handleResendOtpRoute = async (req, res) => {
 };
 
 // Register Top-Level Direct Express Routes
-const { sendOtp, verifyOtp, resendOtp, forgotPassword, resetPassword } = require('./controllers/otpController');
+const {
+    sendOtp,
+    verifyOtp,
+    resendOtp,
+    forgotPassword,
+    verifyResetToken,
+    resetPasswordWithToken,
+    resetPassword
+} = require('./controllers/otpController');
 
 app.post('/api/auth/send-otp', sendOtp);
 app.post('/api/send-otp', sendOtp);
@@ -347,6 +355,16 @@ app.post('/api/resend-otp', resendOtp);
 app.post('/api/auth/forgot-password', forgotPassword);
 app.post('/api/forgot-password', forgotPassword);
 app.post('/api/otp/forgot-password', forgotPassword);
+
+app.get('/api/auth/verify-reset-token', verifyResetToken);
+app.post('/api/auth/verify-reset-token', verifyResetToken);
+app.get('/api/verify-reset-token', verifyResetToken);
+app.post('/api/verify-reset-token', verifyResetToken);
+
+app.post('/api/auth/reset-password-with-token', resetPasswordWithToken);
+app.post('/api/reset-password-with-token', resetPasswordWithToken);
+app.post('/api/otp/reset-password-with-token', resetPasswordWithToken);
+
 app.post('/api/auth/reset-password', resetPassword);
 app.post('/api/reset-password', resetPassword);
 app.post('/api/otp/reset-password', resetPassword);

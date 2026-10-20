@@ -410,11 +410,14 @@ function Login() {
 
       if (res.data && res.data.success) {
         setForgotOtp("");
-        setForgotSuccess(`✉️ 6-Digit OTP code dispatched to ${targetEmail}. Please check your Gmail Inbox and Spam / Junk folder.`);
+        setForgotSuccess(
+          res.data.message ||
+          `✉️ Password reset email dispatched to ${targetEmail}. Please check your Gmail Inbox and Spam / Junk folder for the reset link or 6-digit OTP.`
+        );
         setForgotStep("otp_reset");
         setForgotCooldown(res.data.cooldownSeconds || 30);
       } else {
-        setForgotError(res.data?.error || "Failed to send password reset OTP.");
+        setForgotError(res.data?.error || "Failed to send password reset email.");
       }
     } catch (err) {
       if (err.response && err.response.status === 429) {
@@ -422,10 +425,10 @@ function Login() {
         setForgotCooldown(remaining);
         setForgotStep("otp_reset");
         setForgotError("");
-        setForgotSuccess(`⏳ An OTP was recently generated for ${targetEmail}. Please enter the 6-digit code below (or wait ${remaining}s to resend).`);
+        setForgotSuccess(`⏳ A reset request was recently sent for ${targetEmail}. Please check your email or wait ${remaining}s to resend.`);
         return;
       }
-      const errMsg = err.response?.data?.error || err.message || "Unable to send reset OTP";
+      const errMsg = err.response?.data?.error || err.message || "Unable to send reset email";
       setForgotError(`❌ ${errMsg}`);
     } finally {
       setForgotLoading(false);
@@ -1225,8 +1228,8 @@ function Login() {
             ) : (
               <div>
                 <p style={{ fontSize: "0.85rem", color: "#94a3b8", marginBottom: "16px", lineHeight: "1.5" }}>
-                  OTP code dispatched to <strong style={{ color: "#38bdf8" }}>{forgotEmail}</strong>.<br />
-                  Enter the 6-digit code and your new password below.
+                  Reset instructions dispatched to <strong style={{ color: "#38bdf8" }}>{forgotEmail}</strong>.<br />
+                  Click the <strong>Reset Link</strong> in your email, or enter the 6-digit OTP code below to set a new password:
                   <span style={{ display: "block", color: "#fbbf24", fontSize: "0.8rem", marginTop: "6px" }}>
                     💡 Tip: If not found in your Inbox, please check your <strong>Spam / Junk</strong> folder.
                   </span>

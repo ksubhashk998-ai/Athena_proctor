@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { BrowserRouter as Router, Routes, Route, useLocation, Navigate } from "react-router-dom";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
+import ResetPassword from "./pages/ResetPassword";
 import Dashboard from "./pages/Dashboard";
 import ProctorDashboard from "./pages/ProctorDashboard";
 import AthenaExamDashboard from "./pages/AthenaExamDashboard";
@@ -96,9 +97,10 @@ function AppContent() {
 
       <div>
         <Routes>
-          {/* Login Routes */}
+          {/* Login & Auth Routes */}
           <Route path="/" element={<Login />} />
           <Route path="/login" element={<Login />} />
+          <Route path="/reset-password" element={<ResetPassword />} />
 
           {/* Student Registration Route */}
           <Route path="/register" element={<Register />} />

@@ -16,6 +16,10 @@ const otpSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  tokenHash: {
+    type: String,
+    required: false
+  },
   attempts: {
     type: Number,
     default: 0

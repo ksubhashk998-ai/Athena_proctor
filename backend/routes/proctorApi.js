@@ -304,7 +304,15 @@ const handleResendOtp = async (req, res) => {
 };
 
 // Route Registrations with Aliases
-const { sendOtp, verifyOtp, resendOtp, forgotPassword, resetPassword } = require('../controllers/otpController');
+const {
+    sendOtp,
+    verifyOtp,
+    resendOtp,
+    forgotPassword,
+    verifyResetToken,
+    resetPasswordWithToken,
+    resetPassword
+} = require('../controllers/otpController');
 
 router.post('/auth/send-otp', sendOtp);
 router.post('/send-otp', sendOtp);
@@ -321,6 +329,15 @@ router.post('/otp/resend', resendOtp);
 router.post('/auth/forgot-password', forgotPassword);
 router.post('/forgot-password', forgotPassword);
 router.post('/otp/forgot-password', forgotPassword);
+
+router.get('/auth/verify-reset-token', verifyResetToken);
+router.post('/auth/verify-reset-token', verifyResetToken);
+router.get('/verify-reset-token', verifyResetToken);
+router.post('/verify-reset-token', verifyResetToken);
+
+router.post('/auth/reset-password-with-token', resetPasswordWithToken);
+router.post('/reset-password-with-token', resetPasswordWithToken);
+router.post('/otp/reset-password-with-token', resetPasswordWithToken);
 
 router.post('/auth/reset-password', resetPassword);
 router.post('/reset-password', resetPassword);

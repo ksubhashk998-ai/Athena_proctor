@@ -1165,27 +1165,35 @@ app.post('/api/register', async (req, res) => {
             return res.status(400).json({ error: 'All fields are required' });
         }
         
-        // Check if student already exists
+        // Check if student already exists with completed password
         const existingStudent = await Student.findOne({ $or: [{ studentId }, { email }] });
-        if (existingStudent) {
+        if (existingStudent && (existingStudent.password || existingStudent.passwordHash)) {
             return res.status(400).json({ error: 'Student ID or Email already exists' });
         }
 
         // Hash password
         const hashedPassword = await bcrypt.hash(password, 10);
         
-        // Create new student
-        const student = new Student({
-            studentId,
-            name,
-            email,
-            password: hashedPassword,
-            course,
-            semester,
-            lastLogin: new Date()
-        });
-        
-        await student.save();
+        let student = existingStudent;
+        if (student) {
+            student.name = name;
+            student.password = hashedPassword;
+            student.course = course;
+            student.semester = semester;
+            student.lastLogin = new Date();
+            await student.save();
+        } else {
+            student = new Student({
+                studentId,
+                name,
+                email,
+                password: hashedPassword,
+                course,
+                semester,
+                lastLogin: new Date()
+            });
+            await student.save();
+        }
         
         // Create token
         const token = jwt.sign(

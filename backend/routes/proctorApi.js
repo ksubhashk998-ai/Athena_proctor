@@ -380,8 +380,9 @@ const handleRegister = async (req, res) => {
 
         const cleanEmail = email.trim().toLowerCase();
 
-        // 1. Check in-memory student cache
-        if (inMemoryStudents.has(cleanEmail)) {
+        // 1. Check in-memory student cache (only block if account has password registered)
+        const memStudent = inMemoryStudents.get(cleanEmail);
+        if (memStudent && (memStudent.password || memStudent.passwordHash)) {
             return res.status(400).json({ 
                 success: false, 
                 error: 'An account with this email address already exists. Please login.' 
@@ -398,7 +399,8 @@ const handleRegister = async (req, res) => {
             }
         }
 
-        if (existingStudent) {
+        // Only block if account already has a registered password
+        if (existingStudent && (existingStudent.password || existingStudent.passwordHash)) {
             return res.status(400).json({ 
                 success: false, 
                 error: 'An account with this email address already exists. Please login.' 
@@ -426,25 +428,41 @@ const handleRegister = async (req, res) => {
             verificationStatus: 'Enrolled'
         };
 
-        // Create student doc in MongoDB if connected
+        // Create or update student doc in MongoDB if connected
         if (mongoose.connection.readyState === 1 && Student) {
             try {
-                const studentDoc = new Student({
-                    studentId,
-                    firstName: firstName.trim(),
-                    lastName: lastName.trim(),
-                    fullName,
-                    name: fullName,
-                    email: cleanEmail,
-                    password,
-                    passwordHash: password,
-                    faceEmbeddings,
-                    faceEnrolled: true,
-                    faceEnrolledAt: new Date(),
-                    registrationDate: new Date(),
-                    verificationStatus: 'Enrolled'
-                });
-                await studentDoc.save();
+                let studentDoc = existingStudent;
+                if (studentDoc) {
+                    studentDoc.firstName = firstName.trim();
+                    studentDoc.lastName = lastName.trim();
+                    studentDoc.fullName = fullName;
+                    studentDoc.name = fullName;
+                    studentDoc.password = password;
+                    studentDoc.passwordHash = password;
+                    if (faceEmbeddings) studentDoc.faceEmbeddings = faceEmbeddings;
+                    studentDoc.faceEnrolled = true;
+                    studentDoc.faceEnrolledAt = new Date();
+                    studentDoc.registrationDate = studentDoc.registrationDate || new Date();
+                    studentDoc.verificationStatus = 'Enrolled';
+                    await studentDoc.save();
+                } else {
+                    studentDoc = new Student({
+                        studentId,
+                        firstName: firstName.trim(),
+                        lastName: lastName.trim(),
+                        fullName,
+                        name: fullName,
+                        email: cleanEmail,
+                        password,
+                        passwordHash: password,
+                        faceEmbeddings,
+                        faceEnrolled: true,
+                        faceEnrolledAt: new Date(),
+                        registrationDate: new Date(),
+                        verificationStatus: 'Enrolled'
+                    });
+                    await studentDoc.save();
+                }
                 if (studentDoc.getPublicProfile) {
                     publicProfile = studentDoc.getPublicProfile();
                 }

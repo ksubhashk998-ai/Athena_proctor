@@ -380,16 +380,7 @@ const handleRegister = async (req, res) => {
 
         const cleanEmail = email.trim().toLowerCase();
 
-        // 1. Check in-memory student cache (only block if account has password registered)
-        const memStudent = inMemoryStudents.get(cleanEmail);
-        if (memStudent && (memStudent.password || memStudent.passwordHash)) {
-            return res.status(400).json({ 
-                success: false, 
-                error: 'An account with this email address already exists. Please login.' 
-            });
-        }
-
-        // 2. Check MongoDB if connected
+        // 1. Verify against MongoDB (Single Source of Truth)
         let existingStudent = null;
         if (mongoose.connection.readyState === 1 && Student) {
             try {
@@ -397,9 +388,22 @@ const handleRegister = async (req, res) => {
             } catch (e) {
                 console.warn('MongoDB Student lookup notice:', e.message);
             }
+            // If deleted or not existing in MongoDB, purge any stale in-memory cache immediately
+            if (!existingStudent || (!existingStudent.password && !existingStudent.passwordHash)) {
+                inMemoryStudents.delete(cleanEmail);
+            }
+        } else {
+            // MongoDB not connected: check offline dev in-memory cache
+            const memStudent = inMemoryStudents.get(cleanEmail);
+            if (memStudent && (memStudent.password || memStudent.passwordHash)) {
+                return res.status(400).json({ 
+                    success: false, 
+                    error: 'An account with this email address already exists. Please login.' 
+                });
+            }
         }
 
-        // Only block if account already has a registered password
+        // Only block if account already has a registered password in MongoDB
         if (existingStudent && (existingStudent.password || existingStudent.passwordHash)) {
             return res.status(400).json({ 
                 success: false, 
@@ -574,26 +578,29 @@ const handleLogin = async (req, res) => {
         const cleanEmail = email.trim().toLowerCase();
         let student = null;
 
-        // Check MongoDB if connected
+        // Check MongoDB if connected (Single Source of Truth)
         if (mongoose.connection.readyState === 1 && Student) {
             try {
                 student = await Student.findOne({ email: cleanEmail });
             } catch (e) {
                 console.warn('MongoDB Student login lookup notice:', e.message);
             }
-        }
-
-        // Fallback to in-memory store
-        if (!student && inMemoryStudents.has(cleanEmail)) {
-            const cached = inMemoryStudents.get(cleanEmail);
-            student = {
-                studentId: cached.studentId,
-                email: cached.email,
-                name: cached.name,
-                fullName: cached.fullName,
-                comparePassword: async (pwd) => pwd === cached.password,
-                getPublicProfile: () => cached
-            };
+            if (!student) {
+                inMemoryStudents.delete(cleanEmail);
+            }
+        } else {
+            // Pure offline dev mode only: fallback to in-memory store
+            if (inMemoryStudents.has(cleanEmail)) {
+                const cached = inMemoryStudents.get(cleanEmail);
+                student = {
+                    studentId: cached.studentId,
+                    email: cached.email,
+                    name: cached.name,
+                    fullName: cached.fullName,
+                    comparePassword: async (pwd) => pwd === cached.password,
+                    getPublicProfile: () => cached
+                };
+            }
         }
 
         if (!student) {
@@ -667,6 +674,18 @@ router.get(['/auth/login', '/login', '/user/login'], (req, res) => {
         message: 'Athena Proctor Login API. Please submit a POST request from the login page to log in.',
         frontendUrl: 'https://athena-proctor.vercel.app/'
     });
+});
+
+// Cache Flush & Purge Endpoints
+router.all(['/auth/flush-cache', '/flush-cache'], (req, res) => {
+    inMemoryStudents.clear();
+    return res.json({ success: true, message: 'In-memory student cache flushed completely.' });
+});
+
+router.all(['/auth/purge-cache/:email', '/purge-cache/:email'], (req, res) => {
+    const cleanEmail = (req.params.email || '').trim().toLowerCase();
+    inMemoryStudents.delete(cleanEmail);
+    return res.json({ success: true, message: `In-memory cache purged for ${cleanEmail}` });
 });
 
 

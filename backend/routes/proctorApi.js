@@ -722,6 +722,7 @@ router.delete('/face/enrollment/:studentId', async (req, res) => {
         // Clear in-memory caches
         inMemoryEmbeddings.delete(studentId);
         inMemoryStudents.delete(studentId);
+        if (email) inMemoryStudents.delete(email.toLowerCase().trim());
 
         let deletedFromDb = false;
 

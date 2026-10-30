@@ -545,35 +545,19 @@ function Login() {
         return;
       }
     } catch (error) {
-      if (error.response && error.response.status === 401) {
-        setCredentialError(error.response.data?.error || "Invalid email or password.");
-        setLoading(false);
+      setLoading(false);
+      const errMsg = error.response?.data?.error || error.response?.data?.message;
+      if (errMsg) {
+        setCredentialError(errMsg);
         return;
       }
-      console.warn("Backend auth notice, proceeding with dev verification:", error.message);
+      if (error.response && (error.response.status === 404 || error.response.status === 401)) {
+        setCredentialError("No account found with this email. Please register first.");
+        return;
+      }
+      setCredentialError("Unable to connect to authentication service. Please check database connection.");
+      return;
     }
-
-    // Fallback: Proceed to Face Verification step for dev/testing
-    const emailPrefix = userEmail.split('@')[0] || 'student';
-    const formattedName = emailPrefix
-      .split(/[._-]/)
-      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-      .join(' ');
-
-    const studentObj = {
-      studentId: getStudentIdFromEmail(userEmail),
-      name: formattedName,
-      fullName: formattedName,
-      email: userEmail,
-      course: 'Computer Science',
-      semester: 'Semester 1'
-    };
-
-    setTempStudent(studentObj);
-    setTempToken("temp_login_token");
-    setLoading(false);
-    setVerificationStep("face_verify");
-    setFaceStatusMsg(`Password verified for ${formattedName}. Position face clearly in camera to verify identity.`);
   };
 
 

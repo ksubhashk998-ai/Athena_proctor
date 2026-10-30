@@ -42,16 +42,32 @@ const loginAdmin = async (req, res) => {
       console.warn('MongoDB query warning in loginAdmin:', dbErr.message);
     }
 
-    // Default superadmin fallback
+    // Default superadmin: ensure document is persisted in MongoDB admins collection
     if (!admin && email.toLowerCase() === 'admin@proctor.com' && password === 'Admin@123') {
-      admin = {
-        _id: 'ADMIN_SUPER_1001',
-        name: 'System Administrator',
-        email: 'admin@proctor.com',
-        role: 'superadmin',
-        department: 'Exam Control Center',
-        comparePassword: async () => true
-      };
+      try {
+        admin = await Admin.findOne({ email: 'admin@proctor.com' });
+        if (!admin) {
+          admin = new Admin({
+            name: 'System Administrator',
+            email: 'admin@proctor.com',
+            password: 'Admin@123',
+            role: 'superadmin',
+            department: 'Exam Control Center'
+          });
+          await admin.save();
+          console.log('✅ Default superadmin created in MongoDB Atlas admins collection: admin@proctor.com');
+        }
+      } catch (persistErr) {
+        console.warn('Admin persistence notice:', persistErr.message);
+        admin = {
+          _id: 'ADMIN_SUPER_1001',
+          name: 'System Administrator',
+          email: 'admin@proctor.com',
+          role: 'superadmin',
+          department: 'Exam Control Center',
+          comparePassword: async () => true
+        };
+      }
     }
 
     if (!admin) {
@@ -1399,12 +1415,25 @@ const terminateSession = async (req, res) => {
 
     await new Alert({
       studentId: session.studentId,
-      sessionId: session.sessionId,
-      type: 'AUTO_TERMINATED',
-      severity: 'High',
+      sessionId: session.sessionId || `sess_${session.studentId}_${Date.now()}`,
+      studentName: session.studentName || 'Student',
+      examName: session.examName || 'Computer Science Final Assessment',
+      alertType: 'AUTO_TERMINATED',
+      severity: 'Critical',
       message: `Exam terminated for ${session.studentName}: ${terminationReason}`,
       timestamp: new Date()
-    }).save().catch(() => {});
+    }).save().catch(e => console.warn('Alert save notice:', e.message));
+
+    await new Violation({
+      studentId: session.studentId,
+      sessionId: session.sessionId || `sess_${session.studentId}_${Date.now()}`,
+      studentName: session.studentName || 'Student',
+      examName: session.examName || 'Computer Science Final Assessment',
+      type: 'SUSPICIOUS_HEAD_MOVEMENT',
+      description: `Exam auto-terminated: ${terminationReason}`,
+      severity: 'Critical',
+      timestamp: new Date()
+    }).save().catch(e => console.warn('Violation save notice:', e.message));
 
     // Broadcast Socket.IO events to student and admin rooms
     const io = req.app?.get('io');
@@ -1475,12 +1504,25 @@ const warnStudent = async (req, res) => {
 
     await new Alert({
       studentId: session?.studentId || studentId,
-      sessionId: session?.sessionId,
-      type: 'PROCTOR_WARNING',
-      severity: 'Medium',
+      sessionId: session?.sessionId || `sess_${studentId}_${Date.now()}`,
+      studentName: session?.studentName || 'Student',
+      examName: session?.examName || 'Computer Science Final Assessment',
+      alertType: 'PROCTOR_WARNING',
+      severity: 'High',
       message: warningMsg,
       timestamp: new Date()
-    }).save().catch(() => {});
+    }).save().catch(e => console.warn('Alert save notice:', e.message));
+
+    await new Violation({
+      studentId: session?.studentId || studentId,
+      sessionId: session?.sessionId || `sess_${studentId}_${Date.now()}`,
+      studentName: session?.studentName || 'Student',
+      examName: session?.examName || 'Computer Science Final Assessment',
+      type: 'PROCTOR_WARNING',
+      description: warningMsg,
+      severity: 'Medium',
+      timestamp: new Date()
+    }).save().catch(e => console.warn('Violation save notice:', e.message));
 
     const io = req.app?.get('io');
     if (io) {
@@ -1836,6 +1878,26 @@ const upsertLiveSession = async (req, res) => {
     }
 
     await session.save();
+
+    // Also persist into ExamSession model & examsessions collection
+    try {
+      await ExamSession.findOneAndUpdate(
+        { sessionId: session.sessionId },
+        {
+          sessionId: session.sessionId,
+          studentId: session.studentId,
+          studentName: session.studentName,
+          examId: session.examId || 'CS-401',
+          status: (session.status || 'active').toLowerCase(),
+          startTime: session.startTime || new Date(),
+          totalViolations: session.suspiciousActivityCount || 0,
+          tabSwitches: session.tabSwitchingCount || 0
+        },
+        { upsert: true, new: true }
+      );
+    } catch (esErr) {
+      console.warn('ExamSession sync notice:', esErr.message);
+    }
 
     const io = req.app?.get('io');
     if (io) {

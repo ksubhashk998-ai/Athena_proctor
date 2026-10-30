@@ -23,6 +23,10 @@ const Incident = require('../models/Incident');
 const VerificationLog = require('../models/VerificationLog');
 const GazeEvent = require('../models/GazeEvent');
 const LiveSession = require('../models/LiveSession');
+const Violation = mongoose.models.Violation || require('../models/Violation');
+const Alert = mongoose.models.Alert || require('../models/Alert');
+const ExamSession = mongoose.models.ExamSession || require('../models/ExamSession');
+const ProctoringLog = mongoose.models.ProctoringLog || require('../models/ProctoringLog');
 
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this-in-production';
@@ -466,23 +470,57 @@ const handleRegister = async (req, res) => {
             isActive: true
         });
 
-        if (mongoose.connection.readyState === 1 && FaceEmbedding && FaceEmbedding.findOneAndUpdate) {
+        if (mongoose.connection.readyState === 1) {
             try {
-                await FaceEmbedding.findOneAndUpdate(
-                    { studentId },
-                    {
-                        studentId,
-                        email: cleanEmail,
-                        embedding: faceEmbeddings,
-                        encryptedEmbedding: encryptedVec,
-                        imageSnapshot: imageSnapshot || null,
-                        enrolledAt: new Date(),
-                        isActive: true
-                    },
-                    { upsert: true, new: true }
-                );
+                if (FaceEmbedding && FaceEmbedding.findOneAndUpdate) {
+                    await FaceEmbedding.findOneAndUpdate(
+                        { studentId },
+                        {
+                            studentId,
+                            name: fullName,
+                            email: cleanEmail,
+                            embedding: faceEmbeddings,
+                            encryptedEmbedding: encryptedVec,
+                            imageSnapshot: imageSnapshot || null,
+                            faceEnrolled: true,
+                            enrolledAt: new Date(),
+                            isActive: true
+                        },
+                        { upsert: true, new: true }
+                    );
+                }
+
+                if (FaceProfile && FaceProfile.findOneAndUpdate) {
+                    await FaceProfile.findOneAndUpdate(
+                        { $or: [{ studentId }, { email: cleanEmail }] },
+                        {
+                            studentId,
+                            name: fullName,
+                            email: cleanEmail,
+                            embeddings: Array.isArray(faceEmbeddings?.[0]) ? faceEmbeddings : [faceEmbeddings],
+                            averageEmbedding: Array.isArray(faceEmbeddings?.[0]) ? faceEmbeddings[0] : faceEmbeddings,
+                            enrollmentDate: new Date()
+                        },
+                        { upsert: true, new: true }
+                    );
+                }
+
+                if (User && User.findOneAndUpdate) {
+                    await User.findOneAndUpdate(
+                        { email: cleanEmail },
+                        {
+                            name: fullName,
+                            email: cleanEmail,
+                            password,
+                            faceEnrolled: true,
+                            faceEmbeddings: Array.isArray(faceEmbeddings?.[0]) ? faceEmbeddings : [faceEmbeddings],
+                            enrollmentDate: new Date()
+                        },
+                        { upsert: true, new: true }
+                    );
+                }
             } catch (e) {
-                console.warn('FaceEmbedding upsert notice:', e.message);
+                console.warn('FaceProfile/Embedding/User sync notice:', e.message);
             }
         }
 
@@ -541,21 +579,10 @@ const handleLogin = async (req, res) => {
         }
 
         if (!student) {
-            // Development fallback for quick testing
-            const studentId = 'STU_' + cleanEmail.replace(/[^a-z0-9]/g, '_');
-            student = {
-                studentId,
-                email: cleanEmail,
-                name: cleanEmail.split('@')[0],
-                fullName: cleanEmail.split('@')[0],
-                comparePassword: async () => true,
-                getPublicProfile: () => ({
-                    studentId,
-                    email: cleanEmail,
-                    name: cleanEmail.split('@')[0],
-                    fullName: cleanEmail.split('@')[0]
-                })
-            };
+            return res.status(404).json({
+                success: false,
+                error: 'No account found with this email. Please register first.'
+            });
         }
 
         if (student.comparePassword) {
@@ -970,6 +997,55 @@ router.post('/violations/log', authenticateToken, async (req, res) => {
                 fileSizeKb: sizeKb,
                 savedAt: new Date()
             }).save().catch(() => {});
+        }
+
+        // Persist to Violation model & violations collection
+        try {
+            await new Violation({
+                studentId: activity.studentId,
+                sessionId: activity.sessionId,
+                studentName: req.body.studentName || activity.studentEmail?.split('@')[0] || 'Student',
+                examName: req.body.examName || examId || 'Computer Science Final Assessment',
+                type: effectiveType,
+                description: description || `Violation: ${effectiveType}`,
+                severity: severity === 'critical' ? 'Critical' : (severity === 'high' ? 'High' : 'Medium'),
+                screenshotUrl: effectiveScreenshot || '',
+                metadata: metadata || {},
+                timestamp: new Date()
+            }).save();
+        } catch (vErr) {
+            console.warn('Violation save notice:', vErr.message);
+        }
+
+        // Persist to ProctoringLog model & proctoringlogs collection
+        try {
+            await new ProctoringLog({
+                studentId: activity.studentId,
+                examId: examId || 'CS-401',
+                sessionId: activity.sessionId,
+                eventType: effectiveType,
+                severity: severity === 'critical' ? 'critical' : (severity === 'high' ? 'high' : 'medium'),
+                details: description || `Proctoring violation: ${effectiveType}`,
+                timestamp: new Date()
+            }).save();
+        } catch (plErr) {
+            console.warn('ProctoringLog save notice:', plErr.message);
+        }
+
+        // Persist to Alert model & alerts collection
+        try {
+            await new Alert({
+                studentId: activity.studentId,
+                sessionId: activity.sessionId,
+                studentName: req.body.studentName || activity.studentEmail?.split('@')[0] || 'Student',
+                examName: req.body.examName || examId || 'Computer Science Final Assessment',
+                alertType: effectiveType,
+                message: description || `Alert: ${effectiveType} detected for ${activity.studentId}`,
+                severity: severity === 'critical' ? 'Critical' : (severity === 'high' ? 'High' : 'Warning'),
+                timestamp: new Date()
+            }).save();
+        } catch (alErr) {
+            console.warn('Alert save notice:', alErr.message);
         }
 
         // Update in-memory session violation count & MongoDB LiveSession

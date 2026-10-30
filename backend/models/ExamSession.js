@@ -1,16 +1,15 @@
 const mongoose = require('mongoose');
 
 const examSessionSchema = new mongoose.Schema({
-    // Original fields (keeping your structure)
+    // Original fields (keeping structure, made flexible for both String & ObjectId IDs)
     userId: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'User',
-        required: true
+        type: mongoose.Schema.Types.Mixed,
+        required: false
     },
     examId: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Exam',
-        required: true
+        type: mongoose.Schema.Types.Mixed,
+        required: false,
+        default: 'EXAM-101'
     },
     startTime: {
         type: Date,

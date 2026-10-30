@@ -1,3 +1,7 @@
+const dns = require('dns');
+try {
+  dns.setServers(['8.8.8.8', '1.1.1.1']);
+} catch (dnsErr) {}
 const express = require('express');
 const mongoose = require('mongoose');
 mongoose.set('bufferCommands', false);
@@ -463,8 +467,25 @@ const connectDB = async () => {
             useUnifiedTopology: true,
             maxPoolSize: parseInt(process.env.DB_POOL_SIZE) || 10,
             serverSelectionTimeoutMS: 10000,
-        }).then(conn => {
+        }).then(async conn => {
             console.log(`✅ MongoDB Connected: ${conn.connection.host} [Database: ${conn.connection.name}]`);
+            try {
+                const AdminModel = mongoose.models.Admin || require('./models/Admin');
+                const existingAdmin = await AdminModel.findOne({ email: 'admin@proctor.com' });
+                if (!existingAdmin) {
+                    const newAdmin = new AdminModel({
+                        name: 'System Administrator',
+                        email: 'admin@proctor.com',
+                        password: 'Admin@123',
+                        role: 'superadmin',
+                        department: 'Exam Control Center'
+                    });
+                    await newAdmin.save();
+                    console.log('✅ Default superadmin auto-seeded into MongoDB admins collection: admin@proctor.com');
+                }
+            } catch (seedErr) {
+                console.warn('Admin auto-seed notice:', seedErr.message);
+            }
             return conn;
         }).catch(err => {
             cachedDBPromise = null;
@@ -1193,39 +1214,46 @@ app.post('/api/register', async (req, res) => {
     }
 });
 
-// DEVELOPMENT MODE ONLY - REMOVE BEFORE PRODUCTION
+// Student Login Endpoint with strict MongoDB verification
 app.post('/api/login', async (req, res) => {
     try {
         const { email, password } = req.body;
-        
-        console.log('⚡ [DEVELOPMENT MODE ONLY] Auto-authenticating login for:', email || 'demo@student.com');
-        
-        const mockStudent = {
-            studentId: 'STU_' + Date.now(),
-            name: email ? email.split('@')[0] : 'Student',
-            email: email || 'student@proctor.com',
-            role: 'Student',
-            course: 'Computer Science',
-            semester: 'Semester 1',
-            faceEnrolled: true
-        };
-
-        // Generate dummy JWT token for development
+        if (!email || !password) {
+            return res.status(400).json({ success: false, error: 'Email and password are required.' });
+        }
+        const cleanEmail = email.trim().toLowerCase();
+        const student = await Student.findOne({ email: cleanEmail });
+        if (!student) {
+            return res.status(404).json({
+                success: false,
+                error: 'No account found with this email. Please register first.'
+            });
+        }
+        if (student.comparePassword) {
+            const isMatch = await student.comparePassword(password);
+            if (!isMatch) {
+                return res.status(401).json({ success: false, error: 'Invalid email or password.' });
+            }
+        }
         const token = jwt.sign(
-            { studentId: mockStudent.studentId, name: mockStudent.name, email: mockStudent.email, role: mockStudent.role }, 
+            { studentId: student.studentId, name: student.fullName || student.name, email: student.email, role: 'Student' }, 
             JWT_SECRET, 
             { expiresIn: '24h' }
         );
-        
         res.json({
             success: true,
-            message: 'Development mode login successful',
+            message: 'Login successful',
             token,
-            student: mockStudent
+            student: student.getPublicProfile ? student.getPublicProfile() : {
+                studentId: student.studentId,
+                name: student.fullName || student.name,
+                email: student.email,
+                role: 'Student'
+            }
         });
     } catch (error) {
         console.error('Login error:', error);
-        res.status(500).json({ error: 'Login failed: ' + error.message });
+        res.status(500).json({ success: false, error: 'Login failed: ' + error.message });
     }
 });
 
@@ -2536,9 +2564,62 @@ io.on('connection', (socket) => {
         }
     });
 
+    const persistSocketEvent = async (data, defaultType = 'VIOLATION') => {
+        if (!data) return;
+        try {
+            const AlertModel = mongoose.models.Alert || require('./models/Alert');
+            const ViolationModel = mongoose.models.Violation || require('./models/Violation');
+            const ProctoringLogModel = mongoose.models.ProctoringLog || require('./models/ProctoringLog');
+
+            const sId = data.studentId || data.usn || data.id || 'STU_UNKNOWN';
+            const sName = data.studentName || data.name || 'Student';
+            const vType = data.type || data.violationType || data.alertType || defaultType;
+            const msg = data.description || data.message || `Proctoring event: ${vType}`;
+            const sev = data.severity || 'High';
+            const sessId = data.sessionId || `sess_${sId}_${Date.now()}`;
+
+            // Save to Violation collection
+            await new ViolationModel({
+                studentId: sId,
+                sessionId: sessId,
+                studentName: sName,
+                examName: data.examName || 'Computer Science Final Assessment',
+                type: vType,
+                description: msg,
+                severity: typeof sev === 'string' && sev.toLowerCase() === 'critical' ? 'Critical' : 'High',
+                screenshotUrl: data.screenshot || data.screenshotBase64 || '',
+                timestamp: new Date()
+            }).save().catch(() => {});
+
+            // Save to Alert collection
+            await new AlertModel({
+                studentId: sId,
+                sessionId: sessId,
+                studentName: sName,
+                examName: data.examName || 'Computer Science Final Assessment',
+                alertType: vType,
+                message: msg,
+                severity: typeof sev === 'string' && sev.toLowerCase() === 'critical' ? 'Critical' : 'High',
+                timestamp: new Date()
+            }).save().catch(() => {});
+
+            // Save to ProctoringLog collection
+            await new ProctoringLogModel({
+                studentId: sId,
+                examId: data.examId || 'CS-401',
+                sessionId: sessId,
+                eventType: vType,
+                severity: typeof sev === 'string' ? sev.toLowerCase() : 'high',
+                details: msg,
+                timestamp: new Date()
+            }).save().catch(() => {});
+        } catch (e) {}
+    };
+
     // 4. ai-alert
     socket.on('ai-alert', (data) => {
         console.log(`🚨 ai-alert: ${data?.alertType || 'anomaly'} for ${data?.studentName || data?.studentId}`);
+        persistSocketEvent(data, 'AI_ALERT');
         io.to('admin_room').emit('ai-alert', data);
         io.to('admin_room').emit('admin-notification', {
             id: `NOTIF_${Date.now()}_${Math.random()}`,
@@ -2555,6 +2636,7 @@ io.on('connection', (socket) => {
     // 5. violation / violation-detected / student-violation
     socket.on('violation', (data) => {
         console.log(`⚠️ violation: ${data?.type || 'violation'} by ${data?.studentName || data?.studentId}`);
+        persistSocketEvent(data, 'VIOLATION');
         io.to('admin_room').emit('violation', data);
         io.to('admin_room').emit('violation-detected', data);
         io.to('admin_room').emit('student-violation', data);
@@ -2572,6 +2654,7 @@ io.on('connection', (socket) => {
 
     socket.on('violation-detected', (data) => {
         console.log(`⚠️ violation-detected: ${data?.type || 'violation'} by ${data?.studentName || data?.studentId}`);
+        persistSocketEvent(data, 'VIOLATION');
         io.to('admin_room').emit('violation', data);
         io.to('admin_room').emit('violation-detected', data);
         io.to('admin_room').emit('student-violation', data);
@@ -2589,6 +2672,7 @@ io.on('connection', (socket) => {
 
     socket.on('student-violation', (data) => {
         console.log(`⚠️ student-violation: ${data?.type || 'violation'} by ${data?.studentName || data?.studentId}`);
+        persistSocketEvent(data, 'VIOLATION');
         io.to('admin_room').emit('violation', data);
         io.to('admin_room').emit('violation-detected', data);
         io.to('admin_room').emit('student-violation', data);
@@ -2606,6 +2690,7 @@ io.on('connection', (socket) => {
 
     socket.on('tab-switch', (data) => {
         console.log(`📑 tab-switch by ${data?.studentName || data?.studentId}`);
+        persistSocketEvent({ ...data, type: 'TAB_SWITCH' }, 'TAB_SWITCH');
         io.to('admin_room').emit('tab-switch', data);
         io.to('admin_room').emit('student-violation', { ...data, type: 'TAB_SWITCH' });
         io.to('admin_room').emit('admin-notification', {

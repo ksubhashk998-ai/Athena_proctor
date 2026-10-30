@@ -4,11 +4,12 @@ const alertSchema = new mongoose.Schema({
   alertId: {
     type: String,
     required: true,
-    unique: true
+    unique: true,
+    default: () => `ALT_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
   },
   sessionId: {
     type: String,
-    required: true
+    default: () => `sess_${Date.now()}`
   },
   studentId: {
     type: String,
@@ -16,24 +17,16 @@ const alertSchema = new mongoose.Schema({
   },
   studentName: {
     type: String,
-    required: true
+    default: 'Student'
   },
   examName: {
     type: String,
-    required: true
+    default: 'Computer Science Final Assessment'
   },
   alertType: {
     type: String,
     required: true,
-    enum: [
-      'MOBILE_PHONE_DETECTED',
-      'MULTIPLE_FACES',
-      'STUDENT_LEFT_CAMERA',
-      'TAB_SWITCHING',
-      'BROWSER_MINIMIZED',
-      'LOOKING_AWAY_CONTINUOUSLY',
-      'INTERNET_DISCONNECTED'
-    ]
+    default: 'SUSPICIOUS_ACTIVITY'
   },
   message: {
     type: String,
@@ -41,7 +34,6 @@ const alertSchema = new mongoose.Schema({
   },
   severity: {
     type: String,
-    enum: ['Warning', 'High', 'Critical'],
     default: 'High'
   },
   isRead: {

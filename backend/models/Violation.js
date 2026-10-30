@@ -4,11 +4,12 @@ const violationSchema = new mongoose.Schema({
   violationId: {
     type: String,
     required: true,
-    unique: true
+    unique: true,
+    default: () => `VIOL_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
   },
   sessionId: {
     type: String,
-    required: true
+    default: () => `sess_${Date.now()}`
   },
   studentId: {
     type: String,
@@ -16,36 +17,24 @@ const violationSchema = new mongoose.Schema({
   },
   studentName: {
     type: String,
-    required: true
+    default: 'Student'
   },
   examName: {
     type: String,
-    required: true
+    default: 'Computer Science Final Assessment'
   },
   type: {
     type: String,
     required: true,
-    enum: [
-      'MOBILE_PHONE_DETECTED',
-      'MULTIPLE_FACES_DETECTED',
-      'NO_FACE_DETECTED',
-      'LOOKING_AWAY',
-      'TAB_SWITCHED',
-      'FULLSCREEN_EXITED',
-      'COPY_PASTE_ATTEMPT',
-      'INTERNET_DISCONNECTED',
-      'SUSPICIOUS_HEAD_MOVEMENT',
-      'AUDIO_ANOMALY',
-      'DEV_TOOLS_OPENED'
-    ]
+    default: 'SUSPICIOUS_BEHAVIOR'
   },
   description: {
     type: String,
-    required: true
+    required: true,
+    default: 'Proctoring violation detected'
   },
   severity: {
     type: String,
-    enum: ['Low', 'Medium', 'High', 'Critical'],
     default: 'Medium'
   },
   screenshotUrl: {

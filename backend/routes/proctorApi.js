@@ -634,6 +634,23 @@ router.post('/auth/login', handleLogin);
 router.post('/login', handleLogin);
 router.post('/user/login', handleLogin);
 
+// Helpful GET responses if visited directly in a browser
+router.get(['/auth/register', '/register', '/user/register'], (req, res) => {
+    return res.status(200).json({
+        success: true,
+        message: 'Athena Proctor Registration API. Please submit a POST request from the registration page to register.',
+        frontendUrl: 'https://athena-proctor.vercel.app/register'
+    });
+});
+
+router.get(['/auth/login', '/login', '/user/login'], (req, res) => {
+    return res.status(200).json({
+        success: true,
+        message: 'Athena Proctor Login API. Please submit a POST request from the login page to log in.',
+        frontendUrl: 'https://athena-proctor.vercel.app/'
+    });
+});
+
 
 // DEVELOPMENT MODE ONLY - REMOVE BEFORE PRODUCTION
 function authenticateToken(req, res, next) {

@@ -715,11 +715,8 @@ function Login() {
                 .withFaceLandmarks()
                 .withFaceDescriptor();
 
-              if (det) {
-                const landmarkValidation = validateFaceLandmarks(det, frameCanvas);
-                if (landmarkValidation.valid && det.descriptor) {
-                  capturedDescriptors.push(Array.from(det.descriptor));
-                }
+              if (det && det.descriptor) {
+                capturedDescriptors.push(Array.from(det.descriptor));
               }
             } catch (dErr) {
               console.warn("[FaceVerify] Face landmark notice:", dErr);

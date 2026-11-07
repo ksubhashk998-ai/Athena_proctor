@@ -4,7 +4,7 @@ try {
 } catch (dnsErr) {}
 const express = require('express');
 const mongoose = require('mongoose');
-mongoose.set('bufferCommands', false);
+mongoose.set('bufferCommands', true);
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const bcrypt = require('bcryptjs');
@@ -142,6 +142,77 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(cookieParser());
 
+// ==================== DATABASE CONNECTION & MIDDLEWARE ====================
+let cachedDBPromise = null;
+
+const connectDB = async () => {
+    if (mongoose.connection.readyState === 1) {
+        return mongoose.connection;
+    }
+    if (cachedDBPromise) {
+        return cachedDBPromise;
+    }
+    try {
+        const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URL || 'mongodb+srv://proctoai_admin:Subhash75@proctoai.mtrkavh.mongodb.net/test?retryWrites=true&w=majority';
+        const isAtlas = mongoUri.includes('mongodb+srv') || mongoUri.includes('mongodb.net');
+        console.log(`🔌 [MongoDB Server] Connecting to: ${isAtlas ? 'MongoDB Atlas Cluster' : mongoUri}...`);
+
+        cachedDBPromise = mongoose.connect(mongoUri, {
+            useNewUrlParser: true,
+            useUnifiedTopology: true,
+            maxPoolSize: parseInt(process.env.DB_POOL_SIZE) || 10,
+            serverSelectionTimeoutMS: 10000,
+        }).then(async conn => {
+            console.log(`✅ MongoDB Connected: ${conn.connection.host} [Database: ${conn.connection.name}]`);
+            try {
+                const AdminModel = mongoose.models.Admin || require('./models/Admin');
+                const existingAdmin = await AdminModel.findOne({ email: 'admin@proctor.com' });
+                if (!existingAdmin) {
+                    const newAdmin = new AdminModel({
+                        name: 'System Administrator',
+                        email: 'admin@proctor.com',
+                        password: 'Admin@123',
+                        role: 'superadmin',
+                        department: 'Exam Control Center'
+                    });
+                    await newAdmin.save();
+                    console.log('✅ Default superadmin auto-seeded into MongoDB admins collection: admin@proctor.com');
+                }
+            } catch (seedErr) {
+                console.warn('Admin auto-seed notice:', seedErr.message);
+            }
+            return conn;
+        }).catch(err => {
+            cachedDBPromise = null;
+            console.error(`❌ MongoDB Connection Error: ${err.message}`);
+            return null;
+        });
+
+        return await cachedDBPromise;
+    } catch (error) {
+        cachedDBPromise = null;
+        console.error(`❌ MongoDB Failed: ${error.message}`);
+        return null;
+    }
+};
+
+// Initiate non-blocking connection on server boot
+connectDB().catch(() => {});
+
+// Attach connectDB to Express app instance
+app.connectDB = connectDB;
+
+// Middleware to ensure active DB connection before handling ANY request
+app.use(async (req, res, next) => {
+    if (mongoose.connection.readyState !== 1) {
+        try {
+            await connectDB();
+        } catch (err) {
+            console.warn('⚠️ DB Connection Middleware Notice:', err.message);
+        }
+    }
+    next();
+});
 
 // Mount Admin API Router
 const adminApi = require('./routes/adminApi');
@@ -443,83 +514,8 @@ if (!fs.existsSync(screenshotsDir)) {
     fs.mkdirSync(screenshotsDir, { recursive: true });
     console.log('📸 Screenshots directory created');
 }
-// Run disk prune on startup and every 15 minutes
-pruneScreenshotsDir(screenshotsDir);
-setInterval(() => pruneScreenshotsDir(screenshotsDir), 15 * 60 * 1000);
-
-// ==================== DATABASE CONNECTION ====================
-let cachedDBPromise = null;
-
-const connectDB = async () => {
-    if (mongoose.connection.readyState === 1) {
-        return mongoose.connection;
-    }
-    if (cachedDBPromise) {
-        return cachedDBPromise;
-    }
-    try {
-        const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URL || 'mongodb://127.0.0.1:27017/smart-proctoring';
-        const isAtlas = mongoUri.includes('mongodb+srv') || mongoUri.includes('mongodb.net');
-        console.log(`🔌 [MongoDB Server] Connecting to: ${isAtlas ? 'MongoDB Atlas Cluster' : mongoUri}...`);
-
-        cachedDBPromise = mongoose.connect(mongoUri, {
-            useNewUrlParser: true,
-            useUnifiedTopology: true,
-            maxPoolSize: parseInt(process.env.DB_POOL_SIZE) || 10,
-            serverSelectionTimeoutMS: 10000,
-        }).then(async conn => {
-            console.log(`✅ MongoDB Connected: ${conn.connection.host} [Database: ${conn.connection.name}]`);
-            try {
-                const AdminModel = mongoose.models.Admin || require('./models/Admin');
-                const existingAdmin = await AdminModel.findOne({ email: 'admin@proctor.com' });
-                if (!existingAdmin) {
-                    const newAdmin = new AdminModel({
-                        name: 'System Administrator',
-                        email: 'admin@proctor.com',
-                        password: 'Admin@123',
-                        role: 'superadmin',
-                        department: 'Exam Control Center'
-                    });
-                    await newAdmin.save();
-                    console.log('✅ Default superadmin auto-seeded into MongoDB admins collection: admin@proctor.com');
-                }
-            } catch (seedErr) {
-                console.warn('Admin auto-seed notice:', seedErr.message);
-            }
-            return conn;
-        }).catch(err => {
-            cachedDBPromise = null;
-            console.error(`❌ MongoDB Connection Error: ${err.message}`);
-            return null;
-        });
-
-        return await cachedDBPromise;
-    } catch (error) {
-        cachedDBPromise = null;
-        console.error(`❌ MongoDB Failed: ${error.message}`);
-        return null;
-    }
-};
-
-// Initiate non-blocking connection on server boot
-connectDB().catch(() => {});
-
-// Attach connectDB to Express app instance for Serverless / Vercel handlers
-app.connectDB = connectDB;
-
-// Middleware to ensure active DB connection before handling requests
-app.use(async (req, res, next) => {
-    if (mongoose.connection.readyState !== 1) {
-        try {
-            await connectDB();
-        } catch (err) {
-            console.warn('⚠️ DB Connection Middleware Notice:', err.message);
-        }
-    }
-    next();
-});
-
-
+// Automatic background disk prune disabled: logs & evidence are permanently preserved until Admin explicitly clears them
+console.log('🛡️ Proctoring evidence & audit logs retention: Persistent (never auto-erased)');
 
 // ==================== MODELS ====================
 
@@ -1946,8 +1942,28 @@ app.post('/api/exam/submit', authenticateToken, async (req, res) => {
         session.endTime = new Date();
         session.answers = answers || new Map();
         session.score = finalScore;
+        if (req.body.codingAnswers) session.codingAnswers = req.body.codingAnswers;
+        if (req.body.theoryAnswers) session.theoryAnswers = req.body.theoryAnswers;
         
         await session.save();
+
+        try {
+            const ExamReportModel = mongoose.models.ExamReport || require('./models/ExamReport');
+            if (ExamReportModel) {
+                await ExamReportModel.findOneAndUpdate(
+                    { $or: [{ studentId: req.user.studentId }, { email: req.user.email }] },
+                    {
+                        $set: {
+                            codingAnswers: req.body.codingAnswers || {},
+                            theoryAnswers: req.body.theoryAnswers || {},
+                            status: 'Submitted',
+                            score: finalScore,
+                            endTime: new Date()
+                        }
+                    }
+                ).catch(() => {});
+            }
+        } catch (repSyncErr) {}
         
         // Log submission
         const submissionLog = new ProctoringLog({
@@ -2915,7 +2931,7 @@ if (!process.env.VERCEL) {
         console.log(`📹 Exam Page: http://localhost:${PORT}/exam`);
         console.log(`🩺 Health Check: http://localhost:${PORT}/api/health`);
         console.log(`📸 Screenshots Directory: ${screenshotsDir}`);
-        console.log(`💾 Database: ${process.env.MONGODB_URI || 'mongodb://localhost:27017/smart-proctoring'}`);
+        console.log(`💾 Database: ${process.env.MONGODB_URI || 'mongodb+srv://proctoai_admin:Subhash75@proctoai.mtrkavh.mongodb.net/test?retryWrites=true&w=majority'}`);
         console.log(`=================================\n`);
 
         // Check & ensure Python AI microservice is reachable

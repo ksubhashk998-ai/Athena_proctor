@@ -266,7 +266,7 @@ function WebcamFeed({ isProctoringActive, onDetectionUpdate, onViolationTriggere
     }
     return {
       header: `Student : ${studentName}`,
-      subtext: null,
+      subtext: `🎯 Similarity: ${confidence}%`,
       borderColor: '#10b981',
       textColor: '#34d399'
     };
@@ -440,7 +440,7 @@ function WebcamFeed({ isProctoringActive, onDetectionUpdate, onViolationTriggere
         fontWeight: 700,
         color: '#60a5fa'
       }}>
-        🎯 Confidence: {confidence}%
+        🎯 Similarity: {confidence}%
       </div>
     </div>
   );

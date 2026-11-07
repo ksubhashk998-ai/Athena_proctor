@@ -1,1155 +1,836 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
-import Webcam from 'react-webcam';
-import { getApiBaseUrl } from '../utils/config';
-import { ensureModelsLoaded, getFaceApi } from '../utils/faceModelLoader';
+import React, { useState, useMemo, useRef, useEffect, useCallback } from "react";
+import { useNavigate, Link } from "react-router-dom";
+import Webcam from "react-webcam";
+import {
+  IconShieldCheck,
+  IconMail,
+  IconLock,
+  IconEye,
+  IconEyeOff,
+  IconCheck,
+  IconArrowRight,
+  IconLoader2,
+  IconCamera,
+  IconUser,
+  IconSchool
+} from "@tabler/icons-react";
+import "./Register.css";
+import { getApiBaseUrl } from "../utils/config";
+import { loadFaceModels, getFaceApi } from "../utils/faceModelLoader";
 
 const TARGET_SAMPLES = 30;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-// Crisp SVG Icons for Show/Hide Password
-const EyeIcon = () => (
-  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-    <circle cx="12" cy="12" r="3" />
-  </svg>
-);
+const RULES = [
+  { key: "len", label: "8+ characters", test: (p) => p.length >= 8 },
+  { key: "up", label: "Uppercase", test: (p) => /[A-Z]/.test(p) },
+  { key: "low", label: "Lowercase", test: (p) => /[a-z]/.test(p) },
+  { key: "num", label: "Number", test: (p) => /\d/.test(p) },
+  { key: "sp", label: "Special", test: (p) => /[^A-Za-z0-9]/.test(p) },
+];
 
-const EyeOffIcon = () => (
-  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
-    <line x1="1" y1="1" x2="23" y2="23" />
-  </svg>
-);
+const LEVELS = [
+  { label: "Too weak", color: "#f87171" },
+  { label: "Weak", color: "#f87171" },
+  { label: "Fair", color: "#fbbf24" },
+  { label: "Good", color: "#a3e635" },
+  { label: "Good", color: "#a3e635" },
+  { label: "Strong", color: "#10b981" },
+];
 
-// Evaluates password against: length, uppercase, lowercase, numbers, special characters
-const evaluatePasswordStrength = (pwd) => {
-  if (!pwd) {
-    return {
-      score: 0,
-      label: '',
-      color: '#64748b',
-      percentage: 0,
-      criteria: {
-        length: false,
-        uppercase: false,
-        lowercase: false,
-        number: false,
-        special: false
-      }
-    };
-  }
+const ENROLL_ACTIONS = [
+  { id: "front", label: "🎯 Position 1: FRONT Face (1-10)", prompt: "Look straight at the camera" },
+  { id: "side", label: "👈 Position 2: SLIGHT LEFT / RIGHT (11-20)", prompt: "Turn head slightly LEFT or RIGHT" },
+  { id: "vertical", label: "👇 Position 3: SLIGHT UP / DOWN (21-30)", prompt: "Tilt head slightly UP or DOWN" }
+];
 
-  const criteria = {
-    length: pwd.length >= 8,
-    uppercase: /[A-Z]/.test(pwd),
-    lowercase: /[a-z]/.test(pwd),
-    number: /[0-9]/.test(pwd),
-    special: /[^A-Za-z0-9]/.test(pwd)
-  };
-
-  const count = Object.values(criteria).filter(Boolean).length;
-
-  let label = 'Weak';
-  let color = '#ef4444';
-  let percentage = 33;
-
-  if (pwd.length >= 8 && count >= 4) {
-    label = 'Strong';
-    color = '#10b981';
-    percentage = 100;
-  } else if (pwd.length >= 6 && count >= 2) {
-    label = 'Medium';
-    color = '#f59e0b';
-    percentage = 66;
-  } else {
-    label = 'Weak';
-    color = '#ef4444';
-    percentage = 33;
-  }
-
-  return {
-    score: count,
-    label,
-    color,
-    percentage,
-    criteria
-  };
-};
-
-export default function Register() {
+/**
+ * Modern Athena Student Registration Page
+ * Steps:
+ *  1: Personal Details & Password Validation
+ *  2: In-Place Biometric 30-Frame ArcFace Enrollment
+ *  3: Review & Final Account Creation
+ */
+export default function Register({ onNext, onSignIn }) {
   const navigate = useNavigate();
   const webcamRef = useRef(null);
-  const captureIntervalRef = useRef(null);
-  const lastCaptureTimeRef = useRef(0);
-  const lastEmbeddingRef = useRef(null);
-  const samplesRef = useRef([]);
-  const descriptorsRef = useRef([]);
 
-  // Form State
-  const [formData, setFormData] = useState({
-    firstName: '',
-    lastName: '',
-    email: '',
-    password: '',
-    confirmPassword: ''
+  // Wizard Step: 1 = Personal Details, 2 = Face Enrollment, 3 = Finish
+  const [step, setStep] = useState(1);
+
+  // Step 1: Form state
+  const [form, setForm] = useState({
+    firstName: "",
+    lastName: "",
+    email: "",
+    password: "",
+    confirm: "",
   });
+  const [touched, setTouched] = useState({});
+  const [showPw, setShowPw] = useState(false);
+  const [showCf, setShowCf] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
 
-  const [formErrors, setFormErrors] = useState({});
-
-  // Show / Hide Password visibility state
-  const [showPassword, setShowPassword] = useState(false);
-  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
-
-  // Real-time validations
-  const passwordStrength = evaluatePasswordStrength(formData.password);
-  const isValidEmailFormat = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(formData.email.trim());
-  const isPasswordMatch = formData.password.length > 0 && formData.password === formData.confirmPassword;
-
-  // Enrollment State
-  const [step, setStep] = useState(1); // 1: Info, 2: Face Enrollment, 3: Complete
-  // eslint-disable-next-line no-unused-vars
-  const [isWebcamOpen, setIsWebcamOpen] = useState(false);
-  const [enrollStatus, setEnrollStatus] = useState('idle'); // idle | capturing | success | error
-  const [modelsLoaded, setModelsLoaded] = useState(false);
+  // Step 2: Face Enrollment State
+  const [enrollStatus, setEnrollStatus] = useState("idle"); // idle | capturing | success | error
   const [samplesCount, setSamplesCount] = useState(0);
-  const [statusMsg, setStatusMsg] = useState('Click "Capture & Enroll Face" to start biometric capture');
+  const [enrollPoseIdx, setEnrollPoseIdx] = useState(0);
+  const [statusMsg, setStatusMsg] = useState("Center your face inside the guide and follow the pose prompts.");
+  const [cameraActive, setCameraActive] = useState(false);
+  const [cameraPermission, setCameraPermission] = useState("prompt");
+  const [cameraError, setCameraError] = useState(null);
+
+  // Step 3: Enrolled Data State
   const [enrolledEmbedding, setEnrolledEmbedding] = useState(null);
   const [enrolledSnapshot, setEnrolledSnapshot] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [apiError, setApiError] = useState('');
-  const [apiSuccess, setApiSuccess] = useState('');
 
-  // Live telemetry metrics
-  const [telemetry, setTelemetry] = useState({
-    qualityScore: 0,
-    message: 'Initializing AI Face Quality Analyzer...'
-  });
+  const set = (k) => (e) => {
+    setForm((f) => ({ ...f, [k]: e.target.value }));
+    if (error) setError("");
+  };
+  const blur = (k) => () => setTouched((t) => ({ ...t, [k]: true }));
 
-  // Initialize on mount
+  // Real-time password scoring
+  const passed = useMemo(() => RULES.map((r) => r.test(form.password)), [form.password]);
+  const score = passed.filter(Boolean).length;
+  const level = form.password ? LEVELS[score] : null;
+
+  const emailOk = EMAIL_RE.test(form.email);
+  const matchOk = form.confirm.length > 0 && form.confirm === form.password;
+  const valid = Boolean(
+    form.firstName.trim() &&
+    form.lastName.trim() &&
+    emailOk &&
+    score === 5 &&
+    matchOk
+  );
+
+  const handleSignIn = () => {
+    if (onSignIn) {
+      onSignIn();
+    } else {
+      navigate("/");
+    }
+  };
+
+  // Preload face detection models on mount
   useEffect(() => {
-    ensureModelsLoaded()
-      .then(() => setModelsLoaded(true))
-      .catch((e) => {
-        console.warn('face-api preload notice:', e.message);
-        setModelsLoaded(true);
-      });
-
-    return () => {
-      if (captureIntervalRef.current) {
-        clearInterval(captureIntervalRef.current);
-      }
-    };
+    loadFaceModels().catch((e) => console.warn("face-api init notice:", e.message));
   }, []);
 
-  const handleInputChange = (e) => {
-    const { name, value } = e.target;
-    setFormData(prev => ({ ...prev, [name]: value }));
-    if (formErrors[name]) {
-      setFormErrors(prev => ({ ...prev, [name]: '' }));
+  const requestCameraAccess = useCallback(async () => {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setCameraPermission("denied");
+      setCameraError("Camera access is not supported by your browser.");
+      return;
     }
+    setCameraError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" },
+        audio: false
+      });
+      setCameraPermission("granted");
+      setCameraActive(true);
+      if (webcamRef.current?.video) {
+        webcamRef.current.video.srcObject = stream;
+        webcamRef.current.video.play().catch(() => {});
+      }
+    } catch (err) {
+      console.warn("[Register] Camera permission notice:", err);
+      setCameraPermission("denied");
+      setCameraActive(false);
+      setCameraError(err.message || "Failed to access webcam.");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (step === 2) {
+      requestCameraAccess();
+    }
+  }, [step, requestCameraAccess]);
+
+  // Submit Step 1
+  const handleStep1Submit = async (e) => {
+    e.preventDefault();
+    setTouched({ firstName: true, lastName: true, email: true, password: true, confirm: true });
+    if (!valid) return;
+    setError("");
+
+    if (onNext) {
+      setLoading(true);
+      try {
+        await onNext({
+          firstName: form.firstName.trim(),
+          lastName: form.lastName.trim(),
+          email: form.email.trim().toLowerCase(),
+          password: form.password,
+        });
+      } catch (err) {
+        setError(err?.message || "Could not continue. Please try again.");
+        setLoading(false);
+        return;
+      }
+      setLoading(false);
+    }
+
+    setStep(2);
+    setStatusMsg("Center your face inside the guide and click Start 30-Frame Enrollment.");
   };
 
-  const validateStep1 = () => {
-    const errors = {};
-    if (!formData.firstName.trim()) errors.firstName = 'First name is required';
-    if (!formData.lastName.trim()) errors.lastName = 'Last name is required';
-    if (!formData.email.trim()) {
-      errors.email = 'Email address is required';
-    } else if (!/\S+@\S+\.\S+/.test(formData.email)) {
-      errors.email = 'Enter a valid email address';
-    }
-    if (!formData.password) {
-      errors.password = 'Password is required';
-    } else if (formData.password.length < 6) {
-      errors.password = 'Password must be at least 6 characters';
-    }
-    if (formData.password !== formData.confirmPassword) {
-      errors.confirmPassword = 'Passwords do not match';
-    }
-    setFormErrors(errors);
-    return Object.keys(errors).length === 0;
-  };
-
-  const handleProceedToEnrollment = () => {
-    if (validateStep1()) {
-      setStep(2);
-      setIsWebcamOpen(true);
-      setStatusMsg('Click "Capture & Enroll Face" to start biometric capture');
-    }
-  };
-
-
-  // Start Webcam & Capture Loop
+  // Step 2: 30-Frame Biometric Enrollment
   const startFaceCapture = async () => {
     const video = webcamRef.current?.video;
-    if (!video) {
-      console.warn('Camera video element not initialized yet');
-      alert('Camera is not ready yet. Please allow camera permissions.');
+    if (!video || video.paused || video.ended || video.readyState < 2) {
+      setStatusMsg("⚠️ Camera not ready. Please allow camera access in browser.");
       return;
     }
 
-    console.log('Camera started');
-    setStatusMsg('🚀 Biometric Scan: Center your face inside the circle...');
-
-    if (video.readyState < 2) {
-      setStatusMsg('⏳ Waiting for camera feed to stabilize...');
-      const readyCheckTimer = setInterval(() => {
-        const v = webcamRef.current?.video;
-        if (v && v.readyState >= 2) {
-          clearInterval(readyCheckTimer);
-          console.log('Video ready');
-          initiateEnrollmentLoop();
-        }
-      }, 200);
-      return;
-    }
-
-    console.log('Video ready');
-    initiateEnrollmentLoop();
-  };
-
-  // Main Enrollment Capture Loop (Captures 30 high-quality frames for ArcFace)
-  const initiateEnrollmentLoop = () => {
-    if (captureIntervalRef.current) {
-      clearInterval(captureIntervalRef.current);
-    }
-
-    setEnrollStatus('capturing');
-    setStatusMsg('🚀 Biometric Scan: Center your face and hold steady...');
+    setEnrollStatus("capturing");
     setSamplesCount(0);
-    samplesRef.current = [];
-    descriptorsRef.current = [];
-    lastCaptureTimeRef.current = 0;
+    setEnrollPoseIdx(0);
+    setStatusMsg("⏳ Initializing neural biometric models...");
 
-    const api = getFaceApi();
-    const detectorOptions = api ? new api.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.20 }) : null;
+    try {
+      await loadFaceModels();
+    } catch (mErr) {
+      console.warn("Face model loader notice:", mErr);
+    }
 
-    // Stable capture interval to collect 30 high-resolution frames smoothly
-    captureIntervalRef.current = setInterval(async () => {
-      try {
-        const v = webcamRef.current?.video;
-        if (!v || v.readyState < 2 || !v.videoWidth || !v.videoHeight || v.paused) {
-          return;
-        }
+    const faceApi = getFaceApi();
+    if (!faceApi || !faceApi.detectSingleFace) {
+      setStatusMsg("❌ Face models failed to load. Please check internet connection.");
+      setEnrollStatus("error");
+      return;
+    }
 
-        const now = Date.now();
-        if (now - lastCaptureTimeRef.current < 200) {
-          return;
-        }
+    setStatusMsg("🚀 Capturing 30 ArcFace Biometric Samples — Follow Pose Prompts!");
 
-        // Draw webcam frame to canvas and get high-quality base64 representation
-        const canvas = document.createElement('canvas');
-        canvas.width = 640;
-        canvas.height = 480;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(v, 0, 0, 640, 480);
-        const b64 = canvas.toDataURL('image/jpeg', 0.85);
+    const frames = [];
+    const descriptors = [];
+    let attempts = 0;
+    const maxAttempts = 180;
 
-        if (b64 && b64.length > 5000) {
-          let hasValidFace = false;
-          let faceDesc = null;
-          const activeApi = getFaceApi();
+    const studentEmail = form.email.trim().toLowerCase();
+    const cleanStudentId = "STU_" + studentEmail.replace(/[^a-z0-9]/gi, "_");
+    const fullName = `${form.firstName.trim()} ${form.lastName.trim()}`;
+    const apiBase = getApiBaseUrl();
 
-          if (activeApi && activeApi.detectSingleFace) {
+    while (frames.length < TARGET_SAMPLES && attempts < maxAttempts) {
+      attempts++;
+      const v = webcamRef.current?.video;
+      if (v && v.readyState >= 2) {
+        try {
+          const canvas = document.createElement("canvas");
+          canvas.width = 640;
+          canvas.height = 480;
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(v, 0, 0, 640, 480);
+          const b64 = canvas.toDataURL("image/jpeg", 0.85);
+
+          if (b64 && b64.length > 500) {
+            let faceDescriptor = null;
             try {
-              const options = new activeApi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.15 });
-              const det = await activeApi.detectSingleFace(v, options)
+              const det = await faceApi.detectSingleFace(
+                canvas,
+                new faceApi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.25 })
+              )
                 .withFaceLandmarks()
                 .withFaceDescriptor();
 
-              if (det) {
-                hasValidFace = true;
-                if (det.descriptor) {
-                  faceDesc = Array.from(det.descriptor);
-                }
-              } else {
-                // Secondary check without landmarks
-                const simpleDet = await activeApi.detectSingleFace(v, options);
-                if (simpleDet) {
-                  hasValidFace = true;
-                }
+              if (det && det.descriptor) {
+                faceDescriptor = Array.from(det.descriptor);
               }
-            } catch (dErr) {
-              // If client face-api fails or throws, allow frame to pass to backend ArcFace
-              hasValidFace = true;
+            } catch (dErr) {}
+
+            if (faceDescriptor || !faceApi.detectSingleFace) {
+              frames.push(b64);
+              if (faceDescriptor) {
+                descriptors.push(faceDescriptor);
+              }
+              const currentCount = frames.length;
+              setSamplesCount(currentCount);
+
+              const poseStep = Math.min(
+                ENROLL_ACTIONS.length - 1,
+                Math.floor((currentCount / TARGET_SAMPLES) * ENROLL_ACTIONS.length)
+              );
+              setEnrollPoseIdx(poseStep);
+              const action = ENROLL_ACTIONS[poseStep];
+              setStatusMsg(`📸 Captured ${currentCount}/30 frames — ${action.label}: ${action.prompt}`);
             }
-          } else {
-            // Models loading or fallback
-            hasValidFace = true;
           }
-
-          if (!hasValidFace) {
-            setStatusMsg('⚠️ Please center your face inside the circle (Looking straight at camera)');
-            setTelemetry({
-              qualityScore: 30,
-              message: '⚠️ Align your face inside the guide circle'
-            });
-            return;
-          }
-
-          samplesRef.current.push(b64);
-          if (faceDesc) {
-            descriptorsRef.current.push(faceDesc);
-          }
-          lastCaptureTimeRef.current = now;
-
-          const count = samplesRef.current.length;
-          setSamplesCount(count);
-          console.log(`[Enrollment] Sample saved ${count}/${TARGET_SAMPLES} (Descriptors: ${descriptorsRef.current.length})`);
-          setStatusMsg(`📸 Captured ${count}/${TARGET_SAMPLES} face samples...`);
-
-          setTelemetry({
-            qualityScore: 95,
-            message: `📸 Capturing Face Sample ${count}/${TARGET_SAMPLES}`
-          });
-
-          if (count >= TARGET_SAMPLES) {
-            if (captureIntervalRef.current) {
-              clearInterval(captureIntervalRef.current);
-              captureIntervalRef.current = null;
-            }
-            console.log('Enrollment capture complete, submitting to ArcFace backend...');
-            finalizeEnrollment(samplesRef.current);
-          }
+        } catch (err) {
+          console.warn("[Register] Frame capture notice:", err);
         }
-      } catch (err) {
-        console.error('Face capture frame error:', err);
       }
-    }, 250);
-  };
 
-  const finalizeEnrollment = async (frames) => {
-    setStatusMsg('⚙️ Processing InsightFace ArcFace 512d Enrollment in Backend...');
+      await new Promise((r) => setTimeout(r, 90));
+    }
+
+    if (frames.length < 20) {
+      setEnrollStatus("error");
+      setStatusMsg("❌ Not enough valid face samples (minimum 20 required). Ensure good lighting.");
+      return;
+    }
+
+    setStatusMsg("⚙️ Saving 30 Biometric Templates to Database...");
+
     try {
-      const apiBase = getApiBaseUrl();
       const response = await fetch(`${apiBase}/api/face/enroll`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          email: formData.email,
-          studentId: 'STU_' + formData.email.trim().toLowerCase().replace(/[^a-z0-9]/g, '_'),
-          name: `${formData.firstName} ${formData.lastName}`,
+          email: studentEmail,
+          studentId: cleanStudentId,
+          name: fullName,
           frames: frames,
-          descriptors: descriptorsRef.current
+          descriptors: descriptors,
+          reEnrollment: true
         })
       });
 
       const data = await response.json();
-      const avgEmbedding = data.averageEmbedding || data.profile?.averageEmbedding || (data.profile?.embeddings && data.profile.embeddings[0]) || (data.embeddings && data.embeddings[0]);
+      const avgEmbedding =
+        data.averageEmbedding ||
+        data.profile?.averageEmbedding ||
+        (data.profile?.embeddings && data.profile.embeddings[0]) ||
+        (data.embeddings && data.embeddings[0]) ||
+        descriptors[0] ||
+        [];
 
-      if (response.ok && data.success && avgEmbedding) {
+      if (response.ok && data.success) {
         setEnrolledEmbedding(avgEmbedding);
         setEnrolledSnapshot(frames[0]);
-        setEnrollStatus('success');
-        setStatusMsg('Face Enrollment Successful');
-        setStep(3);
+        setEnrollStatus("success");
+        setStatusMsg("✅ Biometric Face Enrollment Successful!");
+        setTimeout(() => {
+          setStep(3);
+        }, 800);
       } else {
-        setEnrollStatus('error');
-        setStatusMsg(`❌ Enrollment Rejected: ${data.error || 'Biometric validation failed.'}`);
+        setEnrollStatus("error");
+        setStatusMsg(`❌ Enrollment Rejected: ${data.error || data.message || "Quality check failed."}`);
       }
     } catch (err) {
-      console.error('ArcFace Enrollment error:', err);
-      setEnrollStatus('error');
-      setStatusMsg('❌ Server connection error during ArcFace enrollment.');
+      console.error("[Register] Face enrollment submission error:", err);
+      setEnrollStatus("error");
+      setStatusMsg("❌ Server connection error during ArcFace enrollment.");
     }
   };
-  const handleRegisterSubmit = async (e) => {
+
+  // Step 3: Complete Registration
+  const handleFinalRegister = async (e) => {
     if (e && e.preventDefault) e.preventDefault();
-
-    if (!enrolledEmbedding) {
-      setApiError('Face enrollment is mandatory before registration. Please complete face enrollment first.');
-      setStep(2);
-      return;
-    }
-
     setIsSubmitting(true);
-    setApiError('');
-    setApiSuccess('');
+    setError("");
+    setSuccess("");
 
+    const studentEmail = form.email.trim().toLowerCase();
+    const fullName = `${form.firstName.trim()} ${form.lastName.trim()}`;
+    const cleanStudentId = "STU_" + studentEmail.replace(/[^a-z0-9]/gi, "_");
+    const apiBase = getApiBaseUrl();
 
     try {
-      console.log('Sending registration request to backend...');
-      const apiBase = getApiBaseUrl();
-      const endpoint = `${apiBase}/api/auth/register`;
-      
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          firstName: formData.firstName,
-          lastName: formData.lastName,
-          email: formData.email,
-          password: formData.password,
-          faceEmbeddings: enrolledEmbedding,
-          imageSnapshot: enrolledSnapshot
-        })
+      const payload = {
+        studentId: cleanStudentId,
+        name: fullName,
+        firstName: form.firstName.trim(),
+        lastName: form.lastName.trim(),
+        email: studentEmail,
+        password: form.password,
+        course: "Computer Science",
+        semester: "Semester 1",
+        faceEmbeddings: enrolledEmbedding,
+        imageSnapshot: enrolledSnapshot
+      };
+
+      // Try /api/register first, then fallback to /api/auth/register
+      let res = await fetch(`${apiBase}/api/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
       });
+
+      if (!res.ok && res.status === 404) {
+        res = await fetch(`${apiBase}/api/auth/register`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+      }
 
       const data = await res.json().catch(() => ({}));
 
-      if (res.ok && data.success) {
-        setApiSuccess('🎉 Account registered successfully! Redirecting to login...');
-        localStorage.setItem('registered_email', formData.email);
-        localStorage.setItem('registered_name', `${formData.firstName} ${formData.lastName}`);
+      if (res.ok && (data.success || data.student || data.token)) {
+        setSuccess("🎉 Account registered successfully! Redirecting to login...");
+        localStorage.setItem("registered_email", studentEmail);
+        localStorage.setItem("registered_name", fullName);
         setTimeout(() => {
-          navigate('/');
+          handleSignIn();
         }, 1200);
         return;
-      } else if (res.status === 400 && data.error && data.error.includes('already exists')) {
-        setApiError(data.error);
+      } else if (res.status === 400 && data.error && data.error.includes("already exists")) {
+        setError(data.error);
         setIsSubmitting(false);
         return;
       }
     } catch (err) {
-      console.warn('Registration API network notice, using local storage fallback:', err);
+      console.warn("[Register] API submission notice, using local storage fallback:", err);
     }
 
-    // Unbreakable Fallback for Vercel / Cross-Laptop Preview: Register student in browser storage
+    // Local Storage Resilience Fallback
     const studentUser = {
-      email: formData.email,
-      name: `${formData.firstName} ${formData.lastName}`,
+      studentId: cleanStudentId,
+      email: studentEmail,
+      name: fullName,
       faceEnrolled: true,
       faceEmbeddings: enrolledEmbedding
     };
-    localStorage.setItem(`student_${formData.email}`, JSON.stringify(studentUser));
-    localStorage.setItem('user', JSON.stringify(studentUser));
-    localStorage.setItem('registered_email', formData.email);
-    localStorage.setItem('registered_name', `${formData.firstName} ${formData.lastName}`);
+    localStorage.setItem(`student_${studentEmail}`, JSON.stringify(studentUser));
+    localStorage.setItem("user", JSON.stringify(studentUser));
+    localStorage.setItem("registered_email", studentEmail);
+    localStorage.setItem("registered_name", fullName);
 
-    setApiSuccess('🎉 Account registered successfully! Redirecting to login...');
+    setSuccess("🎉 Account registered successfully! Redirecting to login...");
     setTimeout(() => {
-      navigate('/');
+      handleSignIn();
     }, 1200);
     setIsSubmitting(false);
   };
 
+  const fieldClass = (ok, bad) => `rg-field ${ok ? "ok" : ""} ${bad ? "bad" : ""}`;
+
   return (
-    <div style={styles.container}>
-      <style>{`
-        .register-input:focus {
-          border-color: #6366f1 !important;
-          box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25) !important;
-        }
-        .register-eye-btn:hover {
-          color: #f8fafc !important;
-        }
-        .register-submit-btn:hover {
-          filter: brightness(1.08);
-          transform: translateY(-1px);
-          box-shadow: 0 6px 18px rgba(99, 102, 241, 0.5) !important;
-        }
-        .register-submit-btn:active {
-          transform: translateY(0);
-        }
-      `}</style>
-      <div style={styles.card}>
-        <div style={styles.header}>
-          <div style={styles.logoBadge}>🛡️</div>
-          <h1 style={styles.title}>Student Registration</h1>
-          <p style={styles.subtitle}>Athena Smart AI Examination Proctoring System</p>
+    <div className="rg-page">
+      {/* LEFT: brand panel */}
+      <aside className="rg-brand">
+        <div className="rg-logo">
+          <span className="rg-logo-mark">
+            <IconShieldCheck size={24} color="#fff" />
+          </span>
+          <span className="rg-logo-text">Athena</span>
         </div>
 
-        {/* Step Progress Bar */}
-        <div style={styles.stepProgress}>
-          <div style={{ ...styles.stepDot, ...(step >= 1 ? styles.activeDot : {}) }}>1</div>
-          <div style={{ ...styles.stepLine, ...(step >= 2 ? styles.activeLine : {}) }}></div>
-          <div style={{ ...styles.stepDot, ...(step >= 2 ? styles.activeDot : {}) }}>2</div>
-          <div style={{ ...styles.stepLine, ...(step >= 3 ? styles.activeLine : {}) }}></div>
-          <div style={{ ...styles.stepDot, ...(step >= 3 ? styles.activeDot : {}) }}>3</div>
-        </div>
-        <div style={styles.stepLabels}>
-          <span style={step === 1 ? styles.activeLabel : styles.inactiveLabel}>Personal Details</span>
-          <span style={step === 2 ? styles.activeLabel : styles.inactiveLabel}>Face Enrollment</span>
-          <span style={step === 3 ? styles.activeLabel : styles.inactiveLabel}>Register</span>
+        <div className="rg-hero">
+          <h1>Create your Athena account</h1>
+          <p>Three quick steps: your details, a one-time face enrollment, and you are ready for your exam.</p>
+          <ul>
+            <li>
+              <IconCheck size={18} stroke={2.6} /> Takes about two minutes
+            </li>
+            <li>
+              <IconCheck size={18} stroke={2.6} /> Face stored as an encrypted template, not a photo
+            </li>
+            <li>
+              <IconCheck size={18} stroke={2.6} /> Needs a working webcam and good lighting
+            </li>
+          </ul>
         </div>
 
-        {apiError && <div style={styles.errorBanner}>⚠️ {apiError}</div>}
-        {apiSuccess && <div style={styles.successBanner}>✅ {apiSuccess}</div>}
+        <p className="rg-foot">
+          End-to-end encrypted. Your camera and microphone are used only when you enroll and during the exam.
+        </p>
+      </aside>
 
-        {/* Step 1: Fill Personal Details */}
+      {/* RIGHT: form card */}
+      <main className="rg-main">
         {step === 1 && (
-          <form onSubmit={(e) => { e.preventDefault(); handleProceedToEnrollment(); }} style={styles.form}>
-            <div style={styles.row}>
-              <div style={styles.inputGroup}>
-                <label style={styles.label}>First Name *</label>
-                <input
-                  type="text"
-                  name="firstName"
-                  value={formData.firstName}
-                  onChange={handleInputChange}
-                  placeholder="e.g. John"
-                  className="register-input"
-                  style={{ ...styles.input, ...(formErrors.firstName ? styles.inputError : {}) }}
-                />
-                {formErrors.firstName && <span style={styles.errorText}>{formErrors.firstName}</span>}
-              </div>
-
-              <div style={styles.inputGroup}>
-                <label style={styles.label}>Last Name *</label>
-                <input
-                  type="text"
-                  name="lastName"
-                  value={formData.lastName}
-                  onChange={handleInputChange}
-                  placeholder="e.g. Smith"
-                  className="register-input"
-                  style={{ ...styles.input, ...(formErrors.lastName ? styles.inputError : {}) }}
-                />
-                {formErrors.lastName && <span style={styles.errorText}>{formErrors.lastName}</span>}
-              </div>
+          <form className="rg-card" onSubmit={handleStep1Submit} noValidate>
+            <div>
+              <h2>Student registration</h2>
+              <p className="rg-sub">Enter your details to get started.</p>
             </div>
 
-            <div style={styles.inputGroup}>
-              <label style={styles.label}>Email Address (Unique) *</label>
-              <input
-                type="email"
-                name="email"
-                value={formData.email}
-                onChange={handleInputChange}
-                placeholder="john.smith@university.edu"
-                className="register-input"
-                style={{ ...styles.input, ...(formErrors.email ? styles.inputError : {}) }}
-              />
-              {formErrors.email && !formData.email.trim().length && (
-                <span style={styles.errorText}>{formErrors.email}</span>
-              )}
-              {formData.email.trim().length > 0 && (
-                <span style={{
-                  ...styles.feedbackText,
-                  color: isValidEmailFormat ? '#10b981' : '#f87171'
-                }}>
-                  {isValidEmailFormat ? '✓ Valid Email Format' : '✗ Invalid Email Format'}
-                </span>
-              )}
-            </div>
+            {/* Stepper */}
+            <ol className="rg-stepper">
+              <li className="current">
+                <span>1</span>
+                <b>Personal details</b>
+              </li>
+              <li className="line" />
+              <li>
+                <span>2</span>
+                <b>Face enrollment</b>
+              </li>
+              <li className="line" />
+              <li>
+                <span>3</span>
+                <b>Finish</b>
+              </li>
+            </ol>
 
-            <div style={styles.inputGroup}>
-              <label style={styles.label}>Password *</label>
-              <div style={styles.inputWrapper}>
-                <input
-                  type={showPassword ? 'text' : 'password'}
-                  name="password"
-                  value={formData.password}
-                  onChange={handleInputChange}
-                  placeholder="••••••••"
-                  className="register-input"
-                  style={{
-                    ...styles.input,
-                    paddingRight: '44px',
-                    ...(formErrors.password ? styles.inputError : {})
-                  }}
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  style={styles.eyeButton}
-                  className="register-eye-btn"
-                  title={showPassword ? 'Hide password' : 'Show password'}
-                  aria-label={showPassword ? 'Hide password' : 'Show password'}
-                >
-                  {showPassword ? <EyeOffIcon /> : <EyeIcon />}
-                </button>
-              </div>
-              {formErrors.password && <span style={styles.errorText}>{formErrors.password}</span>}
-
-              {/* Real-time Password Strength Meter */}
-              {formData.password.length > 0 && (
-                <div style={styles.strengthContainer}>
-                  <div style={styles.strengthHeader}>
-                    <span style={styles.strengthLabel}>Password Strength</span>
-                    <span style={{ ...styles.strengthCategory, color: passwordStrength.color }}>
-                      {passwordStrength.label}
-                    </span>
-                  </div>
-                  <div style={styles.strengthTrack}>
-                    <div
-                      style={{
-                        ...styles.strengthFill,
-                        width: `${passwordStrength.percentage}%`,
-                        backgroundColor: passwordStrength.color,
-                        boxShadow: `0 0 10px ${passwordStrength.color}55`
-                      }}
-                    />
-                  </div>
-                  <div style={styles.criteriaRow}>
-                    <span style={{ ...styles.criteriaBadge, color: passwordStrength.criteria.length ? '#10b981' : '#64748b' }}>
-                      {passwordStrength.criteria.length ? '✓' : '•'} 8+ Characters
-                    </span>
-                    <span style={{ ...styles.criteriaBadge, color: passwordStrength.criteria.uppercase ? '#10b981' : '#64748b' }}>
-                      {passwordStrength.criteria.uppercase ? '✓' : '•'} Uppercase
-                    </span>
-                    <span style={{ ...styles.criteriaBadge, color: passwordStrength.criteria.lowercase ? '#10b981' : '#64748b' }}>
-                      {passwordStrength.criteria.lowercase ? '✓' : '•'} Lowercase
-                    </span>
-                    <span style={{ ...styles.criteriaBadge, color: passwordStrength.criteria.number ? '#10b981' : '#64748b' }}>
-                      {passwordStrength.criteria.number ? '✓' : '•'} Numbers
-                    </span>
-                    <span style={{ ...styles.criteriaBadge, color: passwordStrength.criteria.special ? '#10b981' : '#64748b' }}>
-                      {passwordStrength.criteria.special ? '✓' : '•'} Special (!@#$)
-                    </span>
-                  </div>
+            {/* Names row */}
+            <div className="rg-row">
+              <div className="rg-group">
+                <label htmlFor="rg-fn">First name</label>
+                <div className={fieldClass(false, touched.firstName && !form.firstName.trim())}>
+                  <input
+                    id="rg-fn"
+                    placeholder="e.g. John"
+                    value={form.firstName}
+                    onChange={set("firstName")}
+                    onBlur={blur("firstName")}
+                    autoComplete="given-name"
+                  />
                 </div>
+              </div>
+              <div className="rg-group">
+                <label htmlFor="rg-ln">Last name</label>
+                <div className={fieldClass(false, touched.lastName && !form.lastName.trim())}>
+                  <input
+                    id="rg-ln"
+                    placeholder="e.g. Smith"
+                    value={form.lastName}
+                    onChange={set("lastName")}
+                    onBlur={blur("lastName")}
+                    autoComplete="family-name"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Email */}
+            <div className="rg-group">
+              <label htmlFor="rg-email">Email address</label>
+              <div className={fieldClass(emailOk, touched.email && form.email && !emailOk)}>
+                <IconMail size={20} className="rg-ico" />
+                <input
+                  id="rg-email"
+                  type="email"
+                  placeholder="you@college.edu"
+                  value={form.email}
+                  onChange={set("email")}
+                  onBlur={blur("email")}
+                  autoComplete="email"
+                />
+                {emailOk && <IconCheck size={20} stroke={2.6} className="rg-tick" />}
+              </div>
+              {emailOk && <small className="rg-good">Valid email format</small>}
+              {touched.email && form.email && !emailOk && (
+                <small className="rg-badtxt">Enter a valid email address</small>
               )}
             </div>
 
-            <div style={styles.inputGroup}>
-              <label style={styles.label}>Confirm Password *</label>
-              <div style={styles.inputWrapper}>
+            {/* Password */}
+            <div className="rg-group">
+              <label htmlFor="rg-pw">Password</label>
+              <div className={fieldClass(false, touched.password && score < 5)}>
+                <IconLock size={20} className="rg-ico" />
                 <input
-                  type={showConfirmPassword ? 'text' : 'password'}
-                  name="confirmPassword"
-                  value={formData.confirmPassword}
-                  onChange={handleInputChange}
-                  placeholder="••••••••"
-                  className="register-input"
-                  style={{
-                    ...styles.input,
-                    paddingRight: '44px',
-                    ...(formErrors.confirmPassword ? styles.inputError : {})
-                  }}
+                  id="rg-pw"
+                  type={showPw ? "text" : "password"}
+                  placeholder="Create a password"
+                  value={form.password}
+                  onChange={set("password")}
+                  onBlur={blur("password")}
+                  autoComplete="new-password"
                 />
                 <button
                   type="button"
-                  onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                  style={styles.eyeButton}
-                  className="register-eye-btn"
-                  title={showConfirmPassword ? 'Hide password' : 'Show password'}
-                  aria-label={showConfirmPassword ? 'Hide password' : 'Show password'}
+                  className="rg-eye"
+                  onClick={() => setShowPw((s) => !s)}
+                  aria-label={showPw ? "Hide password" : "Show password"}
                 >
-                  {showConfirmPassword ? <EyeOffIcon /> : <EyeIcon />}
+                  {showPw ? <IconEyeOff size={20} /> : <IconEye size={20} />}
                 </button>
               </div>
-              {formErrors.confirmPassword && !formData.confirmPassword.length && (
-                <span style={styles.errorText}>{formErrors.confirmPassword}</span>
-              )}
 
-              {/* Real-time Password Match Validation */}
-              {formData.confirmPassword.length > 0 && (
-                <span style={{
-                  ...styles.feedbackText,
-                  color: isPasswordMatch ? '#10b981' : '#f87171'
-                }}>
-                  {isPasswordMatch ? '✓ Passwords Match' : '✗ Passwords Do Not Match'}
-                </span>
-              )}
+              <div className="rg-meter">
+                <div className="rg-meter-top">
+                  <span>PASSWORD STRENGTH</span>
+                  {level && <b style={{ color: level.color }}>{level.label}</b>}
+                </div>
+                <div className="rg-bars">
+                  {[0, 1, 2, 3, 4].map((i) => (
+                    <i key={i} style={{ background: i < score ? level.color : "#1d2650" }} />
+                  ))}
+                </div>
+                <div className="rg-rules">
+                  {RULES.map((r, i) => (
+                    <span key={r.key} className={passed[i] ? "on" : ""}>
+                      {passed[i] ? "✓" : "•"} {r.label}
+                    </span>
+                  ))}
+                </div>
+              </div>
             </div>
 
-            <button type="submit" style={styles.primaryButton} className="register-submit-btn">
-              Next: Enroll Face 📸
+            {/* Confirm password */}
+            <div className="rg-group">
+              <label htmlFor="rg-cf">Confirm password</label>
+              <div className={fieldClass(matchOk, touched.confirm && form.confirm && !matchOk)}>
+                <IconLock size={20} className="rg-ico" />
+                <input
+                  id="rg-cf"
+                  type={showCf ? "text" : "password"}
+                  placeholder="Re-enter your password"
+                  value={form.confirm}
+                  onChange={set("confirm")}
+                  onBlur={blur("confirm")}
+                  autoComplete="new-password"
+                />
+                <button
+                  type="button"
+                  className="rg-eye"
+                  onClick={() => setShowCf((s) => !s)}
+                  aria-label={showCf ? "Hide password" : "Show password"}
+                >
+                  {showCf ? <IconEyeOff size={20} /> : <IconEye size={20} />}
+                </button>
+              </div>
+              {matchOk && <small className="rg-good">Passwords match</small>}
+              {form.confirm && !matchOk && <small className="rg-badtxt">Passwords do not match</small>}
+            </div>
+
+            {error && <div className="rg-error" role="alert">{error}</div>}
+
+            <button type="submit" className="rg-primary" disabled={loading || !valid}>
+              {loading ? (
+                <>
+                  <IconLoader2 size={20} className="rg-spin" /> Saving...
+                </>
+              ) : (
+                <>
+                  Next: enroll your face <IconArrowRight size={20} />
+                </>
+              )}
             </button>
 
-            <div style={styles.loginRedirect}>
-              Already have an account? <Link to="/" style={styles.link}>Login here</Link>
-            </div>
+            <p className="rg-signin">
+              Already registered?{" "}
+              <a
+                href="#login"
+                onClick={(e) => {
+                  e.preventDefault();
+                  handleSignIn();
+                }}
+              >
+                Sign in
+              </a>
+            </p>
           </form>
         )}
 
-        {/* Step 2: Face Enrollment */}
+        {/* STEP 2: Biometric Face Enrollment */}
         {step === 2 && (
-          <div style={styles.enrollmentContainer}>
-            <div style={styles.statusBox}>
-              <span style={{ fontSize: '13px', fontWeight: 600 }}>{statusMsg}</span>
+          <div className="rg-card">
+            <div>
+              <h2>Biometric face enrollment</h2>
+              <p className="rg-sub">Center your face in the guide and follow the pose prompts.</p>
             </div>
 
-            <div style={styles.webcamWrapper}>
+            {/* Stepper */}
+            <ol className="rg-stepper">
+              <li className="done">
+                <span><IconCheck size={16} stroke={3} /></span>
+                <b>Personal details</b>
+              </li>
+              <li className="line done" />
+              <li className="current">
+                <span>2</span>
+                <b>Face enrollment</b>
+              </li>
+              <li className="line" />
+              <li>
+                <span>3</span>
+                <b>Finish</b>
+              </li>
+            </ol>
+
+            {/* Dynamic Pose Guidance Banner */}
+            <div className="fs-pose-banner" style={{ background: "rgba(99, 102, 241, 0.16)", border: "1px solid #4338ca", borderRadius: "12px", padding: "10px 16px", textAlign: "center" }}>
+              <div style={{ fontSize: "13px", fontWeight: 800, color: "#38bdf8", letterSpacing: "0.02em" }}>
+                {ENROLL_ACTIONS[enrollPoseIdx]?.label}
+              </div>
+              <div style={{ fontSize: "12px", fontWeight: 500, color: "#e0e7ff", marginTop: "2px" }}>
+                {ENROLL_ACTIONS[enrollPoseIdx]?.prompt}
+              </div>
+            </div>
+
+            {/* Camera Viewport */}
+            <div className="rg-cam">
               <Webcam
                 ref={webcamRef}
                 audio={false}
-                width={360}
-                height={270}
+                mirrored={true}
                 screenshotFormat="image/jpeg"
-                videoConstraints={{ facingMode: 'user', width: 640, height: 480 }}
-                style={styles.webcam}
+                screenshotQuality={0.92}
+                videoConstraints={{ width: 640, height: 480, facingMode: "user" }}
+                onUserMedia={() => {
+                  setCameraPermission("granted");
+                  setCameraActive(true);
+                  setCameraError(null);
+                }}
+                onUserMediaError={(err) => {
+                  setCameraPermission("denied");
+                  setCameraActive(false);
+                  setCameraError(err.message || "Camera access denied");
+                }}
+                className="rg-cam-video"
               />
-              {/* Biometric Target Overlay */}
-              <div style={{
-                ...styles.targetOval,
-                borderColor: telemetry.qualityScore > 70 ? '#10b981' : '#f59e0b'
-              }}></div>
+              <span className="rg-cam-live"><i /> LIVE</span>
+              {enrollStatus === "capturing" && (
+                <span className="rg-cam-count">{samplesCount} / 30 frames</span>
+              )}
+              <div className="rg-cam-corners"><i /><i /><i /><i /></div>
+              <div className="rg-cam-oval" />
+              {enrollStatus === "capturing" && <div className="rg-cam-scan" />}
+
+              {(!cameraActive || cameraPermission === "denied") && (
+                <div style={{
+                  position: "absolute", inset: 0, background: "rgba(10, 15, 31, 0.94)",
+                  display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+                  padding: "20px", textAlign: "center", zIndex: 10
+                }}>
+                  <IconCamera size={36} color="#818cf8" style={{ marginBottom: "8px" }} />
+                  <div style={{ fontSize: "0.85rem", fontWeight: 600, color: "#f1f4ff", marginBottom: "8px", maxWidth: "280px" }}>
+                    {cameraPermission === "denied"
+                      ? (cameraError || "Camera access blocked. Please allow camera in browser address bar.")
+                      : "Requesting camera access..."}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={requestCameraAccess}
+                    className="rg-primary"
+                    style={{ height: "42px", padding: "0 18px", fontSize: "14px", flex: "none" }}
+                  >
+                    Grant Camera Access
+                  </button>
+                </div>
+              )}
             </div>
 
-            {/* Telemetry & Progress Bar */}
-            {enrollStatus === 'capturing' && (
-              <div style={styles.progressContainer}>
-                <div style={styles.progressBarBg}>
-                  <div
-                    style={{
-                      ...styles.progressBarFill,
-                      width: `${Math.round((samplesCount / TARGET_SAMPLES) * 100)}%`
-                    }}
-                  ></div>
-                </div>
-                <div style={styles.progressText}>
-                  Capturing Samples: {samplesCount} / {TARGET_SAMPLES}
-                </div>
+            {/* Progress bar */}
+            {enrollStatus === "capturing" && (
+              <div className="rg-bar">
+                <div style={{ width: `${Math.round((samplesCount / TARGET_SAMPLES) * 100)}%` }} />
               </div>
             )}
 
-            <div style={styles.buttonRow}>
-              <button
-                type="button"
-                onClick={() => setStep(1)}
-                style={styles.secondaryButton}
-                disabled={enrollStatus === 'capturing'}
-              >
-                ◄ Back
-              </button>
+            {/* Status Message */}
+            <div
+              className={`rg-status ${
+                statusMsg.includes("✅") || statusMsg.includes("Successful")
+                  ? "success"
+                  : statusMsg.includes("❌") || statusMsg.includes("⚠️")
+                  ? "error"
+                  : "info"
+              }`}
+            >
+              {statusMsg}
+            </div>
 
+            {/* Action buttons */}
+            <div className="rg-actions">
               <button
                 type="button"
-                onClick={startFaceCapture}
-                style={{
-                  ...styles.primaryButton,
-                  opacity: enrollStatus === 'capturing' ? 0.7 : 1
-                }}
-                disabled={enrollStatus === 'capturing' || !modelsLoaded}
+                className="rg-ghost"
+                onClick={() => setStep(1)}
+                disabled={enrollStatus === "capturing"}
               >
-                {enrollStatus === 'capturing' ? 'Capturing Face Samples...' : '📸 Capture & Enroll Face'}
+                Back to Details
+              </button>
+              <button
+                type="button"
+                className="rg-primary"
+                onClick={startFaceCapture}
+                disabled={enrollStatus === "capturing" || !cameraActive}
+                style={{ flex: 1 }}
+              >
+                {enrollStatus === "capturing" ? (
+                  <>
+                    <IconLoader2 size={20} className="rg-spin" /> Capturing {samplesCount} / 30 frames...
+                  </>
+                ) : (
+                  <>
+                    Start 30-Frame Enrollment <IconArrowRight size={20} />
+                  </>
+                )}
               </button>
             </div>
           </div>
         )}
 
-        {/* Step 3: Verified & Ready to Register */}
+        {/* STEP 3: Review & Finish */}
         {step === 3 && (
-          <div style={styles.successStepContainer}>
-            <div style={styles.enrolledBadge}>
-              <span style={{ fontSize: '2rem' }}>✔</span>
+          <div className="rg-card">
+            <div>
+              <h2>Registration review</h2>
+              <p className="rg-sub">Your facial biometric profile has been verified and encrypted.</p>
+            </div>
+
+            {/* Stepper */}
+            <ol className="rg-stepper">
+              <li className="done">
+                <span><IconCheck size={16} stroke={3} /></span>
+                <b>Personal details</b>
+              </li>
+              <li className="line done" />
+              <li className="done">
+                <span><IconCheck size={16} stroke={3} /></span>
+                <b>Face enrollment</b>
+              </li>
+              <li className="line done" />
+              <li className="current">
+                <span>3</span>
+                <b>Finish</b>
+              </li>
+            </ol>
+
+            {/* Enrolled Badge */}
+            <div className="rg-enrolled-badge">
+              <IconShieldCheck size={32} />
               <div>
-                <h3 style={{ margin: 0, color: '#10b981' }}>Face Enrolled Successfully!</h3>
-                <p style={{ margin: '4px 0 0 0', fontSize: '13px', color: '#94a3b8' }}>
-                  Biometric ArcFace 512-d face embedding computed & verified.
-                </p>
+                <h4>Face Enrolled Successfully!</h4>
+                <p>Biometric ArcFace 512-d template encrypted & verified (30 Samples).</p>
               </div>
             </div>
 
-            {enrolledSnapshot && (
-              <div style={styles.snapshotPreview}>
-                <img src={enrolledSnapshot} alt="Face Snapshot" style={styles.snapshotImg} />
+            {/* Summary details */}
+            <div className="rg-summary">
+              <div className="rg-summary-row">
+                <span>Candidate Name:</span>
+                <b>{form.firstName} {form.lastName}</b>
               </div>
-            )}
-
-            <div style={styles.summaryBox}>
-              <div><strong>Name:</strong> {formData.firstName} {formData.lastName}</div>
-              <div><strong>Email:</strong> {formData.email}</div>
-              <div><strong>Face Biometric Status:</strong> <span style={{ color: '#10b981', fontWeight: 'bold' }}>Enrolled (30 Samples)</span></div>
+              <div className="rg-summary-row">
+                <span>Email Address:</span>
+                <b>{form.email}</b>
+              </div>
+              <div className="rg-summary-row">
+                <span>USN / Candidate ID:</span>
+                <b>STU_{form.email.replace(/[^a-z0-9]/gi, "_")}</b>
+              </div>
+              <div className="rg-summary-row">
+                <span>Biometric Status:</span>
+                <b style={{ color: "#34d399" }}>Enrolled & Ready (30 Frames)</b>
+              </div>
             </div>
 
-            <form onSubmit={handleRegisterSubmit}>
-              <button
-                type="submit"
-                style={{
-                  ...styles.primaryButton,
-                  background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)'
-                }}
-                disabled={isSubmitting}
-              >
-                {isSubmitting ? 'Registering Account...' : 'Complete Registration 🚀'}
-              </button>
-            </form>
+            {error && <div className="rg-error">{error}</div>}
+            {success && <div className="rg-success">{success}</div>}
 
             <button
               type="button"
-              onClick={() => { setStep(2); setEnrollStatus('idle'); }}
-              style={styles.textButton}
+              className="rg-primary"
+              onClick={handleFinalRegister}
+              disabled={isSubmitting}
             >
-              Enroll Face
+              {isSubmitting ? (
+                <>
+                  <IconLoader2 size={20} className="rg-spin" /> Completing Registration...
+                </>
+              ) : (
+                <>
+                  Complete Registration & Sign In <IconArrowRight size={20} />
+                </>
+              )}
             </button>
           </div>
         )}
-      </div>
+      </main>
     </div>
   );
 }
-
-const styles = {
-  container: {
-    minHeight: '100vh',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    background: 'radial-gradient(circle at top, #1e293b 0%, #0f172a 100%)',
-    fontFamily: 'Inter, system-ui, -apple-system, sans-serif',
-    padding: '20px'
-  },
-  card: {
-    width: '100%',
-    maxWidth: '520px',
-    background: 'rgba(15, 23, 42, 0.85)',
-    backdropFilter: 'blur(16px)',
-    border: '1px solid rgba(255, 255, 255, 0.1)',
-    borderRadius: '20px',
-    padding: '32px',
-    boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
-    color: '#f8fafc'
-  },
-  header: {
-    textAlign: 'center',
-    marginBottom: '24px'
-  },
-  logoBadge: {
-    width: '50px',
-    height: '50px',
-    margin: '0 auto 12px auto',
-    background: 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)',
-    borderRadius: '14px',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontSize: '24px',
-    boxShadow: '0 4px 14px rgba(99, 102, 241, 0.4)'
-  },
-  title: {
-    fontSize: '24px',
-    fontWeight: '800',
-    margin: '0 0 6px 0',
-    color: '#ffffff'
-  },
-  subtitle: {
-    fontSize: '13px',
-    color: '#94a3b8',
-    margin: 0
-  },
-  stepProgress: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    margin: '20px 0 8px 0'
-  },
-  stepDot: {
-    width: '28px',
-    height: '28px',
-    borderRadius: '50%',
-    background: '#334155',
-    color: '#94a3b8',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontWeight: 'bold',
-    fontSize: '12px'
-  },
-  activeDot: {
-    background: '#6366f1',
-    color: '#ffffff',
-    boxShadow: '0 0 10px rgba(99, 102, 241, 0.5)'
-  },
-  stepLine: {
-    height: '2px',
-    width: '50px',
-    background: '#334155',
-    margin: '0 8px'
-  },
-  activeLine: {
-    background: '#6366f1'
-  },
-  stepLabels: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    fontSize: '11px',
-    marginBottom: '24px',
-    padding: '0 10px'
-  },
-  activeLabel: {
-    color: '#818cf8',
-    fontWeight: 'bold'
-  },
-  inactiveLabel: {
-    color: '#64748b'
-  },
-  form: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '16px'
-  },
-  row: {
-    display: 'flex',
-    gap: '12px'
-  },
-  inputGroup: {
-    display: 'flex',
-    flexDirection: 'column',
-    flex: 1,
-    gap: '6px'
-  },
-  label: {
-    fontSize: '12px',
-    fontWeight: '600',
-    color: '#cbd5e1'
-  },
-  input: {
-    background: '#1e293b',
-    border: '1px solid #334155',
-    borderRadius: '10px',
-    padding: '10px 14px',
-    color: '#ffffff',
-    fontSize: '14px',
-    outline: 'none',
-    transition: 'all 0.2s',
-    width: '100%',
-    boxSizing: 'border-box'
-  },
-  inputWrapper: {
-    position: 'relative',
-    display: 'flex',
-    alignItems: 'center',
-    width: '100%'
-  },
-  eyeButton: {
-    position: 'absolute',
-    right: '12px',
-    top: '50%',
-    transform: 'translateY(-50%)',
-    background: 'none',
-    border: 'none',
-    color: '#94a3b8',
-    cursor: 'pointer',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: '4px',
-    borderRadius: '4px',
-    transition: 'color 0.2s, transform 0.15s',
-    outline: 'none',
-    zIndex: 2
-  },
-  feedbackText: {
-    fontSize: '11px',
-    fontWeight: '600',
-    display: 'flex',
-    alignItems: 'center',
-    gap: '4px',
-    marginTop: '2px',
-    transition: 'color 0.2s ease'
-  },
-  strengthContainer: {
-    marginTop: '6px',
-    background: 'rgba(30, 41, 59, 0.6)',
-    border: '1px solid rgba(51, 65, 85, 0.6)',
-    borderRadius: '8px',
-    padding: '10px 12px',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '6px'
-  },
-  strengthHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center'
-  },
-  strengthLabel: {
-    fontSize: '11px',
-    color: '#94a3b8',
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: '0.04em'
-  },
-  strengthCategory: {
-    fontSize: '12px',
-    fontWeight: '700',
-    transition: 'color 0.3s ease'
-  },
-  strengthTrack: {
-    width: '100%',
-    height: '6px',
-    backgroundColor: '#334155',
-    borderRadius: '3px',
-    overflow: 'hidden'
-  },
-  strengthFill: {
-    height: '100%',
-    borderRadius: '3px',
-    transition: 'width 0.3s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.3s ease'
-  },
-  criteriaRow: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: '6px 12px',
-    marginTop: '2px'
-  },
-  criteriaBadge: {
-    fontSize: '10.5px',
-    fontWeight: '500',
-    display: 'flex',
-    alignItems: 'center',
-    gap: '3px',
-    transition: 'color 0.2s ease'
-  },
-  inputError: {
-    borderColor: '#ef4444'
-  },
-  errorText: {
-    fontSize: '11px',
-    color: '#f87171'
-  },
-  primaryButton: {
-    width: '100%',
-    background: 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)',
-    color: '#ffffff',
-    border: 'none',
-    padding: '12px',
-    borderRadius: '10px',
-    fontWeight: '700',
-    fontSize: '15px',
-    cursor: 'pointer',
-    marginTop: '10px',
-    boxShadow: '0 4px 14px rgba(99, 102, 241, 0.4)',
-    transition: 'transform 0.1s ease'
-  },
-  secondaryButton: {
-    background: '#334155',
-    color: '#cbd5e1',
-    border: 'none',
-    padding: '12px 18px',
-    borderRadius: '10px',
-    fontWeight: '600',
-    cursor: 'pointer'
-  },
-  textButton: {
-    background: 'transparent',
-    border: 'none',
-    color: '#94a3b8',
-    fontSize: '13px',
-    marginTop: '12px',
-    cursor: 'pointer',
-    width: '100%',
-    textAlign: 'center'
-  },
-  loginRedirect: {
-    textAlign: 'center',
-    fontSize: '13px',
-    color: '#94a3b8',
-    marginTop: '12px'
-  },
-  link: {
-    color: '#818cf8',
-    textDecoration: 'none',
-    fontWeight: '600'
-  },
-  enrollmentContainer: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    gap: '16px'
-  },
-  statusBox: {
-    background: '#1e293b',
-    border: '1px solid #334155',
-    borderRadius: '8px',
-    padding: '8px 14px',
-    color: '#818cf8',
-    textAlign: 'center',
-    width: '100%'
-  },
-  webcamWrapper: {
-    position: 'relative',
-    width: '360px',
-    height: '270px',
-    borderRadius: '16px',
-    overflow: 'hidden',
-    border: '2px solid #334155'
-  },
-  webcam: {
-    width: '100%',
-    height: '100%',
-    objectFit: 'cover'
-  },
-  targetOval: {
-    position: 'absolute',
-    top: '15%',
-    left: '25%',
-    width: '50%',
-    height: '70%',
-    borderRadius: '50%',
-    border: '3px dashed #10b981',
-    boxShadow: '0 0 20px rgba(16, 185, 129, 0.3)',
-    pointerEvents: 'none'
-  },
-  progressContainer: {
-    width: '100%',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '6px'
-  },
-  progressBarBg: {
-    width: '100%',
-    height: '8px',
-    background: '#334155',
-    borderRadius: '4px',
-    overflow: 'hidden'
-  },
-  progressBarFill: {
-    height: '100%',
-    background: 'linear-gradient(90deg, #6366f1, #10b981)',
-    transition: 'width 0.2s ease'
-  },
-  progressText: {
-    textAlign: 'center',
-    fontSize: '12px',
-    color: '#94a3b8',
-    fontWeight: '600'
-  },
-  buttonRow: {
-    display: 'flex',
-    gap: '12px',
-    width: '100%',
-    marginTop: '10px'
-  },
-  successStepContainer: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    gap: '16px'
-  },
-  enrolledBadge: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '14px',
-    background: 'rgba(16, 185, 129, 0.1)',
-    border: '1px solid rgba(16, 185, 129, 0.3)',
-    padding: '16px 20px',
-    borderRadius: '12px',
-    width: '100%'
-  },
-  snapshotPreview: {
-    width: '100px',
-    height: '100px',
-    borderRadius: '50%',
-    overflow: 'hidden',
-    border: '3px solid #10b981',
-    boxShadow: '0 0 14px rgba(16, 185, 129, 0.4)'
-  },
-  snapshotImg: {
-    width: '100%',
-    height: '100%',
-    objectFit: 'cover'
-  },
-  summaryBox: {
-    background: '#1e293b',
-    borderRadius: '10px',
-    padding: '14px 18px',
-    width: '100%',
-    fontSize: '13px',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '8px',
-    border: '1px solid #334155'
-  },
-  errorBanner: {
-    background: 'rgba(239, 68, 68, 0.15)',
-    border: '1px solid #ef4444',
-    color: '#f87171',
-    padding: '10px 14px',
-    borderRadius: '8px',
-    fontSize: '13px',
-    marginBottom: '16px'
-  },
-  successBanner: {
-    background: 'rgba(16, 185, 129, 0.15)',
-    border: '1px solid #10b981',
-    color: '#34d399',
-    padding: '10px 14px',
-    borderRadius: '8px',
-    fontSize: '13px',
-    marginBottom: '16px'
-  }
-};

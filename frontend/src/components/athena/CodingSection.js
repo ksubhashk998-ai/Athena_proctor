@@ -1,24 +1,37 @@
 import React, { useState } from 'react';
 
-function CodingSection({ problems, onSubmitProblem }) {
+function CodingSection({ problems, onSubmitProblem, onCodeChange }) {
   const [selectedProblemIndex, setSelectedProblemIndex] = useState(0);
   const [language, setLanguage] = useState('javascript');
-  const [userCode, setUserCode] = useState(problems[0].starterCode.javascript);
-  const [customInput, setCustomInput] = useState(problems[0].sampleInput);
+  const [codes, setCodes] = useState(() => {
+    const init = {};
+    if (problems && Array.isArray(problems)) {
+      problems.forEach((p, idx) => {
+        init[idx] = p.starterCode?.javascript || '';
+      });
+    }
+    return init;
+  });
+  const [userCode, setUserCode] = useState(problems[0]?.starterCode?.javascript || '');
+  const [customInput, setCustomInput] = useState(problems[0]?.sampleInput || '');
   const [consoleOutput, setConsoleOutput] = useState('');
   const [activeConsoleTab, setActiveConsoleTab] = useState('output'); // 'input' | 'output' | 'status'
   const [executionStatus, setExecutionStatus] = useState(null);
   const [isExecuting, setIsExecuting] = useState(false);
   const [savedDraftStatus, setSavedDraftStatus] = useState('');
 
-  const currentProblem = problems[selectedProblemIndex];
+  const currentProblem = problems[selectedProblemIndex] || {};
 
   // Handle problem selection change
   const handleSelectProblem = (idx) => {
+    // Save current code for previous problem
+    setCodes(prev => ({ ...prev, [selectedProblemIndex]: userCode }));
+
     setSelectedProblemIndex(idx);
     const p = problems[idx];
-    setUserCode(p.starterCode[language] || p.starterCode.javascript);
-    setCustomInput(p.sampleInput);
+    const existingCode = codes[idx] !== undefined ? codes[idx] : (p.starterCode[language] || p.starterCode.javascript);
+    setUserCode(existingCode);
+    setCustomInput(p.sampleInput || '');
     setConsoleOutput('');
     setExecutionStatus(null);
   };
@@ -26,8 +39,32 @@ function CodingSection({ problems, onSubmitProblem }) {
   // Handle language change
   const handleLanguageChange = (lang) => {
     setLanguage(lang);
-    if (currentProblem.starterCode[lang]) {
-      setUserCode(currentProblem.starterCode[lang]);
+    if (currentProblem.starterCode && currentProblem.starterCode[lang]) {
+      const codeForLang = currentProblem.starterCode[lang];
+      setUserCode(codeForLang);
+      setCodes(prev => ({ ...prev, [selectedProblemIndex]: codeForLang }));
+      if (onCodeChange) {
+        onCodeChange(selectedProblemIndex, {
+          problemId: currentProblem.id,
+          title: currentProblem.title,
+          language: lang,
+          code: codeForLang
+        });
+      }
+    }
+  };
+
+  // Handle live code editing
+  const handleCodeEdit = (newCode) => {
+    setUserCode(newCode);
+    setCodes(prev => ({ ...prev, [selectedProblemIndex]: newCode }));
+    if (onCodeChange) {
+      onCodeChange(selectedProblemIndex, {
+        problemId: currentProblem.id,
+        title: currentProblem.title,
+        language,
+        code: newCode
+      });
     }
   };
 
@@ -59,15 +96,25 @@ function CodingSection({ problems, onSubmitProblem }) {
 
     setTimeout(() => {
       setIsExecuting(false);
-      setExecutionStatus({
+      const testResult = {
         status: 'ACCEPTED (100%)',
         runtime: '14 ms',
         memory: '14.2 MB',
         passedTests: '15/15 Hidden Testcases Passed'
-      });
+      };
+      setExecutionStatus(testResult);
       setConsoleOutput('🎉 Solution Accepted! Score: 100/100 points.');
       if (onSubmitProblem) {
-        onSubmitProblem(selectedProblemIndex);
+        onSubmitProblem(selectedProblemIndex, {
+          problemId: currentProblem.id,
+          title: currentProblem.title,
+          language,
+          code: userCode,
+          status: 'ACCEPTED (100%)',
+          runtime: '14 ms',
+          passedTests: '15/15 Hidden Testcases Passed',
+          submittedAt: new Date().toISOString()
+        });
       }
     }, 1200);
   };
@@ -263,7 +310,7 @@ function CodingSection({ problems, onSubmitProblem }) {
           {/* Monaco-style Code Editor Textarea */}
           <textarea
             value={userCode}
-            onChange={(e) => setUserCode(e.target.value)}
+            onChange={(e) => handleCodeEdit(e.target.value)}
             className="athena-code-textarea"
             placeholder="// Write code implementation here..."
           />

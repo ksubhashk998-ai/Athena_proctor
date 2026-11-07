@@ -630,6 +630,23 @@ const handleLogin = async (req, res) => {
 
         console.log(`🔑 Login password authenticated for ${cleanEmail}. Proceeding to Face Verification.`);
 
+        // Record login timestamp in MongoDB Atlas
+        if (mongoose.connection.readyState === 1) {
+            try {
+                if (student && student.save) {
+                    student.lastLogin = new Date();
+                    await student.save().catch(() => {});
+                } else if (Student && Student.updateOne) {
+                    await Student.updateOne({ email: cleanEmail }, { $set: { lastLogin: new Date() } }).catch(() => {});
+                }
+                if (User && User.updateOne) {
+                    await User.updateOne({ email: cleanEmail }, { $set: { lastLogin: new Date() } }).catch(() => {});
+                }
+            } catch (loginTrackErr) {
+                console.warn('MongoDB lastLogin record notice:', loginTrackErr.message);
+            }
+        }
+
         const pubProfile = student.getPublicProfile ? student.getPublicProfile() : {
             studentId: student.studentId,
             email: student.email,

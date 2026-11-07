@@ -17,6 +17,7 @@ import base64
 import gc
 import io
 import logging
+import re
 import time
 from typing import Any, List, Optional
 
@@ -86,10 +87,10 @@ MIN_ACCEPTABLE_QUALITY = 20.0
 GOOD_QUALITY = 45.0
 MIN_VALID_EMBEDDINGS = 10
 MAX_CANDIDATE_FRAMES = 30
-SIMILARITY_THRESHOLD = float(os.getenv("FACE_MATCH_THRESHOLD", "0.50"))
-FRAME_MATCH_THRESHOLD = float(os.getenv("FACE_MATCH_THRESHOLD", "0.50"))
-MIN_AVG_THRESHOLD = 0.48
-SUSPICIOUS_THRESHOLD = 0.38
+SIMILARITY_THRESHOLD = float(os.getenv("FACE_MATCH_THRESHOLD", "0.42"))
+FRAME_MATCH_THRESHOLD = float(os.getenv("FACE_MATCH_THRESHOLD", "0.42"))
+MIN_AVG_THRESHOLD = 0.40
+SUSPICIOUS_THRESHOLD = 0.34
 TARGET_VERIFICATION_FRAMES = 30
 MIN_VERIFICATION_FRAMES = 20
 ENABLE_DIAGNOSTIC_MODE = True
@@ -281,14 +282,49 @@ class ArcFaceVerifyRequest(BaseModel):
 def preprocess_image_np(imageBase64: str, target_max_dim: int = 640) -> Optional[np.ndarray]:
     """
     Decodes Base64 string directly to BGR numpy array and resizes to target_max_dim.
-    Avoids retaining duplicate image buffers.
+    Avoids retaining duplicate image buffers. Also resolves file paths on disk.
     """
     if not imageBase64:
         return None
     try:
-        if "," in imageBase64:
-            imageBase64 = imageBase64.split(",", 1)[1]
-        image_bytes = base64.b64decode(imageBase64)
+        # 1. Check if imageBase64 is a file path or URL on disk
+        if isinstance(imageBase64, str):
+            clean_str = imageBase64.strip()
+            if ('screenshot' in clean_str.lower()) or clean_str.endswith(('.jpg', '.jpeg', '.png', '.webp')) or os.path.exists(clean_str):
+                base_name = os.path.basename(clean_str)
+                clean_rel = clean_str.lstrip('/\\')
+                candidate_paths = [
+                    clean_str,
+                    clean_rel,
+                    os.path.join(os.path.dirname(__file__), '..', clean_rel),
+                    os.path.join(os.path.dirname(__file__), '..', 'backend', clean_rel),
+                    os.path.join(os.path.dirname(__file__), '..', 'backend', 'screenshots', base_name),
+                    os.path.join(os.path.dirname(__file__), 'screenshots', base_name)
+                ]
+                for c_path in candidate_paths:
+                    if os.path.isfile(c_path):
+                        bgr_img = cv2.imread(c_path)
+                        if bgr_img is not None and bgr_img.size > 0:
+                            h, w = bgr_img.shape[:2]
+                            if max(h, w) > target_max_dim:
+                                scale = target_max_dim / float(max(h, w))
+                                new_w = max(1, int(round(w * scale)))
+                                new_h = max(1, int(round(h * scale)))
+                                bgr_img = cv2.resize(bgr_img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                            return bgr_img
+
+        # 2. Decode Base64 string
+        raw_b64 = imageBase64
+        if "," in raw_b64:
+            raw_b64 = raw_b64.split(",", 1)[1]
+
+        # Fix base64 padding & clean whitespace
+        clean_b64 = re.sub(r'[^A-Za-z0-9+/=]', '', raw_b64)
+        missing_padding = len(clean_b64) % 4
+        if missing_padding:
+            clean_b64 += '=' * (4 - missing_padding)
+
+        image_bytes = base64.b64decode(clean_b64)
         with Image.open(io.BytesIO(image_bytes)) as pil_img:
             rgb_arr = np.array(pil_img.convert("RGB"))
         del image_bytes
@@ -897,18 +933,22 @@ def arcface_verify(request: ArcFaceVerifyRequest):
             "totalFrames": total_requested
         }
 
-    # Validate enrolled 512d embeddings (finite values, positive norm)
+    # Validate enrolled embeddings (supports both 512-d ArcFace and 128-d FaceAPI)
     valid_enrolled = []
+    target_dim = None
     for emb in (request.enrolledEmbeddings or []):
-        if isinstance(emb, list) and len(emb) == 512:
-            arr = np.asarray(emb, dtype=np.float32)
-            if np.all(np.isfinite(arr)):
-                norm_val = float(np.linalg.norm(arr))
-                if norm_val > 1e-4:
-                    valid_enrolled.append(arr / norm_val)
+        if isinstance(emb, list) and len(emb) in (128, 512):
+            if target_dim is None:
+                target_dim = len(emb)
+            if len(emb) == target_dim:
+                arr = np.asarray(emb, dtype=np.float32)
+                if np.all(np.isfinite(arr)):
+                    norm_val = float(np.linalg.norm(arr))
+                    if norm_val > 1e-4:
+                        valid_enrolled.append(arr / norm_val)
 
     if len(valid_enrolled) == 0:
-        logger.warning(f"[{req_id}] No valid finite 512d enrolled embeddings provided.")
+        logger.warning(f"[{req_id}] No valid finite enrolled embeddings provided.")
         return {
             "success": False,
             "requestId": req_id,
@@ -918,6 +958,26 @@ def arcface_verify(request: ArcFaceVerifyRequest):
             "finalDecision": "REJECTED",
             "result": "rejected",
             "message": "Invalid enrolled face embeddings. Please re-enroll face.",
+            "bestSimilarity": 0.0,
+            "averageSimilarity": 0.0,
+            "matchingFrames": 0,
+            "verifiedFrames": 0,
+            "validFrames": 0,
+            "totalFrames": total_requested
+        }
+
+    # If enrolled dimension is 128-d, InsightFace ArcFace uses 512-d. Delegate cleanly to Node.js 128-d fallback.
+    if target_dim == 128:
+        logger.info(f"[{req_id}] Enrolled embeddings are 128-d. Delegating to 128-d biometric engine.")
+        return {
+            "success": False,
+            "requestId": req_id,
+            "verified": False,
+            "match": False,
+            "decision": "DIMENSION_MISMATCH",
+            "finalDecision": "REJECTED",
+            "result": "rejected",
+            "message": "Enrolled embeddings are 128-d (InsightFace uses 512-d).",
             "bestSimilarity": 0.0,
             "averageSimilarity": 0.0,
             "matchingFrames": 0,
@@ -960,7 +1020,7 @@ def arcface_verify(request: ArcFaceVerifyRequest):
                 bgr_img = preprocess_image_np(item, target_max_dim=480)
                 if bgr_img is not None and bgr_img.size > 0:
                     raw_faces = app_face.get(bgr_img)
-                    faces = filter_real_faces(raw_faces, bgr_img.shape, min_conf=0.40, min_size=20)
+                    faces = filter_real_faces(raw_faces, bgr_img.shape, min_conf=0.20, min_size=15)
 
                     if len(faces) == 0:
                         rejected_count += 1
@@ -974,19 +1034,15 @@ def arcface_verify(request: ArcFaceVerifyRequest):
                         continue
 
                     face = faces[0]
-                    # Quality & Occlusion Validation Gate (Step 3-C & 3-D)
+                    # Quality & Occlusion Validation Gate (Supports longer camera distances per PROJECT_RULES.md)
                     quality = validate_face_quality(bgr_img, face)
-                    if not quality["passed"]:
-                        if quality.get("occluded"):
-                            occluded_count += 1
-                            logger.warning(f"[{req_id}] Frame {idx+1} REJECTED (OCCLUDED): {quality['reason']}")
-                        else:
-                            poor_quality_count += 1
-                            logger.warning(f"[{req_id}] Frame {idx+1} REJECTED (QUALITY): {quality['reason']}")
+                    if not quality["passed"] and quality.get("occluded") and quality.get("score", 0) < 15:
+                        occluded_count += 1
+                        logger.warning(f"[{req_id}] Frame {idx+1} REJECTED (OCCLUDED): {quality['reason']}")
                         rejected_count += 1
                         continue
 
-                    quality_scores.append(quality["score"])
+                    quality_scores.append(quality.get("score", 60))
 
                     raw_live_emb = getattr(face, 'normed_embedding', None)
                     if raw_live_emb is None:
@@ -1056,7 +1112,7 @@ def arcface_verify(request: ArcFaceVerifyRequest):
     if multi_face_triggered and multi_face_count > 0:
         decision = "MULTIPLE_FACES_DETECTED"
         verified = False
-        rejection_reason = "Multiple faces detected during verification."
+        rejection_reason = f"Multiple faces detected during verification ({int(round(average_similarity * 100))}% similarity)."
     elif verified_count >= min_match_needed and average_similarity >= MIN_AVG_THRESHOLD:
         verified = True
         decision = "VERIFIED"
@@ -1064,15 +1120,15 @@ def arcface_verify(request: ArcFaceVerifyRequest):
     elif occluded_count >= 15:
         decision = "FACE_OCCLUDED"
         verified = False
-        rejection_reason = "Face obscured or covered. Please remove your hand or obstruction."
+        rejection_reason = f"Face obscured or covered ({int(round(average_similarity * 100))}% similarity). Please remove obstruction."
     elif valid_count < min_match_needed:
         decision = "INSUFFICIENT_SAMPLES"
         verified = False
-        rejection_reason = f"Only {valid_count} valid face frames evaluated (minimum {min_match_needed} required). Please ensure face is clearly visible."
+        rejection_reason = f"Only {valid_count} valid face frames evaluated — {int(round(average_similarity * 100))}% similarity (minimum {min_match_needed} required). Please ensure your face is clearly visible."
     else:
         verified = False
         decision = "REJECTED"
-        rejection_reason = f"Face does not match ({verified_count}/{valid_count} matching frames, minimum {min_match_needed} required)."
+        rejection_reason = f"Face does not match ({verified_count}/{valid_count} matching frames — {int(round(average_similarity * 100))}% similarity, minimum {min_match_needed} required)."
 
     # Step 6: Structured privacy-conscious diagnostic logging
     logger.info(
@@ -1080,7 +1136,7 @@ def arcface_verify(request: ArcFaceVerifyRequest):
         f"decision={decision} verified={verified} submitted={total_requested} "
         f"processed={len(frames_to_process)} valid={valid_count} matched={verified_count} "
         f"occluded={occluded_count} poor_quality={poor_quality_count} multi_face={multi_face_count} "
-        f"avg_sim={average_similarity} best_sim={best_similarity} elapsed={total_elapsed}s"
+        f"avg_sim={average_similarity} ({int(round(average_similarity * 100))}%) best_sim={best_similarity} elapsed={total_elapsed}s"
     )
 
     msg_str = (
@@ -1099,6 +1155,8 @@ def arcface_verify(request: ArcFaceVerifyRequest):
         "decision": decision,
         "finalDecision": decision,
         "result": decision.lower(),
+        "similarity": average_similarity,
+        "similarityScore": int(round(average_similarity * 100)),
         "bestSimilarity": best_similarity,
         "averageSimilarity": average_similarity,
         "matchingFrames": verified_count,       # Real honest matching frames

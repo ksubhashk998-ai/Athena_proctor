@@ -2,12 +2,38 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import axios from "axios";
 import { useNavigate } from "react-router-dom";
 import Webcam from "react-webcam";
+import {
+  IconShieldCheck,
+  IconSchool,
+  IconShield,
+  IconMail,
+  IconLock,
+  IconEye,
+  IconEyeOff,
+  IconArrowRight,
+  IconCheck,
+  IconFaceId,
+  IconDeviceDesktop,
+  IconLoader2,
+  IconCamera,
+  IconRefresh,
+  IconKey,
+  IconArrowLeft,
+  IconUserPlus
+} from "@tabler/icons-react";
+import "./AthenaLogin.css";
+import "./FaceStep.css";
 import { detectPhone, showPhoneWarning } from "../utils/deviceDetection";
 import { captureFaceDescriptor, compareDescriptors } from "../services/faceVerificationService";
-import FaceEnrollment from "../components/FaceEnrollment";
 import OtpSixBoxInput from "../components/athena/OtpSixBoxInput";
 import { getApiBaseUrl } from "../utils/config";
 import { getFaceApi, loadFaceModels } from "../utils/faceModelLoader";
+
+const ENROLL_ACTIONS = [
+  { id: 'front', label: '🎯 Position 1: FRONT Face (1-10)', prompt: 'Look straight at the camera' },
+  { id: 'side', label: '👈 Position 2: SLIGHT LEFT / RIGHT (11-20)', prompt: 'Turn head slightly LEFT or RIGHT' },
+  { id: 'vertical', label: '👇 Position 3: SLIGHT UP / DOWN (21-30)', prompt: 'Tilt head slightly UP or DOWN' }
+];
 
 // Student Authentication Page
 
@@ -20,8 +46,23 @@ const postWithFallback = async (primaryUrl, fallbackUrl, payload) => {
     if (fallbackUrl && fallbackUrl !== primaryUrl) {
       const cleanFallback = fallbackUrl.replace(/^https?:\/\/[^\/]+/, '');
       const fullFallback = cleanFallback.startsWith('http') ? cleanFallback : `${baseUrl}${cleanFallback}`;
-      console.warn(`Primary route ${fullUrl} failed (${err.message}), attempting fallback ${fullFallback}`);
-      return await axios.post(fullFallback, payload);
+      try {
+        return await axios.post(fullFallback, payload);
+      } catch (fbErr) {}
+    }
+    // If local endpoint was unreachable, attempt cloud backend fallback
+    if (baseUrl !== 'https://athena-proctor-8.onrender.com') {
+      try {
+        const cloudUrl = `https://athena-proctor-8.onrender.com${primaryUrl}`;
+        return await axios.post(cloudUrl, payload);
+      } catch (cloudErr) {
+        if (fallbackUrl) {
+          try {
+            const cleanFb = fallbackUrl.replace(/^https?:\/\/[^\/]+/, '');
+            return await axios.post(`https://athena-proctor-8.onrender.com${cleanFb}`, payload);
+          } catch (e2) {}
+        }
+      }
     }
     throw err;
   }
@@ -226,6 +267,10 @@ function Login() {
   const [tempStudent, setTempStudent] = useState(null);
   const [faceVerifying, setFaceVerifying] = useState(false);
   const [faceStatusMsg, setFaceStatusMsg] = useState("Position your face clearly in the camera");
+  const [faceMode, setFaceMode] = useState("verify"); // "verify" | "enroll"
+  const [faceFrameCount, setFaceFrameCount] = useState(0);
+  const [enrollPoseIdx, setEnrollPoseIdx] = useState(0);
+  const [faceSimilarityPct, setFaceSimilarityPct] = useState(null);
 
   // Camera permission & state for Step 3 Face Identity Verification
   const [cameraPermission, setCameraPermission] = useState("prompt"); // "prompt" | "granted" | "denied"
@@ -650,6 +695,8 @@ function Login() {
       return;
     }
     setFaceVerifying(true);
+    setFaceFrameCount(0);
+    setFaceSimilarityPct(null);
     // Step 2-5: Clear previous verification results before starting a new attempt
     localStorage.removeItem("faceVerified");
     setFaceStatusMsg("🔄 Initializing Biometric Face Models...");
@@ -690,6 +737,7 @@ function Login() {
 
       for (let frameIndex = 0; frameIndex < TOTAL_LOGIN_FRAMES; frameIndex++) {
         const pct = Math.round(((frameIndex + 1) / TOTAL_LOGIN_FRAMES) * 100);
+        setFaceFrameCount(frameIndex + 1);
         setFaceStatusMsg(`Verifying Face... Frame ${frameIndex + 1}/${TOTAL_LOGIN_FRAMES} (${pct}%)`);
 
         let b64Frame = null;
@@ -749,13 +797,18 @@ function Login() {
       const data = finalRes.data;
 
       if (data.needsEnrollment) {
-        setFaceStatusMsg("⚠️ Enrollment data missing: Redirecting to Face Enrollment...");
-        setTimeout(() => setVerificationStep("no_face_prompt"), 1200);
+        setFaceStatusMsg("⚠️ No enrolled face profile found. Switching to Face Enrollment...");
+        setTimeout(() => {
+          setFaceMode("enroll");
+          setFaceFrameCount(0);
+          setEnrollPoseIdx(0);
+          setFaceStatusMsg("🎯 Position 1: FRONT Face (1-10) — Look straight at camera and click Start 30-Frame Enrollment.");
+        }, 1200);
         setFaceVerifying(false);
         return;
       }
 
-      const simPct = Math.round((data.bestSimilarity || data.averageSimilarity || 0) * 100);
+      const simPct = Math.round((data.averageSimilarity || data.bestSimilarity || data.similarity || (data.similarityScore ? data.similarityScore / 100 : 0)) * 100);
       const decision = (data.decision || data.finalDecision || data.verificationResult || '').toUpperCase();
       const matchingCount = typeof data.matchingFrames === 'number' ? data.matchingFrames : (typeof data.verifiedFrames === 'number' ? data.verifiedFrames : 0);
       const evaluatedCount = typeof data.validFrames === 'number' ? data.validFrames : (typeof data.totalFramesProcessed === 'number' ? data.totalFramesProcessed : 30);
@@ -763,16 +816,18 @@ function Login() {
       // PROJECT_RULES.md: Verify when server decision is VERIFIED with minimum 20 matching frames
       const isVerified = Boolean((data.verified === true || data.match === true) && decision === 'VERIFIED' && matchingCount >= 20);
 
+      setFaceSimilarityPct(simPct);
+
       if (isVerified) {
         localStorage.setItem("faceVerified", "true");
-        setFaceStatusMsg(`✓ Identity Confirmed (${matchingCount}/${evaluatedCount} frames matched — ${simPct}% similarity)`);
+        setFaceStatusMsg(`✓ Identity Confirmed: ${simPct}% Face Similarity (${matchingCount}/${evaluatedCount} frames matched)`);
         setTimeout(() => {
           completeLogin(activeToken, activeStudent);
         }, 800);
       } else {
         localStorage.removeItem("faceVerified");
-        const failReason = data.message || `Face not matched (${matchingCount}/${evaluatedCount} matching frames, min 20 required).`;
-        setFaceStatusMsg(`🔴 ${failReason}`);
+        const failReason = data.message || `Face mismatch: ${simPct}% similarity (${matchingCount}/${evaluatedCount} frames matched, min 20 required).`;
+        setFaceStatusMsg(failReason.startsWith('🔴') ? failReason : `🔴 ${failReason}`);
       }
 
     } catch (e) {
@@ -823,12 +878,163 @@ function Login() {
     }
   };
 
+  const handleEnrollFace = async () => {
+    if (!webcamRef.current) return;
+    if (faceVerifying) {
+      console.warn("[FaceEnroll] Enrollment already running");
+      return;
+    }
+    const video = webcamRef.current?.video;
+    if (!video || video.paused || video.ended || video.readyState < 2) {
+      setFaceStatusMsg("⚠️ Camera not ready. Ensure camera access is allowed.");
+      return;
+    }
+
+    setFaceVerifying(true);
+    setFaceFrameCount(0);
+    setEnrollPoseIdx(0);
+    localStorage.removeItem("faceVerified");
+    setFaceStatusMsg("⏳ Initializing neural biometric models...");
+
+    try {
+      await loadFaceModels();
+    } catch (mErr) {
+      console.warn("Face model loader notice:", mErr);
+    }
+
+    const faceApi = getFaceApi();
+    if (!faceApi || !faceApi.detectSingleFace) {
+      setFaceStatusMsg("❌ Face detection models failed to load. Please check your internet connection.");
+      setFaceVerifying(false);
+      return;
+    }
+
+    setFaceStatusMsg("🚀 Capturing 30 ArcFace Biometric Samples — Follow Pose Prompts!");
+
+    const TARGET_ENROLL_SAMPLES = 30;
+    const capturedFrames = [];
+    const capturedDescriptors = [];
+    let attempts = 0;
+    const maxAttempts = 180;
+
+    const activeStudent = tempStudent || {
+      studentId: getStudentIdFromEmail(email),
+      email: email || 'student@proctor.com',
+      name: email ? email.split('@')[0] : 'Student'
+    };
+    const activeEmail = activeStudent.email || email || 'student@proctor.com';
+    const activeStudentId = activeStudent.studentId || getStudentIdFromEmail(activeEmail);
+    const activeName = activeStudent.fullName || activeStudent.name || (activeEmail ? activeEmail.split('@')[0] : 'Student');
+    const activeToken = tempToken || localStorage.getItem('token') || 'temp_token';
+    const apiBase = getApiBaseUrl();
+
+    while (capturedFrames.length < TARGET_ENROLL_SAMPLES && attempts < maxAttempts) {
+      attempts++;
+      const v = webcamRef.current?.video;
+      if (v && v.readyState >= 2) {
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = 640;
+          canvas.height = 480;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(v, 0, 0, 640, 480);
+          const b64 = canvas.toDataURL('image/jpeg', 0.85);
+
+          if (b64 && b64.length > 500) {
+            let faceDescriptor = null;
+            try {
+              const det = await faceApi.detectSingleFace(
+                canvas,
+                new faceApi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.25 })
+              )
+                .withFaceLandmarks()
+                .withFaceDescriptor();
+
+              if (det && det.descriptor) {
+                faceDescriptor = Array.from(det.descriptor);
+              }
+            } catch (dErr) {}
+
+            if (faceDescriptor || !faceApi.detectSingleFace) {
+              capturedFrames.push(b64);
+              if (faceDescriptor) {
+                capturedDescriptors.push(faceDescriptor);
+              }
+              const currentCount = capturedFrames.length;
+              setFaceFrameCount(currentCount);
+
+              const poseStep = Math.min(
+                ENROLL_ACTIONS.length - 1,
+                Math.floor((currentCount / TARGET_ENROLL_SAMPLES) * ENROLL_ACTIONS.length)
+              );
+              setEnrollPoseIdx(poseStep);
+              const action = ENROLL_ACTIONS[poseStep];
+              setFaceStatusMsg(`📸 Collecting face samples: ${currentCount}/30 — ${action.label}: ${action.prompt}`);
+            }
+          }
+        } catch (err) {
+          console.warn("[FaceEnroll] Frame capture notice:", err);
+        }
+      }
+
+      await new Promise((r) => setTimeout(r, 90));
+    }
+
+    if (capturedFrames.length < 20) {
+      setFaceStatusMsg("❌ Not enough valid face samples. Ensure good lighting and look at the camera.");
+      setFaceVerifying(false);
+      return;
+    }
+
+    setFaceStatusMsg("⚙️ Saving 30 Biometric Templates to Database...");
+
+    try {
+      const response = await fetch(`${apiBase}/api/face/enroll`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${activeToken}`
+        },
+        body: JSON.stringify({
+          email: activeEmail,
+          studentId: activeStudentId,
+          name: activeName,
+          frames: capturedFrames,
+          descriptors: capturedDescriptors,
+          reEnrollment: true
+        })
+      });
+
+      const data = await response.json();
+
+      if (response.ok && data.success) {
+        setIsAccountEnrolled(true);
+        setFaceStatusMsg("✅ Enrollment successful — 30 valid biometric frames captured.");
+        setTimeout(() => {
+          setFaceMode("verify");
+          setFaceFrameCount(0);
+          setFaceStatusMsg("✅ Face enrolled successfully! Click Verify Face to complete verification and begin your exam.");
+        }, 1200);
+      } else {
+        setFaceStatusMsg(`❌ Enrollment Rejected: ${data.error || data.message || "Quality validation check failed."}`);
+      }
+    } catch (err) {
+      console.error("[FaceEnroll] Biometric submission error:", err);
+      setFaceStatusMsg("❌ Server connection error during ArcFace enrollment.");
+    } finally {
+      setFaceVerifying(false);
+    }
+  };
+
   if (isPhone) {
     return (
-      <div style={styles.container}>
-        <div style={styles.loginCard}>
-          <h2 style={{ color: "#ef4444" }}>📱 Mobile Devices Not Supported</h2>
-          <p style={{ color: "#cbd5e1", fontSize: "0.9rem" }}>
+      <div className="al-page" style={{ alignItems: "center", justifyContent: "center" }}>
+        <div className="al-card" style={{ textAlign: "center", maxWidth: "460px" }}>
+          <div style={{ color: "#ef4444", display: "flex", justifyContent: "center" }}>
+            <IconDeviceDesktop size={48} />
+          </div>
+          <h2 style={{ color: "#ef4444" }}>Mobile Devices Not Supported</h2>
+          <p className="al-sub">
             Smart Exam Proctoring System requires a desktop or laptop computer with a webcam and microphone.
           </p>
         </div>
@@ -836,843 +1042,840 @@ function Login() {
     );
   }
 
+  /* -------------------------------------------------------------
+     STEP 3: FACE IDENTITY VERIFICATION VIEW (FaceStep UI)
+     ------------------------------------------------------------- */
+  if (loginRole === "student" && verificationStep === "face_verify") {
+    return (
+      <>
+        <div className="fs-page">
+          {/* LEFT: progress panel */}
+          <aside className="fs-side">
+            <div className="fs-logo">
+              <span className="fs-logo-mark">
+                <IconShieldCheck size={24} color="#fff" />
+              </span>
+              <span className="fs-logo-text">Athena</span>
+            </div>
+
+            <div>
+              <h1>One last step before your exam</h1>
+              <p className="fs-lead">We confirm it is really you. This takes about ten seconds.</p>
+
+              <ol className="fs-steps">
+                <li className="done">
+                  <span className="dot"><IconCheck size={16} stroke={3} /></span>
+                  <div><b>Create account</b><small>Email and password saved</small></div>
+                </li>
+                <li className="done">
+                  <span className="dot"><IconCheck size={16} stroke={3} /></span>
+                  <div><b>Sign in</b><small>Password verified</small></div>
+                </li>
+                <li className="current">
+                  <span className="dot">3</span>
+                  <div><b>Face identity check</b><small>You are here</small></div>
+                </li>
+              </ol>
+            </div>
+
+            <p className="fs-foot">Your face data is stored as an encrypted template, never as a photo.</p>
+          </aside>
+
+          {/* RIGHT: card */}
+          <main className="fs-main">
+            <section className="fs-card">
+              <header className="fs-head">
+                <div>
+                  <div className="fs-eyebrow">STEP 3 OF 3</div>
+                  <h2>{faceMode === "enroll" ? "Biometric Face Enrollment" : "Face identity verification"}</h2>
+                  <p className="fs-welcome">
+                    {faceMode === "enroll" ? (
+                      "Keep your face inside the guide and follow pose instructions."
+                    ) : (
+                      <>Welcome back, <b>{tempStudent?.fullName || tempStudent?.name || "Student"}</b></>
+                    )}
+                  </p>
+                </div>
+                {isAccountEnrolled && (
+                  <span className="fs-badge"><IconCheck size={14} stroke={3} /> Enrolled</span>
+                )}
+              </header>
+
+              <div className="fs-tabs" role="tablist" aria-label="Face mode">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={faceMode === "verify"}
+                  className={faceMode === "verify" ? "active" : ""}
+                  onClick={() => {
+                    if (faceVerifying) return;
+                    setFaceMode("verify");
+                    setFaceFrameCount(0);
+                    setFaceStatusMsg(`Password verified for ${tempStudent?.fullName || tempStudent?.name || "Student"}. Position face clearly to verify.`);
+                  }}
+                >
+                  <IconShieldCheck size={18} /> Verify face
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={faceMode === "enroll"}
+                  className={faceMode === "enroll" ? "active" : ""}
+                  onClick={() => {
+                    if (faceVerifying) return;
+                    setFaceMode("enroll");
+                    setFaceFrameCount(0);
+                    setEnrollPoseIdx(0);
+                    setFaceStatusMsg("🎯 Position 1: FRONT Face (1-10) — Look straight at camera and click Start 30-Frame Enrollment.");
+                  }}
+                >
+                  <IconUserPlus size={18} /> Enroll face
+                </button>
+              </div>
+
+              {faceMode === "enroll" && (
+                <div className="fs-pose-banner">
+                  <div className="fs-pose-title">{ENROLL_ACTIONS[enrollPoseIdx]?.label}</div>
+                  <div className="fs-pose-sub">{ENROLL_ACTIONS[enrollPoseIdx]?.prompt}</div>
+                </div>
+              )}
+
+              {/* camera */}
+              <div className={`fs-cam ${faceMode === "verify" ? "verify" : "enroll"}`}>
+                <Webcam
+                  ref={webcamRef}
+                  audio={false}
+                  mirrored={true}
+                  screenshotFormat="image/jpeg"
+                  screenshotQuality={0.92}
+                  videoConstraints={{ width: 640, height: 480, facingMode: "user" }}
+                  onUserMedia={() => {
+                    setCameraPermission("granted");
+                    setCameraActive(true);
+                    setCameraError(null);
+                  }}
+                  onUserMediaError={(err) => {
+                    setCameraPermission("denied");
+                    setCameraActive(false);
+                    if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+                      setCameraError("Camera permission blocked. Please allow camera in address bar.");
+                    } else {
+                      setCameraError(`Camera error: ${err.message || err}`);
+                    }
+                  }}
+                  className="fs-video"
+                />
+                <span className="fs-live"><i /> LIVE</span>
+                {faceVerifying && (
+                  <span className="fs-count">{faceFrameCount} / 30 frames</span>
+                )}
+                {faceSimilarityPct !== null && (
+                  <span className={`fs-similarity-pill ${faceSimilarityPct >= 42 ? "match" : "mismatch"}`}>
+                    🎯 Similarity: <b>{faceSimilarityPct}%</b>
+                  </span>
+                )}
+                <div className="fs-corners"><i /><i /><i /><i /></div>
+                {faceMode === "enroll" && <div className="fs-oval-guide" />}
+                {faceVerifying && <div className="fs-scan" />}
+
+                {(!cameraActive || cameraPermission === "denied") && (
+                  <div className="fs-cam-overlay">
+                    <IconCamera size={36} color="#818cf8" style={{ marginBottom: "8px" }} />
+                    <div style={{ fontSize: "0.85rem", fontWeight: 600, color: "#f1f4ff", marginBottom: "8px", maxWidth: "280px" }}>
+                      {cameraPermission === "denied"
+                        ? (cameraError || "Camera permission is blocked. Please allow camera access in address bar.")
+                        : "Requesting camera permission..."}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={requestCameraPermission}
+                      className="fs-primary"
+                      style={{ height: "42px", padding: "0 18px", fontSize: "14px", flex: "none" }}
+                    >
+                      Grant Camera Access
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Progress bar */}
+              {faceVerifying && (
+                <div className="fs-bar" aria-hidden="true">
+                  <div style={{ width: `${Math.round((faceFrameCount / 30) * 100)}%` }} />
+                </div>
+              )}
+
+              {/* Status */}
+              <div
+                className={`fs-status ${
+                  faceStatusMsg.includes("✓") || faceStatusMsg.includes("Confirmed") || faceStatusMsg.includes("✅")
+                    ? "success"
+                    : faceStatusMsg.includes("🔴") || faceStatusMsg.includes("❌")
+                    ? "error"
+                    : "info"
+                }`}
+                role="status"
+              >
+                {faceStatusMsg}
+              </div>
+
+              {/* Actions */}
+              <div className="fs-actions">
+                <button
+                  type="button"
+                  className="fs-ghost"
+                  onClick={() => setVerificationStep("credentials")}
+                  disabled={faceVerifying}
+                >
+                  Back
+                </button>
+                <button
+                  type="button"
+                  className="fs-primary"
+                  onClick={faceMode === "verify" ? handleVerifyFace : handleEnrollFace}
+                  disabled={faceVerifying || !cameraActive}
+                >
+                  {faceVerifying ? (
+                    <>
+                      <IconLoader2 size={20} className="fs-spin" />
+                      {faceMode === "verify"
+                        ? `Verifying 30-Frame ArcFace (${faceFrameCount}/30)...`
+                        : `Capturing ${faceFrameCount} / 30 frames...`}
+                    </>
+                  ) : faceMode === "verify" ? (
+                    <>
+                      Verify Face <IconArrowRight size={20} />
+                    </>
+                  ) : (
+                    <>
+                      Start 30-Frame Enrollment <IconArrowRight size={20} />
+                    </>
+                  )}
+                </button>
+              </div>
+
+              <p className="fs-lock">
+                <IconLock size={14} /> End-to-end encrypted and AI proctor protected
+              </p>
+            </section>
+          </main>
+        </div>
+      </>
+    );
+  }
+
   return (
     <>
-      <div style={styles.container}>
-      <div style={styles.loginCard}>
-        <div style={styles.header}>
-          <div style={styles.logo}>🗣️ Athena Smart Proctoring</div>
-          <p style={styles.subtitle}>AI-Powered Exam Proctoring & Verification</p>
-        </div>
+      <div className="al-page">
+        {/* LEFT: brand panel */}
+        <aside className="al-brand">
+          <div className="al-logo">
+            <span className="al-logo-mark">
+              <IconShieldCheck size={24} color="#fff" />
+            </span>
+            <span className="al-logo-text">Athena</span>
+          </div>
 
-        {/* Role Selection Tabs */}
-        <div style={{ display: "flex", gap: "8px", marginBottom: "20px", background: "rgba(15, 23, 42, 0.7)", padding: "4px", borderRadius: "12px", border: "1px solid rgba(255, 255, 255, 0.1)" }}>
-          <button
-            type="button"
-            onClick={() => setLoginRole("student")}
-            style={{
-              flex: 1,
-              padding: "10px",
-              borderRadius: "8px",
-              border: "none",
-              background: loginRole === "student" ? "linear-gradient(135deg, #6366f1, #4f46e5)" : "transparent",
-              color: loginRole === "student" ? "#ffffff" : "#94a3b8",
-              fontWeight: 700,
-              fontSize: "0.85rem",
-              cursor: "pointer",
-              transition: "all 0.2s"
-            }}
-          >
-            🎓 Student Login
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              if (webcamRef.current?.video?.srcObject) {
-                try {
-                  webcamRef.current.video.srcObject.getTracks().forEach(t => t.stop());
-                  webcamRef.current.video.srcObject = null;
-                } catch (e) {}
-              }
-              setCameraActive(false);
-              setLoginRole("admin");
-            }}
-            style={{
-              flex: 1,
-              padding: "10px",
-              borderRadius: "8px",
-              border: "none",
-              background: loginRole === "admin" ? "linear-gradient(135deg, #ec4899, #d946ef)" : "transparent",
-              color: loginRole === "admin" ? "#ffffff" : "#94a3b8",
-              fontWeight: 700,
-              fontSize: "0.85rem",
-              cursor: "pointer",
-              transition: "all 0.2s"
-            }}
-          >
-            🛡️ Admin Login
-          </button>
-        </div>
+          <div className="al-hero">
+            <svg className="al-scan" viewBox="0 0 280 280" fill="none" role="img" aria-label="Face scan illustration">
+              <circle cx="140" cy="140" r="128" stroke="#2a3563" strokeWidth="1.5" strokeDasharray="3 7" />
+              <circle cx="140" cy="140" r="104" stroke="#6366f1" strokeOpacity=".5" strokeWidth="1.5" />
+              <g stroke="#a5b4fc" strokeWidth="3" strokeLinecap="round">
+                <path d="M60 92V72a12 12 0 0 1 12-12h20" />
+                <path d="M220 92V72a12 12 0 0 0-12-12h-20" />
+                <path d="M60 188v20a12 12 0 0 0 12 12h20" />
+                <path d="M220 188v20a12 12 0 0 1-12 12h-20" />
+              </g>
+              <g stroke="#c7d2fe" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <ellipse cx="140" cy="130" rx="46" ry="58" />
+                <path d="M122 120v6M158 120v6" />
+                <path d="M140 128v16h-6" />
+                <path d="M124 156q16 12 32 0" />
+              </g>
+              <g fill="#818cf8">
+                <circle cx="122" cy="123" r="2.5" />
+                <circle cx="158" cy="123" r="2.5" />
+                <circle cx="140" cy="108" r="2.5" />
+                <circle cx="140" cy="186" r="2.5" />
+                <circle cx="96" cy="140" r="2.5" />
+                <circle cx="184" cy="140" r="2.5" />
+              </g>
+              <g className="al-scanline">
+                <rect x="62" y="66" width="156" height="3" rx="1.5" fill="#818cf8" />
+                <rect x="62" y="66" width="156" height="20" fill="#6366f1" fillOpacity=".14" />
+              </g>
+            </svg>
 
-        {loginRole === "admin" ? (
-          <div>
-            <div style={{ background: "rgba(236, 72, 153, 0.12)", border: "1px solid rgba(236, 72, 153, 0.3)", color: "#f472b6", padding: "8px 12px", borderRadius: "8px", fontSize: "0.75rem", fontWeight: 600, marginBottom: "16px", textAlign: "center" }}>
-              🛡️ ADMIN COMMAND CENTER AUTHENTICATION
-            </div>
+            <h1>Secure. Fair. Intelligent.</h1>
+            <p>AI-powered exam proctoring with live identity verification, so every result can be trusted.</p>
 
-            {adminError && <div style={styles.errorBanner}>{adminError}</div>}
-            {adminSuccess && (
-              <div style={{ backgroundColor: "rgba(16, 185, 129, 0.15)", border: "1px solid #10b981", color: "#34d399", padding: "10px 14px", borderRadius: "10px", fontSize: "0.85rem", marginBottom: "16px", textAlign: "left" }}>
-                {adminSuccess}
-              </div>
-            )}
-
-            <div style={styles.formGroup}>
-              <label style={styles.label}>Admin Email</label>
-              <input
-                type="email"
-                placeholder="admin@proctor.com"
-                value={adminEmail}
-                onChange={(e) => setAdminEmail(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleAdminLogin()}
-                style={styles.input}
-                disabled={adminLoading}
-              />
-            </div>
-
-            <div style={styles.formGroup}>
-              <label style={styles.label}>Admin Password</label>
-              <div style={{ position: "relative" }}>
-                <input
-                  type={showAdminPassword ? "text" : "password"}
-                  placeholder="Enter admin password"
-                  value={adminPassword}
-                  onChange={(e) => setAdminPassword(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && handleAdminLogin()}
-                  style={{ ...styles.input, paddingRight: "44px" }}
-                  disabled={adminLoading}
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowAdminPassword(!showAdminPassword)}
-                  title={showAdminPassword ? "Hide password" : "Show password"}
-                  style={{
-                    position: "absolute",
-                    right: "12px",
-                    top: "50%",
-                    transform: "translateY(-50%)",
-                    background: "none",
-                    border: "none",
-                    color: "#94a3b8",
-                    cursor: "pointer",
-                    fontSize: "1.1rem",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    padding: "4px"
-                  }}
-                >
-                  <i className={`fas ${showAdminPassword ? "fa-eye-slash" : "fa-eye"}`}></i>
-                </button>
-              </div>
-            </div>
-
-
-            <button
-              onClick={handleAdminLogin}
-              style={{
-                ...styles.loginButton,
-                background: "linear-gradient(135deg, #ec4899, #d946ef)",
-                ...(adminLoading && styles.disabledButton)
-              }}
-              disabled={adminLoading}
-            >
-              {adminLoading ? "Authenticating Admin..." : "Sign In & Launch Admin Dashboard ➔"}
-            </button>
-
-            <div style={{ marginTop: "16px", paddingTop: "12px", borderTop: "1px solid rgba(255,255,255,0.08)" }}>
-              <a
-                href="/admin"
-                style={{
-                  display: "inline-block",
-                  color: "#818cf8",
-                  fontSize: "0.825rem",
-                  fontWeight: 600,
-                  textDecoration: "none"
-                }}
-              >
-                🚀 Direct Link: Open Admin Dashboard
-              </a>
+            <div className="al-chips">
+              <span className="al-chip"><IconFaceId size={16} /> Face verification</span>
+              <span className="al-chip"><IconDeviceDesktop size={16} /> Live monitoring</span>
+              <span className="al-chip"><IconLock size={16} /> Tamper-proof logs</span>
             </div>
           </div>
-        ) : (
-          verificationStep === "credentials" && (
+
+          <p className="al-foot">
+            End-to-end encrypted. Your camera and microphone are used only during the exam.
+          </p>
+        </aside>
+
+        {/* RIGHT: form side */}
+        <main className="al-form-side">
+          <div className={`al-card ${credentialError || adminError || forgotError ? "al-shake" : ""}`}>
+            {/* Header section based on step & role */}
             <div>
-              {credentialError && <div style={styles.errorBanner}>{credentialError}</div>}
-
-              <div style={styles.formGroup}>
-                <label style={styles.label}>Email Address</label>
-                <input
-                  type="email"
-                  placeholder="registered.student@gmail.com"
-                  value={email}
-                  onChange={(e) => {
-                    setEmail(e.target.value);
-                    setCredentialError("");
-                  }}
-                  onKeyDown={(e) => e.key === "Enter" && handleCredentialLogin()}
-                  style={styles.input}
-                  disabled={loading}
-                />
-              </div>
-
-              <div style={styles.formGroup}>
-                <label style={styles.label}>Password</label>
-                <div style={{ position: "relative" }}>
-                  <input
-                    type={showPassword ? "text" : "password"}
-                    placeholder="Enter password"
-                    value={password}
-                    onChange={(e) => {
-                      setPassword(e.target.value);
-                      setCredentialError("");
-                    }}
-                    onKeyDown={(e) => e.key === "Enter" && handleCredentialLogin()}
-                    style={{ ...styles.input, paddingRight: "44px" }}
-                    disabled={loading}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    title={showPassword ? "Hide password" : "Show password"}
-                    style={{
-                      position: "absolute",
-                      right: "12px",
-                      top: "50%",
-                      transform: "translateY(-50%)",
-                      background: "none",
-                      border: "none",
-                      color: "#94a3b8",
-                      cursor: "pointer",
-                      fontSize: "1.1rem",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      padding: "4px"
-                    }}
-                  >
-                    <i className={`fas ${showPassword ? "fa-eye-slash" : "fa-eye"}`}></i>
-                  </button>
-                </div>
-              </div>
-
-              <div style={{ textAlign: "right", marginTop: "4px", marginBottom: "14px" }}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setForgotEmail(email.trim());
-                    setForgotError("");
-                    setForgotSuccess("");
-                    setForgotStep("email");
-                    setVerificationStep("forgot_password");
-                  }}
-                  style={{
-                    background: "none",
-                    border: "none",
-                    color: "#818cf8",
-                    fontSize: "0.825rem",
-                    fontWeight: 600,
-                    cursor: "pointer",
-                    padding: 0,
-                    textDecoration: "underline"
-                  }}
-                >
-                  🔑 Forgot Password?
-                </button>
-              </div>
-
-              <button
-                onClick={handleCredentialLogin}
-                style={{
-                  ...styles.loginButton,
-                  ...(loading && styles.disabledButton)
-                }}
-                disabled={loading}
-              >
-                {loading ? "Authenticating Credentials..." : "Sign In & Verify Face ➔"}
-              </button>
-
-              <div style={{ marginTop: '16px', textAlign: 'center' }}>
-                <button
-                  type="button"
-                  onClick={() => navigate('/register')}
-                  style={{
-                    width: '100%',
-                    background: 'rgba(99, 102, 241, 0.1)',
-                    border: '1px solid #6366f1',
-                    color: '#818cf8',
-                    padding: '11px',
-                    borderRadius: '10px',
-                    fontWeight: '700',
-                    fontSize: '0.9rem',
-                    cursor: 'pointer',
-                    transition: 'all 0.2s'
-                  }}
-                >
-                  ✨ Create Account (New Student Registration)
-                </button>
-              </div>
-            </div>
-          )
-        )}
-
-        {loginRole === "student" && verificationStep === "forgot_password" && (
-          <div>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
-              <div style={styles.stepTitle}>🔑 Password Reset</div>
-              <button
-                type="button"
-                onClick={() => {
-                  setVerificationStep("credentials");
-                  setForgotError("");
-                  setForgotSuccess("");
-                }}
-                style={{
-                  background: "rgba(255,255,255,0.06)",
-                  border: "1px solid rgba(255,255,255,0.15)",
-                  color: "#94a3b8",
-                  padding: "5px 12px",
-                  borderRadius: "8px",
-                  fontSize: "0.78rem",
-                  cursor: "pointer",
-                  fontWeight: 600
-                }}
-              >
-                ← Back to Sign In
-              </button>
-            </div>
-
-            {forgotError && <div style={styles.errorBanner}>{forgotError}</div>}
-            {forgotSuccess && (
-              <div style={{
-                backgroundColor: "rgba(16, 185, 129, 0.15)",
-                border: "1px solid #10b981",
-                color: "#34d399",
-                padding: "10px 14px",
-                borderRadius: "10px",
-                fontSize: "0.85rem",
-                marginBottom: "16px",
-                textAlign: "left"
-              }}>
-                {forgotSuccess}
-              </div>
-            )}
-
-            {forgotStep === "email" ? (
-              <div>
-                <p style={{ fontSize: "0.85rem", color: "#94a3b8", marginBottom: "16px", lineHeight: "1.5" }}>
-                  Enter your registered email address below. We will send a 6-digit OTP code to verify your identity and reset your password.
-                </p>
-
-                <div style={styles.formGroup}>
-                  <label style={styles.label}>Registered Email Address</label>
-                  <input
-                    type="email"
-                    placeholder="registered.student@gmail.com"
-                    value={forgotEmail}
-                    onChange={(e) => {
-                      setForgotEmail(e.target.value);
-                      setForgotError("");
-                    }}
-                    onKeyDown={(e) => e.key === "Enter" && handleSendForgotOtp()}
-                    style={styles.input}
-                    disabled={forgotLoading}
-                  />
-                </div>
-
-                <button
-                  onClick={handleSendForgotOtp}
-                  style={{
-                    ...styles.loginButton,
-                    ...((forgotLoading || forgotCooldown > 0) && styles.disabledButton)
-                  }}
-                  disabled={forgotLoading || forgotCooldown > 0}
-                >
-                  {forgotLoading
-                    ? "Dispatching OTP..."
-                    : forgotCooldown > 0
-                    ? `⏳ Please wait ${forgotCooldown}s`
-                    : "Send Password Reset OTP ➔"}
-                </button>
-
-                <div style={{ textAlign: "center", marginTop: "14px" }}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setForgotStep("otp_reset");
-                      setForgotError("");
-                    }}
-                    style={{
-                      background: "transparent",
-                      border: "none",
-                      color: "#818cf8",
-                      fontSize: "0.85rem",
-                      cursor: "pointer",
-                      textDecoration: "underline",
-                      fontWeight: 500
-                    }}
-                  >
-                    Already requested an OTP code? Enter Code ➔
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div>
-                <p style={{ fontSize: "0.85rem", color: "#94a3b8", marginBottom: "16px", lineHeight: "1.5" }}>
-                  Reset instructions dispatched to <strong style={{ color: "#38bdf8" }}>{forgotEmail}</strong>.<br />
-                  Click the <strong>Reset Link</strong> in your email, or enter the 6-digit OTP code below to set a new password:
-                  <span style={{ display: "block", color: "#fbbf24", fontSize: "0.8rem", marginTop: "6px" }}>
-                    💡 Tip: If not found in your Inbox, please check your <strong>Spam / Junk</strong> folder.
-                  </span>
-                </p>
-
-                <div style={styles.formGroup}>
-                  <label style={{ ...styles.label, textAlign: "center", display: "block", fontSize: "0.88rem", color: "#e2e8f0", marginBottom: "8px" }}>
-                    6-Digit Security OTP
-                  </label>
-                  <OtpSixBoxInput
-                    value={forgotOtp}
-                    onChange={(val) => {
-                      setForgotOtp(val);
-                      setForgotError("");
-                    }}
-                    onComplete={() => {}}
-                    disabled={forgotLoading}
-                  />
-                </div>
-
-                <div style={styles.formGroup}>
-                  <label style={styles.label}>New Password</label>
-                  <div style={{ position: "relative" }}>
-                    <input
-                      type={showNewPassword ? "text" : "password"}
-                      placeholder="Minimum 6 characters"
-                      value={newPassword}
-                      onChange={(e) => {
-                        setNewPassword(e.target.value);
-                        setForgotError("");
-                      }}
-                      style={{ ...styles.input, paddingRight: "44px" }}
-                      disabled={forgotLoading}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowNewPassword(!showNewPassword)}
-                      title={showNewPassword ? "Hide password" : "Show password"}
-                      aria-label={showNewPassword ? "Hide password" : "Show password"}
-                      style={styles.eyeButton}
-                    >
-                      {showNewPassword ? <EyeOffIcon /> : <EyeIcon />}
-                    </button>
-                  </div>
-
-                  {/* Real-time Password Strength Meter */}
-                  {newPassword.length > 0 && (
-                    <div style={styles.strengthContainer}>
-                      <div style={styles.strengthHeader}>
-                        <span style={styles.strengthLabel}>Password Strength</span>
-                        <span style={{ ...styles.strengthCategory, color: newPasswordStrength.color }}>
-                          {newPasswordStrength.label}
-                        </span>
-                      </div>
-                      <div style={styles.strengthTrack}>
-                        <div
-                          style={{
-                            ...styles.strengthFill,
-                            width: `${newPasswordStrength.percentage}%`,
-                            backgroundColor: newPasswordStrength.color,
-                            boxShadow: `0 0 10px ${newPasswordStrength.color}55`
-                          }}
-                        />
-                      </div>
-                      <div style={styles.criteriaRow}>
-                        <span style={{ ...styles.criteriaBadge, color: newPasswordStrength.criteria.length ? '#10b981' : '#64748b' }}>
-                          {newPasswordStrength.criteria.length ? '✓' : '•'} 8+ Characters
-                        </span>
-                        <span style={{ ...styles.criteriaBadge, color: newPasswordStrength.criteria.uppercase ? '#10b981' : '#64748b' }}>
-                          {newPasswordStrength.criteria.uppercase ? '✓' : '•'} Uppercase
-                        </span>
-                        <span style={{ ...styles.criteriaBadge, color: newPasswordStrength.criteria.lowercase ? '#10b981' : '#64748b' }}>
-                          {newPasswordStrength.criteria.lowercase ? '✓' : '•'} Lowercase
-                        </span>
-                        <span style={{ ...styles.criteriaBadge, color: newPasswordStrength.criteria.number ? '#10b981' : '#64748b' }}>
-                          {newPasswordStrength.criteria.number ? '✓' : '•'} Numbers
-                        </span>
-                        <span style={{ ...styles.criteriaBadge, color: newPasswordStrength.criteria.special ? '#10b981' : '#64748b' }}>
-                          {newPasswordStrength.criteria.special ? '✓' : '•'} Special (!@#$)
-                        </span>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <div style={styles.formGroup}>
-                  <label style={styles.label}>Confirm New Password</label>
-                  <div style={{ position: "relative" }}>
-                    <input
-                      type={showConfirmPassword ? "text" : "password"}
-                      placeholder="Re-enter new password"
-                      value={confirmPassword}
-                      onChange={(e) => {
-                        setConfirmPassword(e.target.value);
-                        setForgotError("");
-                      }}
-                      style={{ ...styles.input, paddingRight: "44px" }}
-                      disabled={forgotLoading}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                      title={showConfirmPassword ? "Hide password" : "Show password"}
-                      aria-label={showConfirmPassword ? "Hide password" : "Show password"}
-                      style={styles.eyeButton}
-                    >
-                      {showConfirmPassword ? <EyeOffIcon /> : <EyeIcon />}
-                    </button>
-                  </div>
-
-                  {/* Real-time Password Match Validation */}
-                  {confirmPassword.length > 0 && (
-                    <div style={{
-                      fontSize: '0.8rem',
-                      fontWeight: '500',
-                      marginTop: '6px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '4px',
-                      color: isPasswordMatch ? '#10b981' : '#f87171'
-                    }}>
-                      {isPasswordMatch ? '✓ Passwords match' : '✕ Passwords do not match'}
-                    </div>
-                  )}
-                </div>
-
-                <button
-                  onClick={handleResetPassword}
-                  style={{
-                    ...styles.loginButton,
-                    ...(forgotLoading && styles.disabledButton)
-                  }}
-                  disabled={forgotLoading}
-                >
-                  {forgotLoading ? "Resetting Password..." : "Reset Password & Sign In ➔"}
-                </button>
-
-                <div style={{ textAlign: "center", marginTop: "14px" }}>
-                  <button
-                    type="button"
-                    onClick={handleSendForgotOtp}
-                    disabled={forgotCooldown > 0 || forgotLoading}
-                    style={{
-                      background: "none",
-                      border: "none",
-                      color: forgotCooldown > 0 ? "#64748b" : "#818cf8",
-                      fontSize: "0.825rem",
-                      fontWeight: 600,
-                      cursor: forgotCooldown > 0 ? "not-allowed" : "pointer"
-                    }}
-                  >
-                    {forgotCooldown > 0 ? `⏱️ Resend OTP in ${forgotCooldown}s` : "🔄 Resend OTP Code"}
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {loginRole === "student" && verificationStep === "otp_verify" && (
-          <div>
-            <div style={styles.stepTitle}>✉️ Step 2: Email OTP Verification</div>
-            <p style={{ fontSize: "0.85rem", color: "#94a3b8", marginBottom: "16px", lineHeight: "1.5" }}>
-              A 6-digit security OTP has been sent to your email:<br />
-              <strong style={{ color: "#38bdf8" }}>{tempStudent?.email}</strong>
-              <span style={{ display: "block", color: "#fbbf24", fontSize: "0.8rem", marginTop: "6px" }}>
-                💡 Tip: If not found in your Inbox, please check your <strong>Spam / Junk</strong> folder.
-              </span>
-            </p>
-
-            {otpError && <div style={styles.errorBanner}>{otpError}</div>}
-            {otpSuccess && (
-              <div style={{
-                backgroundColor: "rgba(16, 185, 129, 0.15)",
-                border: "1px solid #10b981",
-                color: "#34d399",
-                padding: "10px 14px",
-                borderRadius: "10px",
-                fontSize: "0.85rem",
-                marginBottom: "16px",
-                textAlign: "left"
-              }}>
-                {otpSuccess}
-              </div>
-            )}
-
-            <div style={styles.formGroup}>
-              <label style={{ ...styles.label, textAlign: 'center', display: 'block', fontSize: '0.88rem', color: '#e2e8f0', marginBottom: '8px' }}>
-                Please enter the exact 6-digit OTP sent to your email.
-              </label>
-              <OtpSixBoxInput
-                value={otpInput}
-                onChange={(val) => {
-                  setOtpInput(val);
-                  setOtpError("");
-                }}
-                onComplete={() => handleVerifyOtp()}
-                disabled={otpLoading}
-              />
-            </div>
-
-            <button
-              onClick={() => handleVerifyOtp()}
-              disabled={otpLoading || otpInput.length !== 6}
-              style={{
-                ...styles.loginButton,
-                ...((otpLoading || otpInput.length !== 6) && styles.disabledButton)
-              }}
-            >
-              {otpLoading ? "Verifying OTP Code..." : "Verify OTP & Proceed to Face Scan ➔"}
-            </button>
-
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '16px', alignItems: 'center' }}>
-              <button
-                onClick={handleResendOtp}
-                disabled={otpCooldown > 0 || otpLoading}
-                style={{
-                  background: 'transparent',
-                  border: 'none',
-                  color: otpCooldown > 0 ? '#64748b' : '#818cf8',
-                  cursor: otpCooldown > 0 ? 'not-allowed' : 'pointer',
-                  fontSize: '0.85rem',
-                  fontWeight: 600
-                }}
-              >
-                {otpCooldown > 0 ? `⏳ Resend OTP in ${otpCooldown}s` : "🔄 Resend OTP Code"}
-              </button>
-
-              <button
-                onClick={() => {
-                  setVerificationStep("credentials");
-                  setOtpError("");
-                  setOtpSuccess("");
-                }}
-                style={{
-                  background: 'transparent',
-                  border: 'none',
-                  color: '#94a3b8',
-                  cursor: 'pointer',
-                  fontSize: '0.85rem'
-                }}
-              >
-                ← Back to Login
-              </button>
-            </div>
-          </div>
-        )}
-
-        {loginRole === 'student' && verificationStep === "no_face_prompt" && (
-          <div style={styles.faceVerifyContainer}>
-            <div style={styles.stepTitle}>👤 First-Time User: Face Enrollment</div>
-            <p style={{ fontSize: '0.82rem', color: '#cbd5e1', marginBottom: '14px' }}>
-              Account: <strong>{tempStudent?.email || tempStudent?.name || 'Student'}</strong>
-            </p>
-
-            <div style={{
-              background: 'rgba(245, 158, 11, 0.15)',
-              border: '1px solid #f59e0b',
-              borderRadius: '12px',
-              padding: '14px',
-              color: '#fcd34d',
-              fontWeight: 700,
-              fontSize: '0.92rem',
-              marginBottom: '20px'
-            }}>
-              <i className="fas fa-exclamation-circle"></i> No face enrolled for this account.
-            </div>
-
-            <div style={{ display: 'flex', gap: '10px', marginTop: '14px' }}>
-              <button
-                onClick={() => setVerificationStep("face_enroll")}
-                style={{ ...styles.loginButton, flex: 1, background: 'linear-gradient(135deg, #7c3aed, #4f46e5)' }}
-              >
-                📷 Enroll Face
-              </button>
-
-              <button
-                onClick={() => setVerificationStep("credentials")}
-                style={{ background: '#334155', color: 'white', border: 'none', borderRadius: '12px', padding: '10px 14px', cursor: 'pointer', fontSize: '0.85rem' }}
-              >
-                Back
-              </button>
-            </div>
-          </div>
-        )}
-
-        {loginRole === "student" && verificationStep === "face_verify" && (
-          <div style={styles.faceVerifyContainer}>
-            <div style={styles.stepTitle}>📷 Step 3: Face Identity Verification</div>
-            <p style={{ fontSize: '0.8rem', color: '#cbd5e1', marginBottom: '14px' }}>
-              Welcome back, <strong>{tempStudent?.name || 'Student'}</strong>! {isAccountEnrolled && <span style={{ marginLeft: '8px', background: 'rgba(16, 185, 129, 0.2)', color: '#34d399', fontSize: '11px', padding: '2px 8px', borderRadius: '10px', fontWeight: 600 }}>Enrolled</span>}
-            </p>
-
-            <div style={styles.webcamWrapper}>
-              <Webcam
-                ref={webcamRef}
-                audio={false}
-                width={320}
-                height={240}
-                screenshotFormat="image/jpeg"
-                videoConstraints={{
-                  width: { ideal: 640 },
-                  height: { ideal: 480 },
-                  facingMode: "user"
-                }}
-                style={styles.webcam}
-                mirrored={true}
-                onUserMedia={(stream) => {
-                  console.log("[Webcam] Stream loaded successfully");
-                  setCameraPermission("granted");
-                  setCameraActive(true);
-                  setCameraError(null);
-                }}
-                onUserMediaError={(err) => {
-                  console.warn("[Webcam] UserMedia error:", err);
-                  setCameraPermission("denied");
-                  setCameraActive(false);
-                  if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
-                    setCameraError("Camera permission blocked. Please allow camera access in your browser address bar.");
-                  } else {
-                    setCameraError(`Camera error: ${err.message || err}`);
-                  }
-                }}
-              />
-
-              {/* Overlay if camera permission is denied or pending */}
-              {(!cameraActive || cameraPermission === "denied") && (
-                <div style={styles.cameraOverlay}>
-                  <div style={{ fontSize: "2rem", marginBottom: "8px" }}>
-                    {cameraPermission === "denied" ? "📷🚫" : "📷"}
-                  </div>
-                  <div style={{ fontSize: "0.85rem", fontWeight: 600, color: "#f8fafc", marginBottom: "6px", maxWidth: "260px", lineHeight: 1.4 }}>
-                    {cameraPermission === "denied"
-                      ? (cameraError || "Camera permission is blocked. Please allow camera access in your browser.")
-                      : "Requesting camera permission... Please click 'Allow' in the browser prompt."}
-                  </div>
-                  <button
-                    onClick={requestCameraPermission}
-                    type="button"
-                    style={styles.allowCameraButton}
-                  >
-                    🔄 {cameraPermission === "denied" ? "Grant Camera Permission" : "Allow Camera"}
-                  </button>
-                </div>
+              {loginRole === "admin" ? (
+                <>
+                  <h2>Admin Command Center</h2>
+                  <p className="al-sub">Sign in with system administrator credentials.</p>
+                </>
+              ) : verificationStep === "face_verify" ? (
+                <>
+                  <h2>Face Verification</h2>
+                  <p className="al-sub">
+                    Welcome back, <strong style={{ color: "#a5b4fc" }}>{tempStudent?.name || "Student"}</strong>! Position face clearly.
+                  </p>
+                </>
+              ) : verificationStep === "otp_verify" ? (
+                <>
+                  <h2>Email OTP Verification</h2>
+                  <p className="al-sub">
+                    Enter the 6-digit code dispatched to <strong style={{ color: "#a5b4fc" }}>{tempStudent?.email}</strong>
+                  </p>
+                </>
+              ) : verificationStep === "forgot_password" ? (
+                <>
+                  <h2>Reset Password</h2>
+                  <p className="al-sub">Recover your account credentials.</p>
+                </>
+              ) : verificationStep === "no_face_prompt" ? (
+                <>
+                  <h2>Face Enrollment Required</h2>
+                  <p className="al-sub">No biometric profile found. Enroll your face to continue.</p>
+                </>
+              ) : (
+                <>
+                  <h2>Welcome back</h2>
+                  <p className="al-sub">Sign in to start your proctored exam.</p>
+                </>
               )}
             </div>
 
-            <div style={{ margin: '12px 0', fontSize: '0.85rem', fontWeight: 600, color: faceStatusMsg.includes('🔴') || faceStatusMsg.includes('❌') ? '#ef4444' : '#10b981' }}>
-              {faceStatusMsg}
-            </div>
+            {/* Role switch tabs (only visible on main credentials step) */}
+            {verificationStep === "credentials" && (
+              <div className="al-tabs" role="tablist" aria-label="Login type">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={loginRole === "student"}
+                  className={loginRole === "student" ? "active" : ""}
+                  onClick={() => setLoginRole("student")}
+                >
+                  <IconSchool size={18} /> Student
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={loginRole === "admin"}
+                  className={loginRole === "admin" ? "admin-active" : ""}
+                  onClick={() => {
+                    if (webcamRef.current?.video?.srcObject) {
+                      try {
+                        webcamRef.current.video.srcObject.getTracks().forEach((t) => t.stop());
+                        webcamRef.current.video.srcObject = null;
+                      } catch (e) {}
+                    }
+                    setCameraActive(false);
+                    setLoginRole("admin");
+                  }}
+                >
+                  <IconShield size={18} /> Admin
+                </button>
+              </div>
+            )}
 
-            <div style={{ display: 'flex', gap: '8px', marginTop: '14px', flexWrap: 'wrap' }}>
-              <button
-                onClick={handleVerifyFace}
-                disabled={faceVerifying}
-                style={{ ...styles.loginButton, flex: 2 }}
-              >
-                {faceVerifying ? "Verifying 30-Frame ArcFace..." : "Verify Face"}
-              </button>
+            {/* ADMIN LOGIN VIEW */}
+            {loginRole === "admin" && verificationStep === "credentials" && (
+              <>
+                {adminError && <div className="al-error" role="alert">{adminError}</div>}
+                {adminSuccess && <div className="al-success">{adminSuccess}</div>}
 
-              <button
-                onClick={() => {
-                  const activeStudent = tempStudent || { studentId: getStudentIdFromEmail(email), email: email || 'student@proctor.com' };
-                  const targetEmail = activeStudent.email || email;
-                  const targetId = activeStudent.studentId || getStudentIdFromEmail(targetEmail);
-                  const apiBase = getApiBaseUrl();
+                <div className="al-group">
+                  <label htmlFor="al-admin-email">Admin Email Address</label>
+                  <div className="al-field">
+                    <IconMail size={20} />
+                    <input
+                      id="al-admin-email"
+                      type="email"
+                      placeholder="admin@proctor.com"
+                      value={adminEmail}
+                      onChange={(e) => setAdminEmail(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && handleAdminLogin()}
+                      disabled={adminLoading}
+                      autoComplete="email"
+                      required
+                    />
+                  </div>
+                </div>
 
-                  // 1. Immediately free webcam stream so FaceEnrollment camera can initialize without hardware contention
-                  if (webcamRef.current?.video?.srcObject) {
-                    try {
-                      webcamRef.current.video.srcObject.getTracks().forEach(t => t.stop());
-                      webcamRef.current.video.srcObject = null;
-                    } catch (camErr) {}
-                  }
+                <div className="al-group">
+                  <label htmlFor="al-admin-password">Admin Password</label>
+                  <div className="al-field">
+                    <IconLock size={20} />
+                    <input
+                      id="al-admin-password"
+                      type={showAdminPassword ? "text" : "password"}
+                      placeholder="Enter admin password"
+                      value={adminPassword}
+                      onChange={(e) => setAdminPassword(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && handleAdminLogin()}
+                      disabled={adminLoading}
+                      autoComplete="current-password"
+                      required
+                    />
+                    <button
+                      type="button"
+                      className="al-eye"
+                      aria-label={showAdminPassword ? "Hide password" : "Show password"}
+                      onClick={() => setShowAdminPassword(!showAdminPassword)}
+                    >
+                      {showAdminPassword ? <IconEyeOff size={20} /> : <IconEye size={20} />}
+                    </button>
+                  </div>
+                </div>
 
-                  // 2. Clear local storage enrollment cache
-                  localStorage.removeItem("faceVerified");
-                  if (targetEmail) {
-                    localStorage.removeItem(`student_${targetEmail}`);
-                  }
-                  setIsAccountEnrolled(false);
-                  setFaceVerifying(false);
+                <div className="al-actions">
+                  <button
+                    type="button"
+                    className="al-primary admin-btn"
+                    onClick={handleAdminLogin}
+                    disabled={adminLoading}
+                  >
+                    {adminLoading ? (
+                      <>
+                        <IconLoader2 size={20} className="al-spin" /> Authenticating Admin...
+                      </>
+                    ) : (
+                      <>
+                        Sign In & Launch Admin Dashboard <IconArrowRight size={20} />
+                      </>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    className="al-ghost"
+                    onClick={() => { window.location.href = "/admin"; }}
+                  >
+                    Direct Link: Open Admin Dashboard
+                  </button>
+                </div>
+              </>
+            )}
 
-                  // 3. Immediately transition to face_enrollment modal
-                  setVerificationStep("face_enroll");
-                  setFaceStatusMsg("📸 Cleared previous face profile. Position your face in front of the camera for fresh enrollment.");
+            {/* STUDENT STEP 1: CREDENTIALS VIEW */}
+            {loginRole === "student" && verificationStep === "credentials" && (
+              <>
+                {credentialError && <div className="al-error" role="alert">{credentialError}</div>}
 
-                  // 4. Non-blocking backend delete request with abort timeout
-                  try {
-                    const controller = new AbortController();
-                    const timer = setTimeout(() => controller.abort(), 4000);
-                    fetch(`${apiBase}/api/face/enrollment/${encodeURIComponent(targetId)}?email=${encodeURIComponent(targetEmail || '')}`, {
-                      method: 'DELETE',
-                      signal: controller.signal
-                    }).catch(() => {}).finally(() => clearTimeout(timer));
-                  } catch (e) {}
-                }}
-                disabled={faceVerifying}
-                style={{
-                  background: 'linear-gradient(135deg, #7c3aed, #6366f1)',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '12px',
-                  padding: '10px 14px',
-                  cursor: faceVerifying ? 'not-allowed' : 'pointer',
-                  fontSize: '0.85rem',
-                  fontWeight: 700,
-                  flex: 1.5,
-                  boxShadow: '0 4px 14px rgba(124, 58, 237, 0.4)'
-                }}
-              >
-                Enroll Face
-              </button>
+                <div className="al-group">
+                  <label htmlFor="al-email">Email address</label>
+                  <div className="al-field">
+                    <IconMail size={20} />
+                    <input
+                      id="al-email"
+                      type="email"
+                      placeholder="you@college.edu"
+                      value={email}
+                      onChange={(e) => {
+                        setEmail(e.target.value);
+                        setCredentialError("");
+                      }}
+                      onKeyDown={(e) => e.key === "Enter" && handleCredentialLogin()}
+                      autoComplete="email"
+                      disabled={loading}
+                      required
+                    />
+                  </div>
+                </div>
 
-              <button
-                onClick={() => setVerificationStep("credentials")}
-                style={{ background: '#334155', color: 'white', border: 'none', borderRadius: '12px', padding: '10px 14px', cursor: 'pointer', fontSize: '0.85rem' }}
-              >
-                Back
-              </button>
+                <div className="al-group">
+                  <label htmlFor="al-password">Password</label>
+                  <div className="al-field">
+                    <IconLock size={20} />
+                    <input
+                      id="al-password"
+                      type={showPassword ? "text" : "password"}
+                      placeholder="Enter your password"
+                      value={password}
+                      onChange={(e) => {
+                        setPassword(e.target.value);
+                        setCredentialError("");
+                      }}
+                      onKeyDown={(e) => e.key === "Enter" && handleCredentialLogin()}
+                      autoComplete="current-password"
+                      disabled={loading}
+                      required
+                    />
+                    <button
+                      type="button"
+                      className="al-eye"
+                      aria-label={showPassword ? "Hide password" : "Show password"}
+                      onClick={() => setShowPassword((s) => !s)}
+                    >
+                      {showPassword ? <IconEyeOff size={20} /> : <IconEye size={20} />}
+                    </button>
+                  </div>
+                  <div className="al-forgot">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setForgotEmail(email.trim());
+                        setForgotError("");
+                        setForgotSuccess("");
+                        setForgotStep("email");
+                        setVerificationStep("forgot_password");
+                      }}
+                    >
+                      Forgot password?
+                    </button>
+                  </div>
+                </div>
+
+                <div className="al-actions">
+                  <button
+                    type="button"
+                    className="al-primary"
+                    onClick={handleCredentialLogin}
+                    disabled={loading}
+                  >
+                    {loading ? (
+                      <>
+                        <IconLoader2 size={20} className="al-spin" /> Verifying...
+                      </>
+                    ) : (
+                      <>
+                        Sign in and verify face <IconArrowRight size={20} />
+                      </>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    className="al-ghost"
+                    onClick={() => navigate('/register')}
+                  >
+                    New student? Create an account
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* STUDENT STEP 2: EMAIL OTP VERIFY VIEW */}
+            {loginRole === "student" && verificationStep === "otp_verify" && (
+              <>
+                <p style={{ fontSize: "0.88rem", color: "#9aa5c7", margin: "0", lineHeight: "1.5" }}>
+                  A 6-digit verification code has been dispatched to:<br />
+                  <strong style={{ color: "#c7d2fe" }}>{tempStudent?.email}</strong>
+                  <span style={{ display: "block", color: "#fbbf24", fontSize: "0.8rem", marginTop: "6px" }}>
+                    💡 Tip: If not in your Inbox, please check your Spam / Junk folder.
+                  </span>
+                </p>
+
+                {otpError && <div className="al-error" role="alert">{otpError}</div>}
+                {otpSuccess && <div className="al-success">{otpSuccess}</div>}
+
+                <div className="al-group" style={{ alignItems: "center" }}>
+                  <label style={{ textAlign: "center", marginBottom: "8px" }}>Enter 6-Digit OTP</label>
+                  <OtpSixBoxInput
+                    value={otpInput}
+                    onChange={(val) => {
+                      setOtpInput(val);
+                      setOtpError("");
+                    }}
+                    onComplete={() => handleVerifyOtp()}
+                    disabled={otpLoading}
+                  />
+                </div>
+
+                <div className="al-actions">
+                  <button
+                    type="button"
+                    className="al-primary"
+                    onClick={() => handleVerifyOtp()}
+                    disabled={otpLoading || otpInput.length !== 6}
+                  >
+                    {otpLoading ? (
+                      <>
+                        <IconLoader2 size={20} className="al-spin" /> Verifying OTP...
+                      </>
+                    ) : (
+                      <>
+                        Verify OTP & Proceed <IconArrowRight size={20} />
+                      </>
+                    )}
+                  </button>
+                  <div style={{ display: "flex", gap: "10px" }}>
+                    <button
+                      type="button"
+                      className="al-ghost"
+                      style={{ flex: 1 }}
+                      onClick={handleResendOtp}
+                      disabled={otpCooldown > 0 || otpLoading}
+                    >
+                      {otpCooldown > 0 ? `Resend (${otpCooldown}s)` : "Resend OTP"}
+                    </button>
+                    <button
+                      type="button"
+                      className="al-ghost"
+                      style={{ flex: 1 }}
+                      onClick={() => {
+                        setVerificationStep("credentials");
+                        setOtpError("");
+                        setOtpSuccess("");
+                      }}
+                    >
+                      Back to Sign In
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* FORGOT PASSWORD VIEW */}
+            {loginRole === "student" && verificationStep === "forgot_password" && (
+              <>
+                <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setVerificationStep("credentials");
+                      setForgotError("");
+                      setForgotSuccess("");
+                    }}
+                    className="al-ghost"
+                    style={{ height: "36px", padding: "0 14px", fontSize: "13px" }}
+                  >
+                    ← Back to Sign In
+                  </button>
+                </div>
+
+                {forgotError && <div className="al-error" role="alert">{forgotError}</div>}
+                {forgotSuccess && <div className="al-success">{forgotSuccess}</div>}
+
+                {forgotStep === "email" ? (
+                  <>
+                    <p style={{ fontSize: "14px", color: "#9aa5c7", margin: "0", lineHeight: "1.5" }}>
+                      Enter your registered email address. We will send a 6-digit OTP code to verify your identity.
+                    </p>
+
+                    <div className="al-group">
+                      <label htmlFor="al-forgot-email">Registered Email Address</label>
+                      <div className="al-field">
+                        <IconMail size={20} />
+                        <input
+                          id="al-forgot-email"
+                          type="email"
+                          placeholder="you@college.edu"
+                          value={forgotEmail}
+                          onChange={(e) => {
+                            setForgotEmail(e.target.value);
+                            setForgotError("");
+                          }}
+                          onKeyDown={(e) => e.key === "Enter" && handleSendForgotOtp()}
+                          disabled={forgotLoading}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="al-actions">
+                      <button
+                        type="button"
+                        className="al-primary"
+                        onClick={handleSendForgotOtp}
+                        disabled={forgotLoading || forgotCooldown > 0}
+                      >
+                        {forgotLoading ? (
+                          <>
+                            <IconLoader2 size={20} className="al-spin" /> Dispatching OTP...
+                          </>
+                        ) : forgotCooldown > 0 ? (
+                          `Wait ${forgotCooldown}s to Resend`
+                        ) : (
+                          <>
+                            Send Reset OTP <IconArrowRight size={20} />
+                          </>
+                        )}
+                      </button>
+
+                      <button
+                        type="button"
+                        className="al-ghost"
+                        onClick={() => {
+                          setForgotStep("otp_reset");
+                          setForgotError("");
+                        }}
+                      >
+                        Already have an OTP code? Enter Code ➔
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="al-group" style={{ alignItems: "center" }}>
+                      <label style={{ textAlign: "center" }}>6-Digit Security OTP</label>
+                      <OtpSixBoxInput
+                        value={forgotOtp}
+                        onChange={(val) => {
+                          setForgotOtp(val);
+                          setForgotError("");
+                        }}
+                        onComplete={() => {}}
+                        disabled={forgotLoading}
+                      />
+                    </div>
+
+                    <div className="al-group">
+                      <label htmlFor="al-new-pw">New Password</label>
+                      <div className="al-field">
+                        <IconLock size={20} />
+                        <input
+                          id="al-new-pw"
+                          type={showNewPassword ? "text" : "password"}
+                          placeholder="Minimum 6 characters"
+                          value={newPassword}
+                          onChange={(e) => {
+                            setNewPassword(e.target.value);
+                            setForgotError("");
+                          }}
+                          disabled={forgotLoading}
+                        />
+                        <button
+                          type="button"
+                          className="al-eye"
+                          onClick={() => setShowNewPassword(!showNewPassword)}
+                        >
+                          {showNewPassword ? <IconEyeOff size={20} /> : <IconEye size={20} />}
+                        </button>
+                      </div>
+
+                      {newPassword.length > 0 && (
+                        <div className="al-strength-box">
+                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", fontWeight: 700, textTransform: "uppercase" }}>
+                            <span style={{ color: "#9aa5c7" }}>Strength</span>
+                            <span style={{ color: newPasswordStrength.color }}>{newPasswordStrength.label}</span>
+                          </div>
+                          <div style={{ width: "100%", height: "5px", background: "#1f2a55", borderRadius: "3px", overflow: "hidden" }}>
+                            <div style={{ width: `${newPasswordStrength.percentage}%`, height: "100%", background: newPasswordStrength.color, transition: "width 0.3s" }} />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="al-group">
+                      <label htmlFor="al-confirm-pw">Confirm New Password</label>
+                      <div className="al-field">
+                        <IconLock size={20} />
+                        <input
+                          id="al-confirm-pw"
+                          type={showConfirmPassword ? "text" : "password"}
+                          placeholder="Re-enter new password"
+                          value={confirmPassword}
+                          onChange={(e) => {
+                            setConfirmPassword(e.target.value);
+                            setForgotError("");
+                          }}
+                          disabled={forgotLoading}
+                        />
+                        <button
+                          type="button"
+                          className="al-eye"
+                          onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                        >
+                          {showConfirmPassword ? <IconEyeOff size={20} /> : <IconEye size={20} />}
+                        </button>
+                      </div>
+
+                      {confirmPassword.length > 0 && (
+                        <div style={{ fontSize: "13px", fontWeight: 600, color: isPasswordMatch ? "#34d399" : "#f87171" }}>
+                          {isPasswordMatch ? "✓ Passwords match" : "✕ Passwords do not match"}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="al-actions">
+                      <button
+                        type="button"
+                        className="al-primary"
+                        onClick={handleResetPassword}
+                        disabled={forgotLoading}
+                      >
+                        {forgotLoading ? (
+                          <>
+                            <IconLoader2 size={20} className="al-spin" /> Updating Password...
+                          </>
+                        ) : (
+                          <>
+                            Reset Password & Sign In <IconArrowRight size={20} />
+                          </>
+                        )}
+                      </button>
+
+                      <button
+                        type="button"
+                        className="al-ghost"
+                        onClick={handleSendForgotOtp}
+                        disabled={forgotCooldown > 0 || forgotLoading}
+                      >
+                        {forgotCooldown > 0 ? `Resend code in ${forgotCooldown}s` : "🔄 Resend OTP Code"}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </>
+            )}
+
+            {/* FIRST TIME USER: NO FACE PROMPT */}
+            {loginRole === "student" && verificationStep === "no_face_prompt" && (
+              <>
+                <div style={{ background: "rgba(245, 158, 11, 0.12)", border: "1px solid #f59e0b", borderRadius: "14px", padding: "16px", color: "#fcd34d", fontWeight: 600, fontSize: "14px" }}>
+                  ⚠️ No biometric facial enrollment found for <strong>{tempStudent?.email || "this account"}</strong>.
+                </div>
+                <div className="al-actions">
+                  <button
+                    type="button"
+                    className="al-primary"
+                    onClick={() => {
+                      setFaceMode("enroll");
+                      setEnrollPoseIdx(0);
+                      setFaceFrameCount(0);
+                      setVerificationStep("face_verify");
+                      setFaceStatusMsg("🎯 Position 1: FRONT Face (1-10) — Look straight at camera and click Start 30-Frame Enrollment.");
+                    }}
+                  >
+                    📷 Enroll Face Now
+                  </button>
+                  <button
+                    type="button"
+                    className="al-ghost"
+                    onClick={() => setVerificationStep("credentials")}
+                  >
+                    Back to Sign In
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* System Checks Row */}
+            <div className="al-checks">
+              <span><IconCheck size={16} /> Camera</span>
+              <span><IconCheck size={16} /> Microphone</span>
+              <span><IconCheck size={16} /> Internet</span>
             </div>
 
           </div>
-        )}
-
-
-
-
-
-
-        <div style={styles.footerNote}>
-          🔒 End-to-end Encrypted & AI Proctor Protected
-        </div>
+        </main>
       </div>
-    </div>
-
-    {/* Re-Enrollment — full screen takeover modal */}
-    {loginRole === "student" && verificationStep === "face_enroll" && (
-      <div style={{ position:'fixed', inset:0, zIndex:99999 }}>
-        <FaceEnrollment
-          studentId={tempStudent?.studentId || getStudentIdFromEmail(email || 'student')}
-          name={tempStudent?.fullName || tempStudent?.name || (email ? email.split('@')[0] : 'Student')}
-          email={tempStudent?.email || email || 'student@proctor.com'}
-          token={tempToken || localStorage.getItem('token') || 'temp_token'}
-          onEnrolled={() => {
-            setIsAccountEnrolled(true);
-            setVerificationStep("face_verify");
-            setFaceStatusMsg("✅ Re-enrollment completed successfully! Click Verify Face to continue.");
-            setTimeout(() => {
-              requestCameraPermission();
-            }, 300);
-          }}
-          onSkip={() => {
-            setVerificationStep("face_verify");
-            setFaceStatusMsg("Position your face clearly in the camera to verify identity.");
-            setTimeout(() => {
-              requestCameraPermission();
-            }, 300);
-          }}
-        />
-      </div>
-    )}
     </>
   );
 }

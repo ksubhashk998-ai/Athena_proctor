@@ -4,7 +4,8 @@ const fs = require('fs');
 const path = require('path');
 
 async function migrate() {
-  await mongoose.connect('mongodb://127.0.0.1:27017/smart-proctoring');
+  const ATLAS_URI = 'mongodb+srv://proctoai_admin:Subhash75@proctoai.mtrkavh.mongodb.net/test?retryWrites=true&w=majority';
+  await mongoose.connect(process.env.MONGODB_URI || process.env.MONGO_URL || ATLAS_URI);
   const db = mongoose.connection.db;
 
   const profiles = await db.collection('faceprofiles').find({}).toArray();

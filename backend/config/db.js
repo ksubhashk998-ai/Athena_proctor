@@ -6,8 +6,9 @@ const mongoose = require('mongoose');
 
 const connectDB = async () => {
   try {
-    const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URL || 'mongodb://127.0.0.1:27017/smart-proctoring';
-    console.log(`🔌 [MongoDB] Attempting connection to: ${mongoUri}...`);
+    const ATLAS_URI = 'mongodb+srv://proctoai_admin:Subhash75@proctoai.mtrkavh.mongodb.net/test?retryWrites=true&w=majority';
+    const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URL || ATLAS_URI;
+    console.log(`🔌 [MongoDB] Connecting to MongoDB Atlas cluster...`);
 
     // Register Mongoose Connection Debug Listeners
     mongoose.connection.removeAllListeners();

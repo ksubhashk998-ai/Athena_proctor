@@ -14,7 +14,8 @@ const {
   getAnalytics,
   getAlerts,
   upsertLiveSession,
-  submitExamSession
+  submitExamSession,
+  clearLogs
 } = require('../controllers/adminController');
 
 const { verifyAdminToken } = require('../middleware/adminAuthMiddleware');
@@ -50,5 +51,7 @@ router.post('/terminate-session', (req, res, next) => {
   return verifyAdminToken(req, res, next);
 }, terminateSession);
 router.post('/warn-student', verifyAdminToken, warnStudent);
+router.post('/clear-logs', verifyAdminToken, clearLogs);
+router.delete('/clear-logs', verifyAdminToken, clearLogs);
 
 module.exports = router;

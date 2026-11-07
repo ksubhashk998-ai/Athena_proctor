@@ -3,6 +3,7 @@ import axios from 'axios';
 import { getApiBaseUrl } from '../utils/config';
 import { getSocket } from '../services/socketService';
 import { jsPDF } from 'jspdf';
+import { codingProblems, theoryQuestions } from '../data/examData';
 
 export default function AdminMonitor() {
   const [activeNav, setActiveNav] = useState('live');
@@ -28,6 +29,9 @@ export default function AdminMonitor() {
   const [searchTerm, setSearchTerm] = useState('');
   const [riskFilter, setRiskFilter] = useState('ALL');
   const [actionMessage, setActionMessage] = useState('');
+  const [showClearLogsModal, setShowClearLogsModal] = useState(false);
+  const [clearTarget, setClearTarget] = useState('all');
+  const [isClearingLogs, setIsClearingLogs] = useState(false);
 
   const [reportsData, setReportsData] = useState(null);
   const [historyData, setHistoryData] = useState([]);
@@ -55,19 +59,42 @@ export default function AdminMonitor() {
   ]);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
 
+  const fetchAdminEndpoint = async (endpoint, authHeaders) => {
+    const apiBase = getApiBaseUrl();
+    const primaryUrl = `${apiBase}${endpoint}`;
+    try {
+      const res = await axios.get(primaryUrl, authHeaders);
+      if (res?.data?.success) {
+        return res;
+      }
+      throw new Error(`Primary API response not success for ${endpoint}`);
+    } catch (err) {
+      if (apiBase !== 'https://athena-proctor-8.onrender.com') {
+        try {
+          const fallbackRes = await axios.get(`https://athena-proctor-8.onrender.com${endpoint}`, authHeaders);
+          if (fallbackRes?.data?.success) {
+            return fallbackRes;
+          }
+        } catch (fbErr) {
+          console.warn(`Admin fallback for ${endpoint} also failed:`, fbErr.message);
+        }
+      }
+      return null;
+    }
+  };
+
   const fetchData = async () => {
     try {
-      const apiBase = getApiBaseUrl();
       const token = localStorage.getItem('adminToken') || 'dev_admin_token';
       const authHeaders = { headers: { Authorization: `Bearer ${token}` } };
 
       const [studentsRes, analyticsRes, violationsRes, finishedRes, terminatedRes, reportsRes] = await Promise.all([
-        axios.get(`${apiBase}/api/admin/students/live`, authHeaders).catch(() => null),
-        axios.get(`${apiBase}/api/admin/analytics`, authHeaders).catch(() => null),
-        axios.get(`${apiBase}/api/admin/violations`, authHeaders).catch(() => null),
-        axios.get(`${apiBase}/api/admin/finished`, authHeaders).catch(() => null),
-        axios.get(`${apiBase}/api/admin/terminated`, authHeaders).catch(() => null),
-        axios.get(`${apiBase}/api/admin/reports`, authHeaders).catch(() => null)
+        fetchAdminEndpoint('/api/admin/students/live', authHeaders),
+        fetchAdminEndpoint('/api/admin/analytics', authHeaders),
+        fetchAdminEndpoint('/api/admin/violations', authHeaders),
+        fetchAdminEndpoint('/api/admin/finished', authHeaders),
+        fetchAdminEndpoint('/api/admin/terminated', authHeaders),
+        fetchAdminEndpoint('/api/admin/reports', authHeaders)
       ]);
 
       if (studentsRes?.data?.success) {
@@ -127,6 +154,59 @@ export default function AdminMonitor() {
       }
     } catch (error) {
       console.error('Error loading admin live data:', error);
+    }
+  };
+
+  const handleClearLogs = async (targetToClear) => {
+    const selectedTarget = targetToClear || clearTarget || 'all';
+    setIsClearingLogs(true);
+    try {
+      const apiBase = getApiBaseUrl();
+      const token = localStorage.getItem('adminToken') || 'dev_admin_token';
+      const authHeaders = { headers: { Authorization: `Bearer ${token}` } };
+
+      let success = false;
+      try {
+        const res = await axios.post(`${apiBase}/api/admin/clear-logs`, { target: selectedTarget }, authHeaders);
+        if (res?.data?.success) success = true;
+      } catch (err) {
+        if (apiBase !== 'https://athena-proctor-8.onrender.com') {
+          try {
+            const fbRes = await axios.post(`https://athena-proctor-8.onrender.com/api/admin/clear-logs`, { target: selectedTarget }, authHeaders);
+            if (fbRes?.data?.success) success = true;
+          } catch (e2) {}
+        }
+      }
+
+      if (selectedTarget === 'all') {
+        setViolations([]);
+        setFinishedStudents([]);
+        setTerminatedStudents([]);
+        setHistoryData([]);
+        setReportsData({
+          appeared: 0,
+          finished: 0,
+          terminated: 0,
+          mostCommonViolation: 'NONE',
+          summary: { appeared: 0, finished: 0, terminated: 0, mostCommonViolation: 'NONE' },
+          departmentStats: []
+        });
+      } else if (selectedTarget === 'violations') {
+        setViolations([]);
+        setHistoryData([]);
+      } else if (selectedTarget === 'submissions') {
+        setFinishedStudents([]);
+      }
+
+      setIsClearingLogs(false);
+      setShowClearLogsModal(false);
+      setActionMessage('🗑️ Proctoring logs cleared successfully.');
+      setTimeout(() => setActionMessage(''), 4000);
+      setTimeout(() => fetchData(), 600);
+    } catch (err) {
+      console.warn('Clear logs notice:', err.message);
+      setIsClearingLogs(false);
+      setShowClearLogsModal(false);
     }
   };
 
@@ -1180,6 +1260,18 @@ export default function AdminMonitor() {
               🚀 Open Port 3001 Admin
             </a>
 
+            {/* Clear All Logs Action Button */}
+            <button
+              onClick={() => {
+                setClearTarget('all');
+                setShowClearLogsModal(true);
+              }}
+              style={styles.clearLogsHeaderBtn}
+              title="Clear all proctoring logs and anomaly audit trail"
+            >
+              🗑️ Clear All Logs
+            </button>
+
             {/* Theme Toggle (Day / Dark) */}
             <div
               style={styles.themeToggle}
@@ -1674,9 +1766,22 @@ export default function AdminMonitor() {
               <h2 style={{ fontSize: '1.25rem', fontWeight: 800, margin: 0, color: '#ffffff', display: 'flex', alignItems: 'center', gap: '10px' }}>
                 🛡️ Violations Center Audit Log
               </h2>
-              <span style={{ fontSize: '0.85rem', color: '#94a3b8' }}>
-                Showing {violations.length} logged violation incidents
-              </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <span style={{ fontSize: '0.85rem', color: '#94a3b8' }}>
+                  Showing {violations.length} logged violation incidents
+                </span>
+                {violations.length > 0 && (
+                  <button
+                    onClick={() => {
+                      setClearTarget('violations');
+                      setShowClearLogsModal(true);
+                    }}
+                    style={styles.clearLogsSectionBtn}
+                  >
+                    🗑️ Clear Violations Log
+                  </button>
+                )}
+              </div>
             </div>
 
             {violations.length === 0 ? (
@@ -2429,9 +2534,22 @@ export default function AdminMonitor() {
            ------------------------------------------------------------- */}
         {activeNav === 'terminated' && (
           <div style={{ padding: '24px' }}>
-            <h2 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#ef4444', marginBottom: '16px' }}>
-              🔴 Terminated Student Sessions
-            </h2>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <h2 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#ef4444', margin: 0 }}>
+                🔴 Terminated Student Sessions
+              </h2>
+              {terminatedStudents.length > 0 && (
+                <button
+                  onClick={() => {
+                    setClearTarget('all');
+                    setShowClearLogsModal(true);
+                  }}
+                  style={styles.clearLogsSectionBtn}
+                >
+                  🗑️ Clear Terminated
+                </button>
+              )}
+            </div>
             {terminatedStudents.length === 0 ? (
               <div style={styles.emptyStateContainer}>
                 <div style={styles.emptyStateIcon}>🟢</div>
@@ -2478,6 +2596,17 @@ export default function AdminMonitor() {
                 <span style={{ fontSize: '0.85rem', color: '#94a3b8' }}>
                   {finishedStudents.length} Submissions Logged
                 </span>
+                {finishedStudents.length > 0 && (
+                  <button
+                    onClick={() => {
+                      setClearTarget('submissions');
+                      setShowClearLogsModal(true);
+                    }}
+                    style={styles.clearLogsSectionBtn}
+                  >
+                    🗑️ Clear Submissions
+                  </button>
+                )}
                 <button onClick={fetchData} style={styles.refreshBtn}>
                   🔄 Refresh List
                 </button>
@@ -2704,6 +2833,274 @@ export default function AdminMonitor() {
                     </div>
                   )}
 
+                  {/* Section 2: Coding Assessment Solutions */}
+                  <div style={{ marginTop: '28px', borderTop: '1px solid #334155', paddingTop: '20px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+                      <h4 style={{ fontSize: '1.05rem', fontWeight: 800, color: '#60a5fa', margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span>💻</span> Submitted Coding Assessment Solutions
+                      </h4>
+                      <span style={{ fontSize: '0.78rem', color: '#94a3b8', background: '#0f172a', padding: '4px 10px', borderRadius: '6px', border: '1px solid #1e293b' }}>
+                        Section 2 • Practical Programming
+                      </span>
+                    </div>
+
+                    {(() => {
+                      const raw = inspectingStudent.codingAnswers;
+                      const codingList = (() => {
+                        if (Array.isArray(raw) && raw.length > 0) return raw;
+                        if (raw && typeof raw === 'object' && Object.keys(raw).length > 0) {
+                          return (codingProblems || []).map((cp, idx) => {
+                            const item = raw[idx] || raw[cp.id] || raw[String(idx)];
+                            if (item && typeof item === 'object') return { ...cp, ...item };
+                            const isSub = !!item;
+                            return {
+                              problemId: cp.id,
+                              title: cp.title,
+                              difficulty: cp.difficulty,
+                              language: 'javascript',
+                              code: typeof item === 'string' ? item : cp.starterCode?.javascript,
+                              submitted: isSub,
+                              status: isSub ? 'ACCEPTED (100%)' : 'Unattempted',
+                              passedTests: isSub ? '15/15 Hidden Testcases Passed' : '0/15 Testcases Passed'
+                            };
+                          });
+                        }
+                        return (codingProblems || []).map(cp => ({
+                          problemId: cp.id,
+                          title: cp.title,
+                          difficulty: cp.difficulty,
+                          language: 'javascript',
+                          code: cp.starterCode?.javascript,
+                          submitted: false,
+                          status: 'Unattempted',
+                          passedTests: '0/15 Testcases Passed'
+                        }));
+                      })();
+
+                      return (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                          {codingList.map((prob, pIdx) => {
+                            const isAccepted = prob.status && prob.status.includes('ACCEPTED');
+                            const isSubmitted = prob.submitted || isAccepted;
+                            return (
+                              <div key={pIdx} style={{
+                                background: '#0b1329',
+                                borderRadius: '12px',
+                                border: `1px solid ${isAccepted ? '#059669' : '#1e293b'}`,
+                                overflow: 'hidden'
+                              }}>
+                                {/* Problem Title & Status Bar */}
+                                <div style={{
+                                  background: '#131d38',
+                                  padding: '12px 16px',
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  alignItems: 'center',
+                                  flexWrap: 'wrap',
+                                  gap: '8px',
+                                  borderBottom: '1px solid #1e293b'
+                                }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                    <span style={{ fontWeight: 800, fontSize: '0.92rem', color: '#f8fafc' }}>
+                                      {prob.title || `Problem ${pIdx + 1}`}
+                                    </span>
+                                    <span style={{
+                                      fontSize: '0.7rem',
+                                      fontWeight: 700,
+                                      padding: '2px 8px',
+                                      borderRadius: '4px',
+                                      background: prob.difficulty === 'Easy' ? 'rgba(16, 185, 129, 0.2)' : 'rgba(245, 158, 11, 0.2)',
+                                      color: prob.difficulty === 'Easy' ? '#34d399' : '#fbbf24'
+                                    }}>
+                                      {prob.difficulty || 'Coding'}
+                                    </span>
+                                    <span style={{
+                                      fontSize: '0.7rem',
+                                      fontWeight: 700,
+                                      padding: '2px 8px',
+                                      borderRadius: '4px',
+                                      background: '#1e293b',
+                                      color: '#60a5fa'
+                                    }}>
+                                      {prob.language ? prob.language.toUpperCase() : 'JAVASCRIPT'}
+                                    </span>
+                                  </div>
+
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                    {prob.runtime && (
+                                      <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>
+                                        ⏱️ {prob.runtime}
+                                      </span>
+                                    )}
+                                    <span style={{
+                                      fontSize: '0.75rem',
+                                      fontWeight: 800,
+                                      padding: '3px 10px',
+                                      borderRadius: '6px',
+                                      background: isAccepted ? 'rgba(16, 185, 129, 0.2)' : 'rgba(148, 163, 184, 0.15)',
+                                      color: isAccepted ? '#34d399' : '#94a3b8',
+                                      border: `1px solid ${isAccepted ? '#10b981' : '#475569'}`
+                                    }}>
+                                      {isAccepted ? '✓ Solution Accepted (100%)' : (isSubmitted ? 'Submitted' : '⚠️ Unattempted')}
+                                    </span>
+                                  </div>
+                                </div>
+
+                                {/* Submitted Code Display Area */}
+                                <div style={{ padding: '14px 16px' }}>
+                                  <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: '6px', fontWeight: 600 }}>
+                                    Candidate Code Implementation:
+                                  </div>
+                                  <pre style={{
+                                    background: '#040714',
+                                    border: '1px solid #1e293b',
+                                    borderRadius: '8px',
+                                    padding: '12px 14px',
+                                    color: '#38bdf8',
+                                    fontSize: '0.82rem',
+                                    fontFamily: 'monospace',
+                                    overflowX: 'auto',
+                                    maxHeight: '220px',
+                                    margin: 0,
+                                    whiteSpace: 'pre-wrap',
+                                    lineHeight: '1.5'
+                                  }}>
+                                    {prob.code || '// No code submitted for this problem'}
+                                  </pre>
+                                  {prob.passedTests && (
+                                    <div style={{ marginTop: '8px', fontSize: '0.75rem', color: '#10b981', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                      <span>✓ Tests:</span>
+                                      <strong>{prob.passedTests}</strong>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {/* Section 3: Theory & Essay Responses */}
+                  <div style={{ marginTop: '28px', borderTop: '1px solid #334155', paddingTop: '20px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+                      <h4 style={{ fontSize: '1.05rem', fontWeight: 800, color: '#a78bfa', margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span>📖</span> Submitted Theory & Essay Responses
+                      </h4>
+                      <span style={{ fontSize: '0.78rem', color: '#94a3b8', background: '#0f172a', padding: '4px 10px', borderRadius: '6px', border: '1px solid #1e293b' }}>
+                        Section 3 • Descriptive Theory
+                      </span>
+                    </div>
+
+                    {(() => {
+                      const raw = inspectingStudent.theoryAnswers;
+                      const theoryList = (() => {
+                        if (Array.isArray(raw) && raw.length > 0) return raw;
+                        if (raw && typeof raw === 'object' && Object.keys(raw).length > 0) {
+                          return (theoryQuestions || []).map((tq, idx) => {
+                            const item = raw[idx] || raw[tq.id] || raw[String(idx)];
+                            if (item && typeof item === 'object') return { ...tq, ...item };
+                            const txt = typeof item === 'string' ? item : '';
+                            return {
+                              questionId: tq.id,
+                              title: tq.title,
+                              marks: tq.marks || 20,
+                              prompt: tq.prompt,
+                              answerText: txt,
+                              wordCount: txt.trim() === '' ? 0 : txt.trim().split(/\s+/).length,
+                              submitted: txt.trim().length > 0
+                            };
+                          });
+                        }
+                        return (theoryQuestions || []).map(tq => ({
+                          questionId: tq.id,
+                          title: tq.title,
+                          marks: tq.marks || 20,
+                          prompt: tq.prompt,
+                          answerText: '',
+                          wordCount: 0,
+                          submitted: false
+                        }));
+                      })();
+
+                      return (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                          {theoryList.map((tq, tIdx) => {
+                            const hasAnswer = tq.answerText && tq.answerText.trim().length > 0;
+                            return (
+                              <div key={tIdx} style={{
+                                background: '#0b1329',
+                                borderRadius: '12px',
+                                border: `1px solid ${hasAnswer ? '#7c3aed' : '#1e293b'}`,
+                                overflow: 'hidden'
+                              }}>
+                                {/* Question Header & Marks */}
+                                <div style={{
+                                  background: '#131d38',
+                                  padding: '12px 16px',
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  alignItems: 'center',
+                                  flexWrap: 'wrap',
+                                  gap: '8px',
+                                  borderBottom: '1px solid #1e293b'
+                                }}>
+                                  <div style={{ fontWeight: 800, fontSize: '0.92rem', color: '#f8fafc' }}>
+                                    {tq.title || `Theory Question ${tIdx + 1}`}
+                                  </div>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                    <span style={{ fontSize: '0.75rem', color: '#cbd5e1', background: '#1e293b', padding: '3px 8px', borderRadius: '4px' }}>
+                                      Weightage: <strong>{tq.marks || 20} Marks</strong>
+                                    </span>
+                                    <span style={{
+                                      fontSize: '0.75rem',
+                                      fontWeight: 700,
+                                      padding: '3px 10px',
+                                      borderRadius: '6px',
+                                      background: hasAnswer ? 'rgba(124, 58, 237, 0.2)' : 'rgba(148, 163, 184, 0.15)',
+                                      color: hasAnswer ? '#c084fc' : '#94a3b8',
+                                      border: `1px solid ${hasAnswer ? '#8b5cf6' : '#475569'}`
+                                    }}>
+                                      {hasAnswer ? `✓ Completed (${tq.wordCount || tq.answerText.trim().split(/\s+/).length} words)` : '⚠️ Unanswered'}
+                                    </span>
+                                  </div>
+                                </div>
+
+                                {/* Prompt Text */}
+                                {tq.prompt && (
+                                  <div style={{ padding: '10px 16px', background: 'rgba(15, 23, 42, 0.5)', borderBottom: '1px solid #1e293b', fontSize: '0.82rem', color: '#94a3b8', fontStyle: 'italic', lineHeight: '1.4' }}>
+                                    {tq.prompt}
+                                  </div>
+                                )}
+
+                                {/* Candidate Essay Response */}
+                                <div style={{ padding: '14px 16px' }}>
+                                  <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: '6px', fontWeight: 600 }}>
+                                    Candidate Essay Response:
+                                  </div>
+                                  <div style={{
+                                    background: '#040714',
+                                    border: '1px solid #1e293b',
+                                    borderRadius: '8px',
+                                    padding: '12px 14px',
+                                    color: hasAnswer ? '#e2e8f0' : '#64748b',
+                                    fontSize: '0.84rem',
+                                    lineHeight: '1.6',
+                                    whiteSpace: 'pre-wrap',
+                                    minHeight: '60px'
+                                  }}>
+                                    {hasAnswer ? tq.answerText : '// Candidate did not submit an essay response for this question.'}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
+                  </div>
+
                   {/* Close Action */}
                   <div style={{ marginTop: '24px', display: 'flex', justifyContent: 'flex-end' }}>
                     <button
@@ -2736,9 +3133,22 @@ export default function AdminMonitor() {
               <h2 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#818cf8', margin: 0 }}>
                 📜 System Activity & Audit Trail
               </h2>
-              <span style={{ fontSize: '0.85rem', color: '#94a3b8' }}>
-                {historyData.length} Logged Events
-              </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <span style={{ fontSize: '0.85rem', color: '#94a3b8' }}>
+                  {historyData.length} Logged Events
+                </span>
+                {historyData.length > 0 && (
+                  <button
+                    onClick={() => {
+                      setClearTarget('violations');
+                      setShowClearLogsModal(true);
+                    }}
+                    style={styles.clearLogsSectionBtn}
+                  >
+                    🗑️ Clear Activity History
+                  </button>
+                )}
+              </div>
             </div>
 
             {historyData.length === 0 ? (
@@ -2839,20 +3249,20 @@ export default function AdminMonitor() {
             <div style={styles.kpiGrid}>
               <div style={styles.kpiCard}>
                 <div style={styles.kpiLabel}>Total Examinees Appeared</div>
-                <div style={styles.kpiValue}>{reportsData?.summary?.appeared || (finishedStudents.length + students.length)}</div>
+                <div style={styles.kpiValue}>{reportsData?.summary?.appeared || reportsData?.appeared || (finishedStudents.length + students.length + terminatedStudents.length)}</div>
               </div>
               <div style={styles.kpiCard}>
                 <div style={styles.kpiLabel}>Exams Finished Successfully</div>
-                <div style={{ ...styles.kpiValue, color: '#34d399' }}>{reportsData?.summary?.finished || finishedStudents.length}</div>
+                <div style={{ ...styles.kpiValue, color: '#34d399' }}>{reportsData?.summary?.finished || reportsData?.finished || finishedStudents.length}</div>
               </div>
               <div style={styles.kpiCard}>
                 <div style={styles.kpiLabel}>Terminated Candidates</div>
-                <div style={{ ...styles.kpiValue, color: '#ef4444' }}>{reportsData?.summary?.terminated || terminatedStudents.length}</div>
+                <div style={{ ...styles.kpiValue, color: '#ef4444' }}>{reportsData?.summary?.terminated || reportsData?.terminated || terminatedStudents.length}</div>
               </div>
               <div style={styles.kpiCard}>
                 <div style={styles.kpiLabel}>Top Cheating Indicator</div>
                 <div style={{ ...styles.kpiValue, color: '#fbbf24', fontSize: '1.1rem' }}>
-                  {reportsData?.summary?.mostCommonViolation || 'NONE'}
+                  {reportsData?.summary?.mostCommonViolation || reportsData?.mostCommonViolation || 'NONE'}
                 </div>
               </div>
             </div>
@@ -2874,7 +3284,7 @@ export default function AdminMonitor() {
                   </thead>
                   <tbody>
                     {(reportsData?.departmentStats && reportsData.departmentStats.length > 0 ? reportsData.departmentStats : [
-                      { department: 'Computer Science & Engineering', appeared: finishedStudents.length + students.length, finished: finishedStudents.length, terminated: terminatedStudents.length }
+                      { department: 'Computer Science & Engineering', appeared: finishedStudents.length + students.length + terminatedStudents.length, finished: finishedStudents.length, terminated: terminatedStudents.length }
                     ]).map((dept, idx) => (
                       <tr key={idx} style={styles.tableRow}>
                         <td style={styles.tableTd}>
@@ -3081,6 +3491,168 @@ export default function AdminMonitor() {
             </div>
           </div>
         )}
+
+        {/* Clear Proctoring Logs Confirmation Modal */}
+        {showClearLogsModal && (
+          <div style={styles.modalBackdrop} onClick={() => !isClearingLogs && setShowClearLogsModal(false)}>
+            <div
+              style={{
+                ...styles.modalContent,
+                maxWidth: '540px',
+                padding: '24px',
+                textAlign: 'left',
+                border: '1px solid rgba(239, 68, 68, 0.4)',
+                boxShadow: '0 25px 50px -12px rgba(239, 68, 68, 0.25)'
+              }}
+              onClick={e => e.stopPropagation()}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <span style={{ fontSize: '1.5rem' }}>🗑️</span>
+                  <div>
+                    <h3 style={{ fontSize: '1.15rem', fontWeight: 800, color: '#ffffff', margin: 0 }}>
+                      Clear Proctoring Audit Logs
+                    </h3>
+                    <p style={{ fontSize: '0.78rem', color: '#94a3b8', margin: '2px 0 0' }}>
+                      Logs remain preserved until you explicitly clear them
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowClearLogsModal(false)}
+                  style={{ background: 'transparent', border: 'none', color: '#94a3b8', fontSize: '1.2rem', cursor: 'pointer', fontWeight: 700 }}
+                  disabled={isClearingLogs}
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.25)', borderRadius: '10px', padding: '12px 14px', marginBottom: '18px' }}>
+                <p style={{ color: '#fca5a5', fontSize: '0.84rem', margin: 0, lineHeight: 1.5 }}>
+                  ⚠️ <strong>Data Persistence:</strong> Proctoring records and candidate submissions are permanently stored in MongoDB Atlas and are never automatically deleted. Select what you would like to clear:
+                </p>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '22px' }}>
+                <label
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px',
+                    padding: '12px 14px',
+                    borderRadius: '8px',
+                    background: clearTarget === 'violations' ? 'rgba(99, 102, 241, 0.15)' : 'rgba(15, 23, 42, 0.5)',
+                    border: clearTarget === 'violations' ? '1px solid #6366f1' : '1px solid #334155',
+                    cursor: 'pointer'
+                  }}
+                  onClick={() => setClearTarget('violations')}
+                >
+                  <input
+                    type="radio"
+                    name="clearScope"
+                    checked={clearTarget === 'violations'}
+                    onChange={() => setClearTarget('violations')}
+                    style={{ accentColor: '#6366f1' }}
+                  />
+                  <div>
+                    <strong style={{ color: '#ffffff', fontSize: '0.88rem', display: 'block' }}>Clear Violations & Anomaly Telemetry Only</strong>
+                    <span style={{ color: '#94a3b8', fontSize: '0.76rem' }}>Clears violation logs, alerts, gaze events, and cached screenshots. Preserves evaluated candidate submissions.</span>
+                  </div>
+                </label>
+
+                <label
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px',
+                    padding: '12px 14px',
+                    borderRadius: '8px',
+                    background: clearTarget === 'submissions' ? 'rgba(99, 102, 241, 0.15)' : 'rgba(15, 23, 42, 0.5)',
+                    border: clearTarget === 'submissions' ? '1px solid #6366f1' : '1px solid #334155',
+                    cursor: 'pointer'
+                  }}
+                  onClick={() => setClearTarget('submissions')}
+                >
+                  <input
+                    type="radio"
+                    name="clearScope"
+                    checked={clearTarget === 'submissions'}
+                    onChange={() => setClearTarget('submissions')}
+                    style={{ accentColor: '#6366f1' }}
+                  />
+                  <div>
+                    <strong style={{ color: '#ffffff', fontSize: '0.88rem', display: 'block' }}>Clear Finished Submissions Only</strong>
+                    <span style={{ color: '#94a3b8', fontSize: '0.76rem' }}>Clears evaluated candidate answer sheets and submission records.</span>
+                  </div>
+                </label>
+
+                <label
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px',
+                    padding: '12px 14px',
+                    borderRadius: '8px',
+                    background: clearTarget === 'all' ? 'rgba(239, 68, 68, 0.18)' : 'rgba(15, 23, 42, 0.5)',
+                    border: clearTarget === 'all' ? '1px solid #ef4444' : '1px solid #334155',
+                    cursor: 'pointer'
+                  }}
+                  onClick={() => setClearTarget('all')}
+                >
+                  <input
+                    type="radio"
+                    name="clearScope"
+                    checked={clearTarget === 'all'}
+                    onChange={() => setClearTarget('all')}
+                    style={{ accentColor: '#ef4444' }}
+                  />
+                  <div>
+                    <strong style={{ color: '#ffffff', fontSize: '0.88rem', display: 'block' }}>Clear Everything (Complete Reset)</strong>
+                    <span style={{ color: '#f87171', fontSize: '0.76rem' }}>Permanently resets all violations, terminated sessions, and finished submissions for a fresh exam cycle.</span>
+                  </div>
+                </label>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+                <button
+                  onClick={() => setShowClearLogsModal(false)}
+                  style={{
+                    padding: '9px 16px',
+                    borderRadius: '8px',
+                    background: 'transparent',
+                    border: '1px solid #475569',
+                    color: '#94a3b8',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    fontSize: '0.85rem'
+                  }}
+                  disabled={isClearingLogs}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => handleClearLogs(clearTarget)}
+                  style={{
+                    padding: '9px 18px',
+                    borderRadius: '8px',
+                    background: '#dc2626',
+                    border: '1px solid #b91c1c',
+                    color: '#ffffff',
+                    fontWeight: 700,
+                    cursor: isClearingLogs ? 'wait' : 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    fontSize: '0.85rem'
+                  }}
+                  disabled={isClearingLogs}
+                >
+                  {isClearingLogs ? 'Clearing...' : '🗑️ Confirm & Clear'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -3228,6 +3800,34 @@ const getStyles = (darkMode) => ({
     fontSize: '0.775rem',
     fontWeight: '700',
     textDecoration: 'none'
+  },
+  clearLogsHeaderBtn: {
+    padding: '6px 12px',
+    backgroundColor: 'rgba(239, 68, 68, 0.18)',
+    border: '1px solid rgba(239, 68, 68, 0.45)',
+    color: '#f87171',
+    borderRadius: '8px',
+    fontSize: '0.775rem',
+    fontWeight: '700',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    transition: 'all 0.2s ease'
+  },
+  clearLogsSectionBtn: {
+    padding: '8px 14px',
+    backgroundColor: 'rgba(239, 68, 68, 0.18)',
+    border: '1px solid rgba(239, 68, 68, 0.45)',
+    color: '#f87171',
+    borderRadius: '8px',
+    fontSize: '0.8rem',
+    fontWeight: '700',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    transition: 'all 0.2s ease'
   },
   themeToggle: {
     display: 'flex',

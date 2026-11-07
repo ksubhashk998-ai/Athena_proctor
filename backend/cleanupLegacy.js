@@ -2,7 +2,8 @@ const mongoose = require('mongoose');
 
 async function cleanup() {
   try {
-    await mongoose.connect(process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/smart-proctoring');
+    const ATLAS_URI = 'mongodb+srv://proctoai_admin:Subhash75@proctoai.mtrkavh.mongodb.net/test?retryWrites=true&w=majority';
+    await mongoose.connect(process.env.MONGODB_URI || process.env.MONGO_URL || ATLAS_URI);
     console.log('Connected to MongoDB');
 
     const testIds = ['STU_TEST', 'STU_DEMO', 'demoUser123', 'TEST', 'DEMO'];

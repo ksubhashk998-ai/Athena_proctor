@@ -93,7 +93,8 @@ const seedDatabase = async () => {
         console.log('=================================\n');
         
         // Connect to MongoDB
-        const mongoURI = process.env.MONGODB_URI || 'mongodb://localhost:27017/smart-proctoring';
+        const ATLAS_URI = 'mongodb+srv://proctoai_admin:Subhash75@proctoai.mtrkavh.mongodb.net/test?retryWrites=true&w=majority';
+        const mongoURI = process.env.MONGODB_URI || process.env.MONGO_URL || ATLAS_URI;
         await mongoose.connect(mongoURI, {
             useNewUrlParser: true,
             useUnifiedTopology: true,

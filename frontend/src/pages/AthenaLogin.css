@@ -1,0 +1,240 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap");
+
+:root {
+  --al-accent: #6366f1;
+  --al-bg: #0a0f1f;
+  --al-card: #0f1630;
+  --al-input: #0a1128;
+  --al-border: #2a3668;
+  --al-text: #f1f4ff;
+  --al-muted: #9aa5c7;
+}
+
+.al-page {
+  min-height: 100vh;
+  display: flex;
+  background: var(--al-bg);
+  color: var(--al-text);
+  font-family: "Inter", system-ui, sans-serif;
+}
+
+/* ---------- Left brand panel ---------- */
+.al-brand {
+  flex: 1 1 50%;
+  padding: 64px 72px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  background: radial-gradient(ellipse 70% 55% at 35% 55%, rgba(99, 102, 241, 0.28), rgba(10, 15, 31, 0) 70%), var(--al-bg);
+  border-right: 1px solid #1c2442;
+}
+.al-logo { display: flex; align-items: center; gap: 14px; }
+.al-logo-mark {
+  width: 44px; height: 44px; border-radius: 12px;
+  background: var(--al-accent);
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 4px 16px rgba(99, 102, 241, 0.4);
+}
+.al-logo-text { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; }
+
+.al-hero { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 14px; }
+.al-scan { width: 280px; height: 280px; margin-bottom: 22px; }
+.al-hero h1 { margin: 0; font-size: 44px; line-height: 1.1; font-weight: 800; letter-spacing: -0.02em; }
+.al-hero p { margin: 0; max-width: 440px; font-size: 17px; line-height: 1.55; color: #aab3d1; }
+
+.al-chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin-top: 22px; }
+.al-chip {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 10px 14px; border-radius: 999px;
+  background: #111a36; border: 1px solid #232e5a;
+  font-size: 13px; font-weight: 600; color: #c7d2fe;
+}
+.al-chip svg { color: #818cf8; }
+.al-foot { margin: 0; font-size: 13px; color: #8b95b5; }
+
+.al-scanline { animation: al-scan 3.2s ease-in-out infinite; }
+@keyframes al-scan {
+  0% { transform: translateY(0); opacity: 0; }
+  15% { opacity: 1; }
+  85% { opacity: 1; }
+  100% { transform: translateY(190px); opacity: 0; }
+}
+
+/* ---------- Right form side ---------- */
+.al-form-side {
+  flex: 1 1 50%;
+  display: flex; align-items: center; justify-content: center;
+  padding: 32px 20px;
+  background: radial-gradient(ellipse 60% 50% at 50% 50%, rgba(139, 92, 246, 0.12), rgba(10, 15, 31, 0) 70%), var(--al-bg);
+}
+.al-card {
+  width: 100%; max-width: 480px; box-sizing: border-box;
+  padding: 40px; border-radius: 24px;
+  background: var(--al-card);
+  border: 1px solid #243061;
+  box-shadow: 0 0 60px rgba(99, 102, 241, 0.22);
+  display: flex; flex-direction: column; gap: 24px;
+  animation: al-in 0.5s ease both;
+}
+@keyframes al-in { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+
+.al-card h2 { margin: 0 0 6px; font-size: 28px; font-weight: 700; letter-spacing: -0.01em; }
+.al-sub { margin: 0; font-size: 15px; color: var(--al-muted); }
+
+/* tabs */
+.al-tabs { display: flex; gap: 4px; padding: 4px; border-radius: 14px; background: var(--al-input); border: 1px solid #1f2a55; }
+.al-tabs button {
+  flex: 1; height: 44px; border: 0; border-radius: 10px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  background: transparent; color: #aab3d1;
+  font: 600 14px "Inter", system-ui, sans-serif;
+  transition: background 0.15s, color 0.15s;
+}
+.al-tabs button.active { background: var(--al-accent); color: #fff; box-shadow: 0 4px 14px rgba(99, 102, 241, 0.35); }
+.al-tabs button.admin-active { background: linear-gradient(135deg, #ec4899, #d946ef); color: #fff; box-shadow: 0 4px 14px rgba(236, 72, 153, 0.35); }
+
+/* fields */
+.al-group { display: flex; flex-direction: column; gap: 8px; }
+.al-group label { font-size: 14px; font-weight: 600; color: #d5dbf0; text-align: left; }
+.al-field {
+  height: 54px; box-sizing: border-box; padding: 0 12px 0 16px;
+  border-radius: 14px; background: var(--al-input); border: 1px solid var(--al-border);
+  display: flex; align-items: center; gap: 12px; color: #8b95b5;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.al-field:focus-within { border-color: #818cf8; box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.22); }
+.al-field input {
+  flex: 1; min-width: 0; height: 100%;
+  background: transparent; border: 0; outline: 0;
+  color: var(--al-text); font: 500 15px "Inter", system-ui, sans-serif;
+}
+.al-field input::placeholder { color: #7d88ab; }
+
+/* kill Chrome's light-blue autofill */
+.al-field input:-webkit-autofill,
+.al-field input:-webkit-autofill:focus {
+  -webkit-box-shadow: 0 0 0 1000px #0a1128 inset !important;
+  -webkit-text-fill-color: #f1f4ff !important;
+  caret-color: #f1f4ff;
+}
+
+.al-eye {
+  width: 44px; height: 44px; border: 0; border-radius: 10px; background: transparent;
+  display: flex; align-items: center; justify-content: center; cursor: pointer; color: #8b95b5; flex-shrink: 0;
+}
+.al-eye:hover { color: #c7d2fe; }
+.al-forgot { display: flex; justify-content: flex-end; }
+.al-forgot a, .al-forgot button {
+  font-size: 13px; font-weight: 600; color: #a5b4fc; text-decoration: none;
+  background: transparent; border: 0; cursor: pointer; padding: 0;
+}
+.al-forgot a:hover, .al-forgot button:hover { color: #c7d2fe; }
+
+.al-error {
+  padding: 12px 14px; border-radius: 12px; font-size: 14px;
+  background: rgba(248, 113, 113, 0.12); border: 1px solid rgba(248, 113, 113, 0.4); color: #fecaca;
+  text-align: left;
+}
+.al-success {
+  padding: 12px 14px; border-radius: 12px; font-size: 14px;
+  background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.4); color: #a7f3d0;
+  text-align: left;
+}
+.al-shake { animation: al-in 0.5s ease both, al-shake 0.4s 0.5s ease; }
+@keyframes al-shake { 0%,100% { transform: translateX(0); } 25% { transform: translateX(-8px); } 75% { transform: translateX(8px); } }
+
+/* buttons */
+.al-actions { display: flex; flex-direction: column; gap: 12px; }
+.al-primary {
+  height: 56px; border: 0; border-radius: 14px; cursor: pointer;
+  background: var(--al-accent); color: #fff;
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  font: 700 16px "Inter", system-ui, sans-serif;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.al-primary.admin-btn {
+  background: linear-gradient(135deg, #ec4899, #d946ef);
+}
+.al-primary:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 14px 36px rgba(99, 102, 241, 0.45); }
+.al-primary.admin-btn:hover:not(:disabled) { box-shadow: 0 14px 36px rgba(236, 72, 153, 0.45); }
+.al-primary:disabled { opacity: 0.75; cursor: not-allowed; }
+.al-ghost {
+  height: 52px; border-radius: 14px; cursor: pointer;
+  background: transparent; border: 1px solid #2f3b75; color: #c7d2fe;
+  font: 600 15px "Inter", system-ui, sans-serif;
+  transition: background 0.15s, border-color 0.15s;
+}
+.al-ghost:hover { background: rgba(129, 140, 248, 0.12); border-color: #818cf8; }
+
+.al-spin { animation: al-rotate 0.9s linear infinite; }
+@keyframes al-rotate { to { transform: rotate(360deg); } }
+
+/* system check row */
+.al-checks { display: flex; justify-content: space-between; padding-top: 20px; border-top: 1px solid #1f2a55; }
+.al-checks span { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 500; color: var(--al-muted); }
+.al-checks svg { color: #34d399; }
+
+/* Face Verification Webcam Container inside Card */
+.al-webcam-card {
+  position: relative;
+  width: 100%;
+  max-width: 380px;
+  height: 250px;
+  margin: 0 auto;
+  border-radius: 16px;
+  overflow: hidden;
+  border: 2px solid #6366f1;
+  background: #060b18;
+  box-shadow: 0 0 30px rgba(99, 102, 241, 0.3);
+}
+
+.al-webcam-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.al-cam-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(10, 15, 31, 0.92);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  text-align: center;
+  z-index: 5;
+}
+
+.al-status-msg {
+  font-size: 14px;
+  font-weight: 600;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(15, 23, 48, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.al-status-success { color: #34d399; border-color: rgba(52, 211, 153, 0.3); }
+.al-status-danger { color: #f87171; border-color: rgba(248, 113, 113, 0.3); }
+.al-status-neutral { color: #c7d2fe; }
+
+/* Password Strength & Criteria */
+.al-strength-box {
+  background: #0a1128;
+  border: 1px solid #1f2a55;
+  border-radius: 12px;
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  text-align: left;
+}
+
+/* ---------- Responsive ---------- */
+@media (max-width: 900px) {
+  .al-brand { display: none; }
+  .al-card { padding: 28px 22px; }
+}
+

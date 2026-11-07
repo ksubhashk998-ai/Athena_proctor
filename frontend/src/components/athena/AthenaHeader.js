@@ -1,5 +1,6 @@
 import React from 'react';
 import { sampleStudent } from '../../data/examData';
+import athenaLogo from '../../assets/athena-logo-transparent.png';
 
 function AthenaHeader({
   timerSeconds,
@@ -35,12 +36,16 @@ function AthenaHeader({
   return (
     <header className="athena-header">
       {/* Brand & Logo */}
-      <div className="athena-brand">
-        <div className="athena-brand-logo">
-          <i className="fas fa-shield-halved"></i>
-        </div>
+      <div className="athena-brand" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+        <img
+          src={athenaLogo || "/athena-logo.png"}
+          alt="Athena"
+          style={{ height: '36px', width: 'auto', objectFit: 'contain', display: 'block' }}
+          onError={(e) => {
+            e.currentTarget.src = "/athena-logo.png";
+          }}
+        />
         <div>
-          <h1 className="athena-brand-title">Athena AI Proctoring</h1>
           <span style={{ fontSize: '0.72rem', color: '#94a3b8', display: 'block', marginTop: '-2px' }}>
             Enterprise Examination Suite
           </span>

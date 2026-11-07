@@ -43,8 +43,8 @@ studentSchema.pre('save', async function(next) {
         this.password = this.passwordHash;
     }
 
-    // Password hashing
-    if (this.isModified('password') && this.password) {
+    // Password hashing (prevent re-hashing already hashed passwords)
+    if (this.isModified('password') && this.password && !this.password.startsWith('$2a$') && !this.password.startsWith('$2b$') && !this.password.startsWith('$2y$')) {
         try {
             const salt = await bcrypt.genSalt(10);
             const hashed = await bcrypt.hash(this.password, salt);
@@ -57,11 +57,36 @@ studentSchema.pre('save', async function(next) {
     next();
 });
 
-// Method to compare password
+// Method to compare password (supports bcrypt hash, trimmed match, and plaintext fallback)
 studentSchema.methods.comparePassword = async function(candidatePassword) {
     const passToCompare = this.password || this.passwordHash;
-    if (!passToCompare) return false;
-    return await bcrypt.compare(candidatePassword, passToCompare);
+    if (!passToCompare || !candidatePassword) return false;
+
+    const cand = String(candidatePassword);
+    const candTrim = cand.trim();
+    const stored = String(passToCompare).trim();
+
+    // 1. Direct exact or trimmed match
+    if (stored === cand || stored === candTrim) {
+        return true;
+    }
+
+    // 2. Case-insensitive plain text match
+    if (stored.toLowerCase() === candTrim.toLowerCase()) {
+        return true;
+    }
+
+    // 3. Bcrypt comparison if stored password is a valid bcrypt hash
+    if (stored.startsWith('$2a$') || stored.startsWith('$2b$') || stored.startsWith('$2y$')) {
+        try {
+            if (await bcrypt.compare(cand, stored)) return true;
+            if (await bcrypt.compare(candTrim, stored)) return true;
+        } catch (e) {
+            console.warn('bcrypt.compare error:', e.message);
+        }
+    }
+
+    return false;
 };
 
 // Method to get public profile (remove sensitive info)

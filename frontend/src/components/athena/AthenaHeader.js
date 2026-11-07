@@ -1,5 +1,6 @@
 import React from 'react';
 import { sampleStudent } from '../../data/examData';
+import { IconShieldCheck } from '@tabler/icons-react';
 import athenaLogo from '../../assets/athena-logo-transparent.png';
 
 function AthenaHeader({
@@ -35,18 +36,26 @@ function AthenaHeader({
 
   return (
     <header className="athena-header">
-      {/* Brand & Logo */}
+      {/* Brand & Logo (Exact Athena Logo from Screenshot 2) */}
       <div className="athena-brand" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-        <img
-          src={athenaLogo || "/athena-logo.png"}
-          alt="Athena"
-          style={{ height: '36px', width: 'auto', objectFit: 'contain', display: 'block' }}
-          onError={(e) => {
-            e.currentTarget.src = "/athena-logo.png";
-          }}
-        />
+        <div style={{
+          width: '38px',
+          height: '38px',
+          borderRadius: '12px',
+          background: '#6366f1',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          boxShadow: '0 4px 16px rgba(99, 102, 241, 0.4)',
+          flexShrink: 0
+        }}>
+          <IconShieldCheck size={24} color="#ffffff" stroke={2.2} />
+        </div>
         <div>
-          <span style={{ fontSize: '0.72rem', color: '#94a3b8', display: 'block', marginTop: '-2px' }}>
+          <span style={{ fontSize: '20px', fontWeight: 800, letterSpacing: '-0.01em', color: '#ffffff', lineHeight: 1.1, display: 'block' }}>
+            Athena
+          </span>
+          <span style={{ fontSize: '0.72rem', color: '#94a3b8', display: 'block', marginTop: '2px', fontWeight: 500 }}>
             Enterprise Examination Suite
           </span>
         </div>

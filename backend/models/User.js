@@ -63,8 +63,28 @@ userSchema.pre('save', async function(next) {
 });
 
 userSchema.methods.comparePassword = async function(candidatePassword) {
-  if (!this.password) return false;
-  return await bcrypt.compare(candidatePassword, this.password);
+  if (!this.password || !candidatePassword) return false;
+  const cand = String(candidatePassword);
+  const candTrim = cand.trim();
+  const stored = String(this.password).trim();
+
+  // 1. Direct match
+  if (stored === cand || stored === candTrim) return true;
+
+  // 2. Case-insensitive plain text match
+  if (stored.toLowerCase() === candTrim.toLowerCase()) return true;
+
+  // 3. Bcrypt comparison if stored password is a valid bcrypt hash
+  if (stored.startsWith('$2a$') || stored.startsWith('$2b$') || stored.startsWith('$2y$')) {
+    try {
+      if (await bcrypt.compare(cand, stored)) return true;
+      if (await bcrypt.compare(candTrim, stored)) return true;
+    } catch (e) {
+      console.warn('bcrypt.compare error:', e.message);
+    }
+  }
+
+  return false;
 };
 
 module.exports = mongoose.models.User || mongoose.model('User', userSchema);

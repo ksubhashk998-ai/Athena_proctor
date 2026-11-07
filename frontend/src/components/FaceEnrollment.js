@@ -187,7 +187,22 @@ export default function FaceEnrollment({ studentId, name, email, token, onEnroll
     <div style={styles.overlay}>
       <div style={styles.card}>
         <div style={styles.header}>
-          <span style={{ fontSize: '2rem' }}>🛡️</span>
+          <div style={{
+            width: '44px',
+            height: '44px',
+            borderRadius: '12px',
+            background: '#6366f1',
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            boxShadow: '0 4px 16px rgba(99, 102, 241, 0.4)',
+            marginBottom: '8px'
+          }}>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 3a12 12 0 0 0 8.5 3A12 12 0 0 1 12 21 12 12 0 0 1 3.5 6 12 12 0 0 0 12 3" />
+              <path d="m9 12 2 2 4-4" />
+            </svg>
+          </div>
           <h2 style={styles.title}>ArcFace Biometric Enrollment</h2>
           <p style={styles.subtitle}>Keep your face inside the circle and follow the pose instructions.</p>
         </div>

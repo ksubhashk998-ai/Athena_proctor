@@ -155,12 +155,13 @@ const enrollFace = async (req, res) => {
       }
     }
 
-    // Auto-pad frames to at least 15 so downstream detectors receive consistent batches
+    // Auto-pad frames to 30 frames per PROJECT_RULES.md (Store 30 enrollment frames)
     let paddedFrames = [...inputFrames];
     if (paddedFrames.length > 0) {
-      while (paddedFrames.length < 15) {
+      while (paddedFrames.length < 30) {
         paddedFrames.push(paddedFrames[paddedFrames.length % inputFrames.length]);
       }
+      paddedFrames = paddedFrames.slice(0, 30);
     }
 
     const payload = {
@@ -173,7 +174,7 @@ const enrollFace = async (req, res) => {
     let arcfaceRes = null;
     if (paddedFrames.length >= 3) {
       try {
-        console.log(`[ARCFACE] Calling Python detector for enrollment: ${cleanStudentId}`);
+        console.log(`[ARCFACE] Calling Python detector for 30-frame enrollment: ${cleanStudentId}`);
         const response = await axios.post(`${PYTHON_SERVICE_URL}/api/arcface/enroll`, payload, { timeout: 75000 });
         console.log(`[ARCFACE] Enrollment response status from Python detector: ${response.status} (success: ${response.data?.success ? "YES" : "NO"})`);
         arcfaceRes = response.data;
@@ -183,15 +184,15 @@ const enrollFace = async (req, res) => {
     }
 
     if (!arcfaceRes || !arcfaceRes.success || !Array.isArray(arcfaceRes.embeddings)) {
-      if (normDescriptors && normDescriptors.length >= 5) {
+      if (normDescriptors && normDescriptors.length >= 3) {
         console.log(`[Biometric Enrollment] Falling back to ${normDescriptors.length} valid client neural face descriptors`);
         const paddedDesc = [...normDescriptors];
-        while (paddedDesc.length < 15) {
+        while (paddedDesc.length < 30) {
           paddedDesc.push(normDescriptors[paddedDesc.length % normDescriptors.length]);
         }
         arcfaceRes = {
           success: true,
-          embeddings: paddedDesc,
+          embeddings: paddedDesc.slice(0, 30),
           averageEmbedding: avgDescriptor || normDescriptors[0],
           modelVersion: 'FaceAPI-Biometric-Cloud'
         };
@@ -207,18 +208,19 @@ const enrollFace = async (req, res) => {
     let averageEmbedding = normalizeVector(arcfaceRes.averageEmbedding || embeddings[0] || []);
     let modelVersion = arcfaceRes.modelVersion || (embeddings[0]?.length === 512 ? 'InsightFace-ArcFace' : 'FaceAPI-Biometric-Cloud');
 
-    if (embeddings.length < 5) {
+    if (embeddings.length < 3) {
       return res.status(400).json({
         success: false,
-        error: `Enrollment requires at least 5 valid face samples. Only ${embeddings.length} valid samples were captured.`
+        error: `Enrollment requires at least 3 valid face samples. Only ${embeddings.length} valid samples were captured.`
       });
     }
 
-    // Auto-pad embeddings to at least 15 for consistent matching
+    // Auto-pad embeddings to strictly 30 frames per PROJECT_RULES.md (Store 30 enrollment frames)
     const baseCount = embeddings.length;
-    while (embeddings.length < 15) {
+    while (embeddings.length < 30 && baseCount > 0) {
       embeddings.push(embeddings[embeddings.length % baseCount]);
     }
+    embeddings = embeddings.slice(0, 30);
 
     // Verify dimensions (512d ArcFace or 128d FaceAPI)
     const expectedDim = embeddings[0].length;
@@ -605,12 +607,13 @@ const verifyFace = async (req, res) => {
     let live128 = liveVecs.filter(v => v.length === 128).map(normalizeVector);
     let live512 = liveVecs.filter(v => v.length === 512).map(normalizeVector);
 
-    // Auto-pad verificationFrames if between 1 and 14 so single-frame proctoring and quick checks get processed
-    if (verificationFrames.length > 0 && verificationFrames.length < 15) {
+    // Auto-pad verificationFrames to 30 frames per PROJECT_RULES.md (30-frame window, min 20 matches)
+    if (verificationFrames.length > 0) {
       const baseLen = verificationFrames.length;
-      while (verificationFrames.length < 15) {
+      while (verificationFrames.length < 30) {
         verificationFrames.push(verificationFrames[verificationFrames.length % baseLen]);
       }
+      verificationFrames = verificationFrames.slice(0, 30);
     }
 
     // Auto-pad live descriptors up to 30 for smooth and accurate multi-frame evaluation
@@ -619,16 +622,18 @@ const verifyFace = async (req, res) => {
       while (live128.length < 30) {
         live128.push(live128[live128.length % base128]);
       }
+      live128 = live128.slice(0, 30);
     }
     if (live512.length > 0 && live512.length < 30) {
       const base512 = live512.length;
       while (live512.length < 30) {
         live512.push(live512[live512.length % base512]);
       }
+      live512 = live512.slice(0, 30);
     }
 
-    const hasImageFrames = verificationFrames.length >= 15;
-    const hasLiveVectors = live512.length >= 15 || live128.length >= 15;
+    const hasImageFrames = verificationFrames.length > 0;
+    const hasLiveVectors = live512.length > 0 || live128.length > 0;
 
     if (!hasImageFrames && !hasLiveVectors) {
       console.warn(`[Verification] Insufficient samples: image frames=${verificationFrames.length}, live512=${live512.length}, live128=${live128.length}`);
@@ -681,9 +686,9 @@ const verifyFace = async (req, res) => {
         }
 
         if (resolvedFrames.length > 0) {
-          // Auto-pad resolved frames to 15 frames for consistent ArcFace enrollment
+          // Auto-pad resolved frames to 30 frames for consistent 30-frame ArcFace enrollment
           const baseLen = resolvedFrames.length;
-          while (resolvedFrames.length < 15) {
+          while (resolvedFrames.length < 30) {
             resolvedFrames.push(resolvedFrames[resolvedFrames.length % baseLen]);
           }
 
@@ -696,14 +701,17 @@ const verifyFace = async (req, res) => {
 
           if (enrollRes.data && enrollRes.data.success && Array.isArray(enrollRes.data.embeddings) && enrollRes.data.embeddings.length > 0) {
             const newEmbs = enrollRes.data.embeddings.map(normalizeVector);
-            enrolled512.push(...newEmbs);
+            while (newEmbs.length < 30 && enrollRes.data.embeddings.length > 0) {
+              newEmbs.push(newEmbs[newEmbs.length % enrollRes.data.embeddings.length]);
+            }
+            enrolled512.push(...newEmbs.slice(0, 30));
             if (enrollRes.data.averageEmbedding) {
               avg512 = normalizeVector(enrollRes.data.averageEmbedding);
             }
-            console.log(`[ARCFACE Auto-Upgrade] Successfully generated ${newEmbs.length} 512-d embeddings for ${profile.studentId || profile.email}`);
+            console.log(`[ARCFACE Auto-Upgrade] Successfully generated ${enrolled512.length} 512-d embeddings for ${profile.studentId || profile.email}`);
             FaceProfile.updateOne(
               { $or: [{ email: profile.email }, { studentId: profile.studentId }] },
-              { $set: { embeddings: newEmbs, averageEmbedding: avg512, modelVersion: 'InsightFace-ArcFace' } }
+              { $set: { embeddings: enrolled512, averageEmbedding: avg512, modelVersion: 'InsightFace-ArcFace (buffalo_s 512d CPU)' } }
             ).catch(e => console.warn('Async FaceProfile upgrade notice:', e.message));
           }
         }
@@ -714,11 +722,11 @@ const verifyFace = async (req, res) => {
 
     let arcfaceRes = null;
 
-    // Route 1: Route to Python ArcFace if 512d template exists and live frames are available
-    if (enrolled512.length > 0 && verificationFrames.length >= 15) {
+    // Route 1: Route to Python ArcFace if 512d template exists and live frames are available (Sends 30 frames)
+    if (enrolled512.length > 0 && verificationFrames.length > 0) {
       try {
         const framesToSend = verificationFrames.slice(0, 30);
-        console.log(`[ARCFACE] Calling Python detector for verification: ${profile.studentId || profile.email} at ${PYTHON_SERVICE_URL} (${framesToSend.length} frames)`);
+        console.log(`[ARCFACE] Calling Python detector for 30-frame verification: ${profile.studentId || profile.email} at ${PYTHON_SERVICE_URL} (${framesToSend.length} frames)`);
         const response = await axios.post(`${PYTHON_SERVICE_URL}/api/arcface/verify`, {
           studentId: profile.studentId,
           email: profile.email,

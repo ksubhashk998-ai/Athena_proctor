@@ -117,6 +117,9 @@ function ExamBlockerModal({ onStartExam, onRequestPermissions }) {
       setWebcamState({ status: 'connected', label: '✓ Webcam Connected & Stream Active' });
       initMicAnalyzer(combinedStream);
       setIsRequestingPermissions(false);
+      setTimeout(() => {
+        try { handleSecondFaceVerification(); } catch (e) {}
+      }, 700);
       return;
     } catch (fastErr) {
       console.warn('Combined getUserMedia fallback needed:', fastErr.message);
@@ -136,6 +139,9 @@ function ExamBlockerModal({ onStartExam, onRequestPermissions }) {
           if (p !== undefined) p.catch(() => {});
         }
         setWebcamState({ status: 'connected', label: '✓ Webcam Connected & Stream Active' });
+        setTimeout(() => {
+          try { handleSecondFaceVerification(); } catch (e) {}
+        }, 700);
       } else {
         setWebcamState({ status: 'denied', label: '✗ Webcam Permission Required' });
       }

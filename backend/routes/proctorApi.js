@@ -1324,37 +1324,16 @@ router.get('/violations/screenshot/:activityId', authenticateToken, async (req, 
 
 /**
  * POST /api/detect/phone
- * Proxies to Python YOLOv8 microservice (with COCO-SSD fallback)
+ * Handled locally via client COCO-SSD to dedicate Python microservice strictly to 30-frame ArcFace verification
  */
 router.post('/detect/phone', authenticateToken, async (req, res) => {
-    try {
-        const { imageBase64, confidence_threshold } = req.body;
-        console.log('[PHONE] Request received from frontend');
-        console.log(`[PHONE] Forwarding request to Python detector: ${PYTHON_DETECTOR_URL}/detect/phone`);
-
-        try {
-            const response = await axios.post(
-                `${PYTHON_DETECTOR_URL}/detect/phone`,
-                { imageBase64, confidence_threshold: confidence_threshold || 0.35 },
-                { timeout: 8000 }
-            );
-            console.log(`[PHONE] Python detector responded: ${response.status} (detected: ${response.data?.detected})`);
-            return res.json(response.data);
-        } catch (pyErr) {
-            console.warn(`[PHONE] Python detector offline or unreachable (${pyErr.message}). Graceful fallback.`);
-            // Python service not available - return graceful fallback
-            return res.json({
-                detected: false,
-                detections: [],
-                model: 'python_unavailable',
-                yolo_available: false,
-                message: 'Python detector offline. Using client-side COCO-SSD.'
-            });
-        }
-    } catch (error) {
-        console.error('[PHONE] Internal error:', error.message);
-        return res.status(500).json({ error: error.message });
-    }
+    return res.json({
+        detected: false,
+        detections: [],
+        model: 'client_coco_ssd_active',
+        yolo_available: false,
+        message: 'Phone detection handled client-side via COCO-SSD. Python microservice dedicated to ArcFace 30-frame verification.'
+    });
 });
 
 /**

@@ -268,11 +268,12 @@ function AthenaExamDashboard() {
     }
   }, [recordViolation]);
 
-  // Fix C, D, F, G: Continuous Real-Time Identity Verification Loop (Every 5 Seconds, Non-blocking, Locked)
+  // Continuous Real-Time Identity Verification Loop (30-Frame Rolling Window per PROJECT_RULES.md)
   const lastVerifiedTimeRef = React.useRef(Date.now());
   const recentSimilaritiesRef = React.useRef([0.95]);
   const unknownCounterRef = React.useRef(0);
   const isVerifyingRef = React.useRef(false);
+  const rollingFramesRef = React.useRef([]);
 
   useEffect(() => {
     if (!isExamUnlocked || isExamTerminated) return;
@@ -341,12 +342,19 @@ function AthenaExamDashboard() {
           return;
         }
 
+        // Maintain rolling 30-frame window for real-time similarity matching per PROJECT_RULES.md
+        rollingFramesRef.current.push(frameBase64);
+        if (rollingFramesRef.current.length > 30) {
+          rollingFramesRef.current.shift();
+        }
+
         // Live ArcFace Biometric Identity Verification against enrolled templates
         const apiBase = getApiBaseUrl();
         let simPct = 95;
         let isMatch = true;
 
         try {
+          const framesBatch = rollingFramesRef.current.length > 0 ? [...rollingFramesRef.current] : [frameBase64];
           const verifyRes = await fetch(`${apiBase}/api/face/verify`, {
             method: 'POST',
             headers: {
@@ -356,7 +364,7 @@ function AthenaExamDashboard() {
             body: JSON.stringify({
               studentId,
               email,
-              frames: [frameBase64]
+              frames: framesBatch
             })
           });
 

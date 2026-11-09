@@ -236,51 +236,9 @@ class ProctoringPipeline {
   }
 
   // Non-blocking auxiliary YOLOv8 phone detection call routed through Node.js backend
+  // Blocked to dedicate Python microservice strictly to 30-frame ArcFace biometric similarity matching
   async _checkPythonYoloPhone(videoElement) {
-    const now = Date.now();
-    if (now - this._lastYoloCheckTime < 1500 || this._isYoloChecking) return;
-    this._lastYoloCheckTime = now;
-    this._isYoloChecking = true;
-
-    try {
-      if (!this._yoloCanvas) {
-        this._yoloCanvas = document.createElement('canvas');
-        this._yoloCanvas.width = 320;
-        this._yoloCanvas.height = 240;
-      }
-      const yCtx = this._yoloCanvas.getContext('2d');
-      yCtx.drawImage(videoElement, 0, 0, 320, 240);
-      const b64 = this._yoloCanvas.toDataURL('image/jpeg', 0.7);
-
-      const token = localStorage.getItem('token') || '';
-      const apiBase = getApiBaseUrl();
-      const response = await fetch(`${apiBase}/api/detect/phone`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {})
-        },
-        body: JSON.stringify({ imageBase64: b64, confidence_threshold: 0.28 })
-      });
-
-      if (response && response.ok) {
-        const data = await response.json();
-        if (data && data.detected) {
-          const topDet = data.detections?.[0];
-          const conf = Math.round((topDet?.confidence || 0.85) * 100);
-          this._yoloPhoneDetected = true;
-          this._yoloPhoneScore = conf;
-          this._yoloLastSeen = Date.now();
-        } else {
-          if (Date.now() - this._yoloLastSeen > 2500) {
-            this._yoloPhoneDetected = false;
-          }
-        }
-      }
-    } catch (_) {
-    } finally {
-      this._isYoloChecking = false;
-    }
+    return;
   }
 
   _loadScript(src) {

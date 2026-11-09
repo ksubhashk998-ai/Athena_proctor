@@ -84,6 +84,7 @@ export default function Register({ onNext, onSignIn }) {
 
   // Step 3: Enrolled Data State
   const [enrolledEmbedding, setEnrolledEmbedding] = useState(null);
+  const [allEnrolledEmbeddings, setAllEnrolledEmbeddings] = useState(null);
   const [enrolledSnapshot, setEnrolledSnapshot] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -302,8 +303,13 @@ export default function Register({ onNext, onSignIn }) {
         descriptors[0] ||
         [];
 
+      const fullEmbs = (data.embeddings && Array.isArray(data.embeddings) && data.embeddings.length > 0)
+        ? data.embeddings
+        : (data.profile?.embeddings || (descriptors.length > 0 ? descriptors : [avgEmbedding]));
+
       if (response.ok && data.success) {
         setEnrolledEmbedding(avgEmbedding);
+        setAllEnrolledEmbeddings(fullEmbs);
         setEnrolledSnapshot(frames[0]);
         setEnrollStatus("success");
         setStatusMsg("✅ Biometric Face Enrollment Successful!");
@@ -334,6 +340,7 @@ export default function Register({ onNext, onSignIn }) {
     const apiBase = getApiBaseUrl();
 
     try {
+      const registeredEmbs = allEnrolledEmbeddings || (enrolledEmbedding ? [enrolledEmbedding] : []);
       const payload = {
         studentId: cleanStudentId,
         name: fullName,
@@ -343,7 +350,7 @@ export default function Register({ onNext, onSignIn }) {
         password: form.password,
         course: "Computer Science",
         semester: "Semester 1",
-        faceEmbeddings: enrolledEmbedding,
+        faceEmbeddings: registeredEmbs,
         imageSnapshot: enrolledSnapshot
       };
 
@@ -369,8 +376,8 @@ export default function Register({ onNext, onSignIn }) {
           studentId: cleanStudentId,
           email: studentEmail,
           name: fullName,
-          faceEnrolled: !!(enrolledEmbedding && Array.isArray(enrolledEmbedding) && enrolledEmbedding.length > 0),
-          faceEmbeddings: enrolledEmbedding
+          faceEnrolled: !!(registeredEmbs && Array.isArray(registeredEmbs) && registeredEmbs.length > 0),
+          faceEmbeddings: registeredEmbs
         };
         localStorage.setItem(`student_${studentEmail}`, JSON.stringify(studentUser));
         localStorage.setItem("user", JSON.stringify(studentUser));

@@ -287,10 +287,23 @@ function AthenaExamDashboard() {
       }
     })();
 
-    const studentId = activeUser?.studentId || ('STU_' + Date.now());
-    const email = activeUser?.email || 'john@gmail.com';
-    const fullName = activeUser?.fullName || activeUser?.name || 'John Smith';
-    const token = localStorage.getItem('token') || 'temp_token';
+    const token = localStorage.getItem('token') || '';
+    let tokenEmail = '';
+    let tokenStudentId = '';
+    let tokenName = '';
+    try {
+      if (token && token.includes('.')) {
+        const payloadPart = token.split('.')[1];
+        const decoded = JSON.parse(atob(payloadPart));
+        tokenEmail = (decoded.email || '').toLowerCase().trim();
+        tokenStudentId = (decoded.studentId || decoded.id || '').trim();
+        tokenName = decoded.name || decoded.fullName || '';
+      }
+    } catch (e) {}
+
+    const email = (activeUser?.email || tokenEmail || localStorage.getItem('registered_email') || '').toLowerCase().trim();
+    const studentId = activeUser?.studentId || tokenStudentId || (email ? 'STU_' + email.replace(/[^a-z0-9]/gi, '_') : 'STU_student');
+    const fullName = activeUser?.fullName || activeUser?.name || tokenName || (email ? email.split('@')[0] : 'Student');
 
     const interval = setInterval(async () => {
       const video = document.querySelector('video');
@@ -429,61 +442,6 @@ function AthenaExamDashboard() {
   // Tab Switching & Focus Loss Alert Sentinel (Throttled to 1 notification per switch)
   const lastTabSwitchTimeRef = React.useRef(0);
   const lastFaceMissingTimeRef = React.useRef(0);
-
-  useEffect(() => {
-    if (!isExamUnlocked || isExamTerminated) return;
-
-    const userStr = localStorage.getItem('user');
-    let studentId = 'STU_001';
-    let studentName = 'Student';
-    let email = 'student@proctor.com';
-    let usn = 'STU_001';
-    if (userStr) {
-      try {
-        const u = JSON.parse(userStr);
-        studentId = u.studentId || studentId;
-        studentName = u.fullName || u.name || studentName;
-        email = u.email || email;
-        usn = u.usn || studentId;
-      } catch (e) {}
-    }
-
-    const handleTabSwitch = () => {
-      if (document.hidden) {
-        const now = Date.now();
-        if (now - lastTabSwitchTimeRef.current < 5000) return; // 5s debounce cooldown
-        lastTabSwitchTimeRef.current = now;
-
-        setTabSwitchesCount(prev => {
-          const newCount = prev + 1;
-          recordViolation(`⚠️ WARNING: Tab Switch Detected (${newCount} times)! Return focus immediately.`);
-          
-          const socket = getSocket();
-          if (socket) {
-            socket.emit('student-violation', {
-              studentId,
-              studentName,
-              usn,
-              email,
-              type: 'TAB_SWITCH',
-              violationType: 'Tab Switch',
-              description: `Candidate ${studentName} (${usn}) switched browser tabs! (Count: ${newCount})`,
-              tabSwitchingCount: newCount,
-              severity: 'high',
-              timestamp: new Date()
-            });
-          }
-          return newCount;
-        });
-      }
-    };
-
-    document.addEventListener('visibilitychange', handleTabSwitch);
-
-    return () => {
-      document.removeEventListener('visibilitychange', handleTabSwitch);
-    };
-  }, [isExamUnlocked, isExamTerminated, recordViolation]);
 
   // Live Admin Monitoring & Socket Sync Effect (Triggered on unlock or discrete violation changes, not on raw frame ticks)
   useEffect(() => {
@@ -947,11 +905,47 @@ function AthenaExamDashboard() {
     // Tab switch & visibility detection
     const handleVisibilityChange = () => {
       if (document.hidden && !isExamTerminated) {
+        const now = Date.now();
+        if (now - lastTabSwitchTimeRef.current < 3000) return; // 3s debounce cooldown prevents duplicate counting
+        lastTabSwitchTimeRef.current = now;
+
         setTabSwitchesCount(prev => {
           const nextCount = prev + 1;
           const maxSwitches = 3;
 
-          recordViolation(`⚠️ Tab / Window Switch Violation (${nextCount}/${maxSwitches})`);
+          recordViolation(`⚠️ Tab Switch Violation (Warning ${nextCount}/${maxSwitches})! Return focus immediately.`);
+
+          // Emit to Admin via Socket.IO
+          const userStr = localStorage.getItem('user');
+          let studentName = 'Student';
+          let studentId = 'STU_' + Date.now();
+          let email = 'student@proctor.com';
+          let usn = studentId;
+          if (userStr) {
+            try {
+              const u = JSON.parse(userStr);
+              studentName = u.fullName || u.name || studentName;
+              studentId = u.studentId || studentId;
+              email = u.email || email;
+              usn = u.usn || studentId;
+            } catch (e) {}
+          }
+
+          const socket = getSocket();
+          if (socket) {
+            socket.emit('student-violation', {
+              studentId,
+              studentName,
+              usn,
+              email,
+              type: 'TAB_SWITCH',
+              violationType: 'Tab Switch',
+              description: `Candidate ${studentName} (${usn}) switched browser tabs! (Warning ${nextCount}/${maxSwitches})`,
+              tabSwitchingCount: nextCount,
+              severity: nextCount >= maxSwitches ? 'critical' : 'high',
+              timestamp: new Date()
+            });
+          }
 
           if (nextCount >= maxSwitches) {
             // Rule: Maximum tab switches reached -> TERMINATE EXAM IMMEDIATELY
@@ -1050,7 +1044,7 @@ function AthenaExamDashboard() {
       window.removeEventListener('contextmenu', handleContextMenu);
       window.removeEventListener('blur', handleWindowBlur);
     };
-  }, [isExamUnlocked, recordViolation]);
+  }, [isExamUnlocked, isExamTerminated, recordViolation]);
 
   return (
     <div className="athena-wrapper">
@@ -1247,7 +1241,10 @@ function AthenaExamDashboard() {
               The AI proctoring engine detected a face mismatch for 4 consecutive verification checks. An incident report with video evidence has been logged to the database and sent to the administrator.
             </p>
             <button
-              onClick={() => window.location.href = '/dashboard'}
+              onClick={() => {
+                sessionStorage.clear();
+                window.location.href = '/login';
+              }}
               style={{
                 background: 'linear-gradient(135deg, #ef4444, #dc2626)',
                 color: 'white',
@@ -1259,7 +1256,7 @@ function AthenaExamDashboard() {
                 cursor: 'pointer'
               }}
             >
-              Return to Student Dashboard ➔
+              Exit Exam & Return to Login ➔
             </button>
           </div>
         </div>
@@ -1327,23 +1324,45 @@ function AthenaExamDashboard() {
               🚨 <strong>Strict Rule:</strong> Reaching 3 tab switches will immediately terminate your exam session permanently!
             </div>
 
-            <button
-              onClick={() => setTabSwitchWarning(prev => ({ ...prev, open: false }))}
-              style={{
-                width: '100%',
-                background: 'linear-gradient(135deg, #f59e0b, #d97706)',
-                color: '#ffffff',
-                border: 'none',
-                padding: '14px 24px',
-                borderRadius: '12px',
-                fontSize: '1rem',
-                fontWeight: 700,
-                cursor: 'pointer',
-                boxShadow: '0 4px 14px rgba(245, 158, 11, 0.4)'
-              }}
-            >
-              I Understand — Resume Exam ➔
-            </button>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              <button
+                onClick={() => setTabSwitchWarning(prev => ({ ...prev, open: false }))}
+                style={{
+                  width: '100%',
+                  background: 'linear-gradient(135deg, #f59e0b, #d97706)',
+                  color: '#ffffff',
+                  border: 'none',
+                  padding: '14px 24px',
+                  borderRadius: '12px',
+                  fontSize: '1rem',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  boxShadow: '0 4px 14px rgba(245, 158, 11, 0.4)'
+                }}
+              >
+                I Understand — Resume Exam ➔
+              </button>
+
+              <button
+                onClick={() => {
+                  sessionStorage.clear();
+                  window.location.href = '/login';
+                }}
+                style={{
+                  width: '100%',
+                  background: 'transparent',
+                  color: '#94a3b8',
+                  border: '1px solid #475569',
+                  padding: '12px 20px',
+                  borderRadius: '12px',
+                  fontSize: '0.9rem',
+                  fontWeight: 600,
+                  cursor: 'pointer'
+                }}
+              >
+                Exit Exam & Return to Login
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -1410,23 +1429,45 @@ function AthenaExamDashboard() {
               🚨 <strong>Notice:</strong> Continued non-compliance or suspicious behavior will result in immediate exam termination!
             </div>
 
-            <button
-              onClick={() => setProctorWarning({ open: false, message: '' })}
-              style={{
-                width: '100%',
-                background: 'linear-gradient(135deg, #f59e0b, #d97706)',
-                color: '#ffffff',
-                border: 'none',
-                padding: '14px 24px',
-                borderRadius: '12px',
-                fontSize: '1rem',
-                fontWeight: 700,
-                cursor: 'pointer',
-                boxShadow: '0 4px 14px rgba(245, 158, 11, 0.4)'
-              }}
-            >
-              I Acknowledge — Return to Exam ➔
-            </button>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              <button
+                onClick={() => setProctorWarning({ open: false, message: '' })}
+                style={{
+                  width: '100%',
+                  background: 'linear-gradient(135deg, #f59e0b, #d97706)',
+                  color: '#ffffff',
+                  border: 'none',
+                  padding: '14px 24px',
+                  borderRadius: '12px',
+                  fontSize: '1rem',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  boxShadow: '0 4px 14px rgba(245, 158, 11, 0.4)'
+                }}
+              >
+                I Acknowledge — Return to Exam ➔
+              </button>
+
+              <button
+                onClick={() => {
+                  sessionStorage.clear();
+                  window.location.href = '/login';
+                }}
+                style={{
+                  width: '100%',
+                  background: 'transparent',
+                  color: '#94a3b8',
+                  border: '1px solid #475569',
+                  padding: '12px 20px',
+                  borderRadius: '12px',
+                  fontSize: '0.9rem',
+                  fontWeight: 600,
+                  cursor: 'pointer'
+                }}
+              >
+                Exit Exam & Return to Login
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -1575,8 +1616,9 @@ function AthenaExamDashboard() {
             });
           }
 
-          alert(`🎓 Exam submitted successfully! Score: ${obtainedMarks}/${totalMarks} (${percentage}%). Redirecting...`);
-          window.location.href = '/dashboard';
+          alert(`🎓 Exam submitted successfully! Score: ${obtainedMarks}/${totalMarks} (${percentage}%). Redirecting to login...`);
+          sessionStorage.clear();
+          window.location.href = '/login';
         }}
         mcqStats={{ answered: mcqAnsweredCount, total: mcqQuestions.length }}
         codingStats={{ submitted: codingSubmittedCount, total: codingProblems.length }}

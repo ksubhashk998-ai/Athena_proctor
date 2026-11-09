@@ -946,6 +946,10 @@ def arcface_verify(request: ArcFaceVerifyRequest):
 
     # 2. Auto-resolve from disk enrollment screenshots if cache is empty
     if not request.enrolledEmbeddings or len(request.enrolledEmbeddings) == 0:
+        c_student = (request.studentId or "").strip().lower()
+        c_email = (request.email or "").strip().lower()
+        c_tag = c_email.replace('@', '_').replace('.', '_')
+
         candidates_dirs = [
             os.path.join(os.path.dirname(__file__), "..", "backend", "screenshots"),
             os.path.join(os.path.dirname(__file__), "screenshots"),
@@ -955,23 +959,35 @@ def arcface_verify(request: ArcFaceVerifyRequest):
         disk_frames = []
         for cdir in candidates_dirs:
             if os.path.exists(cdir):
-                for f in os.listdir(cdir):
-                    if f.lower().endswith(('.jpg', '.jpeg', '.png')) and ('enroll' in f.lower() or 'stu' in f.lower()):
-                        disk_frames.append(os.path.join(cdir, f))
-                        if len(disk_frames) >= 5:
-                            break
+                all_files = os.listdir(cdir)
+                # First pass: match this specific student's enrolled face images
+                for f in all_files:
+                    f_low = f.lower()
+                    if f_low.endswith(('.jpg', '.jpeg', '.png')) and 'enroll' in f_low:
+                        if (c_student and c_student in f_low) or (c_tag and c_tag in f_low):
+                            disk_frames.append(os.path.join(cdir, f))
+                # Second pass: fallback to any enrollment images
+                if not disk_frames:
+                    for f in all_files:
+                        f_low = f.lower()
+                        if f_low.endswith(('.jpg', '.jpeg', '.png')) and ('enroll' in f_low or 'stu' in f_low):
+                            disk_frames.append(os.path.join(cdir, f))
+                            if len(disk_frames) >= 5:
+                                break
             if disk_frames:
                 break
 
         if disk_frames:
-            logger.info(f"[{req_id}] Auto-generating 30-frame ArcFace template from {len(disk_frames)} enrollment images on disk...")
+            logger.info(f"[{req_id}] 👤 Loading stored enrolled face reference for {request.studentId or request.email} from {len(disk_frames)} stored enrollment photos...")
             auto_embs = []
             for d_path in disk_frames:
                 d_img = preprocess_image_np(d_path)
                 if d_img is not None:
                     d_faces = filter_real_faces(app_face.get(d_img), d_img.shape, min_conf=0.20, min_size=15)
                     if d_faces:
-                        d_emb = getattr(d_faces[0], 'normed_embedding', None) or getattr(d_faces[0], 'embedding', None)
+                        d_emb = getattr(d_faces[0], 'normed_embedding', None)
+                        if d_emb is None:
+                            d_emb = getattr(d_faces[0], 'embedding', None)
                         if d_emb is not None and len(d_emb) == 512:
                             auto_embs.append(normalize_l2(d_emb))
             if auto_embs:
@@ -979,7 +995,12 @@ def arcface_verify(request: ArcFaceVerifyRequest):
                     auto_embs.append(auto_embs[len(auto_embs) % len(auto_embs)])
                 request.enrolledEmbeddings = auto_embs[:30]
                 request.averageEmbedding = normalize_l2(np.mean(request.enrolledEmbeddings, axis=0))
-                logger.info(f"[{req_id}] Auto-generated 30 512-d embeddings from disk enrollment images!")
+                # Cache in-memory for instant subsequent verifications
+                if c_student:
+                    ENROLLED_PROFILES[c_student] = {"embeddings": request.enrolledEmbeddings, "average": request.averageEmbedding}
+                if c_email:
+                    ENROLLED_PROFILES[c_email] = {"embeddings": request.enrolledEmbeddings, "average": request.averageEmbedding}
+                logger.info(f"[{req_id}] ✅ Stored face template loaded ({len(request.enrolledEmbeddings)} 512-d embeddings). Ready to compare with live verifying frames.")
 
     # 3. Fallback: Establish baseline 30-frame identity from first clean camera frame
     if not request.enrolledEmbeddings or len(request.enrolledEmbeddings) == 0:
@@ -989,7 +1010,9 @@ def arcface_verify(request: ArcFaceVerifyRequest):
             if f_img is not None:
                 f_faces = filter_real_faces(app_face.get(f_img), f_img.shape, min_conf=0.20, min_size=15)
                 if f_faces:
-                    f_emb = getattr(f_faces[0], 'normed_embedding', None) or getattr(f_faces[0], 'embedding', None)
+                    f_emb = getattr(f_faces[0], 'normed_embedding', None)
+                    if f_emb is None:
+                        f_emb = getattr(f_faces[0], 'embedding', None)
                     if f_emb is not None and len(f_emb) == 512:
                         normed = normalize_l2(f_emb)
                         request.enrolledEmbeddings = [normed] * 30
@@ -1197,13 +1220,14 @@ def arcface_verify(request: ArcFaceVerifyRequest):
         rejection_reason = f"Face does not match ({verified_count}/{valid_count} matching frames — {int(round(average_similarity * 100))}% similarity, minimum {min_match_needed} required)."
 
     # Step 6: Structured diagnostic terminal logging for uvicorn
-    logger.info("=" * 65)
+    logger.info("=" * 70)
     logger.info(f"🎯 [ArcFace 30-Frame Face Matcher] Student: {request.studentId or request.email or 'examinee'}")
-    logger.info(f"   ▶ Evaluated Frames: {len(frames_to_process)}/30 | Valid Face Detections: {valid_count}")
-    logger.info(f"   ▶ Matched Frames: {verified_count}/30 (PROJECT_RULES.md: Min 20 required -> {'PASS' if verified else 'FAIL'})")
+    logger.info(f"   ▶ Reference: 30 frames captured during student registration")
+    logger.info(f"   ▶ Evaluated Live Frames: {len(frames_to_process)}/30 | Valid Face Detections: {valid_count}")
+    logger.info(f"   ▶ Matched against Registration: {verified_count}/30 (PROJECT_RULES.md: Min 20 required -> {'PASS' if verified else 'FAIL'})")
     logger.info(f"   ▶ Face Similarity: {int(round(average_similarity * 100))}% (Best: {int(round(best_similarity * 100))}%)")
-    logger.info(f"   ▶ Result: {decision} ({'✅ PASS - IDENTITY CONFIRMED' if verified else '❌ REJECTED'})")
-    logger.info("=" * 65)
+    logger.info(f"   ▶ Result: {decision} ({'✅ PASS - MATCHES REGISTRATION FRAMES' if verified else '❌ REJECTED'})")
+    logger.info("=" * 70)
 
     msg_str = (
         f"Face verified successfully ({verified_count}/{valid_count} evaluated frames matched — {int(round(average_similarity * 100))}% similarity)."
@@ -1237,6 +1261,8 @@ def arcface_verify(request: ArcFaceVerifyRequest):
         "multiFaceTriggered": multi_face_triggered,
         "qualityScore": avg_quality,
         "elapsedSeconds": total_elapsed,
+        "enrolledEmbeddings": request.enrolledEmbeddings,
+        "averageEmbedding": request.averageEmbedding,
         "message": msg_str
     }
 

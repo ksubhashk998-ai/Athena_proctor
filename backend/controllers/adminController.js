@@ -1601,7 +1601,7 @@ const getReports = async (req, res) => {
       LiveSession.find(query).lean().catch(() => []),
       ExamReport.find(query).lean().catch(() => []),
       ExamSession.find().lean().catch(() => []),
-      SuspiciousActivity.find().select('type violationType studentId timestamp').lean().catch(() => []),
+      SuspiciousActivity.find().select('type violationType studentId studentName studentEmail usn severity description timestamp createdAt').sort({ timestamp: -1 }).lean().catch(() => []),
       User.find().lean().catch(() => []),
       Student.find().lean().catch(() => [])
     ]);
@@ -1623,13 +1623,13 @@ const getReports = async (req, res) => {
 
     const finishedLiveCount = allSessions.filter(s => /^(finished|completed|submitted)$/i.test(s.status || '')).length;
     const finishedExamCount = examSessions.filter(s => /^completed$/i.test(s.status || '')).length;
-    const finished = Math.max(finishedLiveCount + finishedExamCount, examReports.length, 4);
+    const finished = finishedLiveCount + finishedExamCount + examReports.length;
 
     const terminatedLiveCount = allSessions.filter(s => /^terminated$/i.test(s.status || '')).length;
     const terminatedExamCount = examSessions.filter(s => /^terminated$/i.test(s.status || '')).length;
-    const terminated = Math.max(terminatedLiveCount + terminatedExamCount, 3);
+    const terminated = terminatedLiveCount + terminatedExamCount;
 
-    const appeared = Math.max(attendedSet.size, allSessions.length, finished + terminated, 12);
+    const appeared = Math.max(attendedSet.size, allSessions.length, finished + terminated);
     const avgViolations = appeared > 0 ? (allViolations.length / appeared).toFixed(1) : '0.0';
 
     const typeCounts = {};
@@ -1695,32 +1695,130 @@ const getReports = async (req, res) => {
       departmentStats = [
         {
           department: 'Computer Science & Engineering',
-          appeared: appeared || 12,
-          finished: finished || 4,
-          terminated: terminated || 3,
+          appeared: appeared || 0,
+          finished: finished || 0,
+          terminated: terminated || 0,
           avgViolations: Number(avgViolations) || 0
         }
       ];
     }
 
+    // Collate detailed Examinee Session Roster
+    const examineeMap = new Map();
+
+    examReports.forEach(r => {
+      const key = r.studentId || r.email;
+      examineeMap.set(key, {
+        studentId: r.studentId,
+        studentName: r.studentName || 'Student',
+        usn: r.usn || r.studentId,
+        email: r.email,
+        department: r.department || 'Computer Science & Engineering',
+        examName: r.examName || 'Computer Science Final Assessment',
+        startTime: r.startTime,
+        endTime: r.endTime || r.createdAt,
+        duration: r.totalDurationMinutes ? `${r.totalDurationMinutes} mins` : '45 mins',
+        status: r.status || 'Finished',
+        score: r.obtainedMarks !== undefined ? r.obtainedMarks : (r.score || 0),
+        totalMarks: r.totalMarks || 100,
+        percentage: r.percentage || (r.totalMarks ? Math.round(((r.obtainedMarks || r.score || 0) / r.totalMarks) * 100) : 0),
+        totalViolations: r.totalViolations || 0,
+        riskLevel: r.riskLevel || 'Low',
+        integrityScore: (r.totalViolations || 0) === 0 ? '98% Safe' : ((r.totalViolations || 0) < 3 ? '85% Good' : '65% Review'),
+        violationsSummary: r.violationsSummary || {}
+      });
+    });
+
+    allSessions.forEach(s => {
+      const key = s.studentId || s.email;
+      if (!examineeMap.has(key)) {
+        const isFin = /^(finished|completed|submitted)$/i.test(s.status || '');
+        const isTerm = /^terminated$/i.test(s.status || '');
+        const st = isFin ? 'Finished' : (isTerm ? 'Terminated' : (s.status || 'Active'));
+        const totalV = s.suspiciousActivityCount || s.totalViolations || 0;
+        examineeMap.set(key, {
+          studentId: s.studentId,
+          studentName: s.studentName || 'Student',
+          usn: s.usn || s.studentId,
+          email: s.email,
+          department: s.department || 'Computer Science & Engineering',
+          examName: s.examName || 'Computer Science Final Assessment',
+          startTime: s.startTime || s.createdAt,
+          endTime: s.endTime || s.updatedAt || s.lastActive,
+          duration: s.duration || '45 mins',
+          status: st,
+          score: s.score || 0,
+          totalMarks: 100,
+          percentage: s.percentage || s.score || 0,
+          totalViolations: totalV,
+          riskLevel: totalV === 0 ? 'Low' : (totalV <= 2 ? 'Medium' : 'High'),
+          integrityScore: totalV === 0 ? '98% Safe' : (totalV < 3 ? '85% Good' : '60% Critical')
+        });
+      }
+    });
+
+    (students || []).forEach(st => {
+      const key = st.studentId || st.email;
+      if (!examineeMap.has(key)) {
+        examineeMap.set(key, {
+          studentId: st.studentId || key,
+          studentName: st.fullName || st.name || (st.firstName ? `${st.firstName} ${st.lastName || ''}`.trim() : 'Student'),
+          usn: st.usn || st.studentId || key,
+          email: st.email,
+          department: st.course || 'Computer Science & Engineering',
+          examName: 'Computer Science Final Assessment',
+          startTime: st.createdAt,
+          endTime: null,
+          duration: 'N/A',
+          status: 'Registered',
+          score: 0,
+          totalMarks: 100,
+          percentage: 0,
+          totalViolations: 0,
+          riskLevel: 'Safe',
+          integrityScore: '100% Verified'
+        });
+      }
+    });
+
+    const detailedExaminees = Array.from(examineeMap.values());
+
+    // Collate detailed violations list
+    const formattedViolations = allViolations.map(v => {
+      const matched = examineeMap.get(v.studentId) || {};
+      return {
+        id: v._id,
+        studentId: v.studentId,
+        studentName: v.studentName || matched.studentName || 'Student',
+        usn: v.usn || matched.usn || v.studentId,
+        email: v.studentEmail || matched.email || '',
+        type: v.type || v.violationType || 'Suspicious Activity',
+        severity: v.severity || 'Medium',
+        description: v.description || 'Proctoring sensor threshold triggered',
+        timestamp: v.timestamp || v.createdAt || new Date()
+      };
+    });
+
     res.json({
       success: true,
       timeframe,
-      appeared,
+      appeared: detailedExaminees.length || appeared,
       finished,
       terminated,
       avgViolations: Number(avgViolations),
       mostCommonViolation,
       avgExamTime,
       summary: {
-        appeared,
+        appeared: detailedExaminees.length || appeared,
         finished,
         terminated,
         avgViolations: Number(avgViolations),
         mostCommonViolation,
         avgExamTime
       },
-      departmentStats
+      departmentStats,
+      examinees: detailedExaminees,
+      violations: formattedViolations
     });
   } catch (error) {
     console.error('Error in getReports:', error);

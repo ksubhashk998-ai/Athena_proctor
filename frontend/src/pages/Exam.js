@@ -552,7 +552,7 @@ function Exam() {
         </ul>
         <br />
         <button 
-          onClick={() => window.location.href = "/dashboard"}
+          onClick={() => window.location.href = "/login"}
           style={{
             marginTop: "20px",
             padding: "10px 20px",
@@ -699,7 +699,7 @@ function Exam() {
               videoRef.current.srcObject.getTracks().forEach(track => track.stop());
               videoRef.current.srcObject = null;
             }
-            window.location.href = "/dashboard";
+            window.location.href = "/login";
           }
         }}
         style={{

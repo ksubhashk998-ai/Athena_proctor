@@ -105,9 +105,9 @@ function AppContent() {
           {/* Student Registration Route */}
           <Route path="/register" element={<Register />} />
 
-          {/* Student Dashboard */}
-          <Route path="/dashboard" element={<Dashboard user={faceUser} onLogout={handleLogout} />} />
-          <Route path="/student" element={<Dashboard user={faceUser} onLogout={handleLogout} />} />
+          {/* Student Dashboard redirected to Login */}
+          <Route path="/dashboard" element={<Navigate to="/login" replace />} />
+          <Route path="/student" element={<Navigate to="/login" replace />} />
 
           {/* Modern Proctoring Dashboard */}
           <Route

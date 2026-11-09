@@ -16,7 +16,19 @@ function AthenaHeader({
       const stored = localStorage.getItem('user');
       if (stored) {
         const u = JSON.parse(stored);
-        if (u && (u.name || u.email)) return u;
+        if (u && (u.name || u.email || u.fullName)) return u;
+      }
+      const token = localStorage.getItem('token') || '';
+      if (token && token.includes('.')) {
+        const decoded = JSON.parse(atob(token.split('.')[1]));
+        if (decoded && (decoded.email || decoded.name)) {
+          return {
+            name: decoded.name || 'Student',
+            fullName: decoded.name || 'Student',
+            email: decoded.email || '',
+            studentId: decoded.studentId || ''
+          };
+        }
       }
     } catch (e) {}
     return sampleStudent;

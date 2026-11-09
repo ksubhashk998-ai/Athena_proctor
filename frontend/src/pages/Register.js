@@ -365,40 +365,35 @@ export default function Register({ onNext, onSignIn }) {
       const data = await res.json().catch(() => ({}));
 
       if (res.ok && (data.success || data.student || data.token)) {
-        setSuccess("🎉 Account registered successfully! Redirecting to login...");
+        const studentUser = {
+          studentId: cleanStudentId,
+          email: studentEmail,
+          name: fullName,
+          faceEnrolled: !!(enrolledEmbedding && Array.isArray(enrolledEmbedding) && enrolledEmbedding.length > 0),
+          faceEmbeddings: enrolledEmbedding
+        };
+        localStorage.setItem(`student_${studentEmail}`, JSON.stringify(studentUser));
+        localStorage.setItem("user", JSON.stringify(studentUser));
         localStorage.setItem("registered_email", studentEmail);
         localStorage.setItem("registered_name", fullName);
+
+        setSuccess("🎉 Account registered successfully! Redirecting to login...");
         setTimeout(() => {
           handleSignIn();
         }, 1200);
         return;
-      } else if (res.status === 400 && data.error && data.error.includes("already exists")) {
-        setError(data.error);
+      } else {
+        const errMsg = data.error || data.message || "Registration failed. Please try again.";
+        setError(errMsg);
         setIsSubmitting(false);
         return;
       }
     } catch (err) {
-      console.warn("[Register] API submission notice, using local storage fallback:", err);
+      console.error("[Register] API submission error:", err);
+      setError("Unable to connect to authentication server. Please check your internet connection.");
+      setIsSubmitting(false);
+      return;
     }
-
-    // Local Storage Resilience Fallback
-    const studentUser = {
-      studentId: cleanStudentId,
-      email: studentEmail,
-      name: fullName,
-      faceEnrolled: true,
-      faceEmbeddings: enrolledEmbedding
-    };
-    localStorage.setItem(`student_${studentEmail}`, JSON.stringify(studentUser));
-    localStorage.setItem("user", JSON.stringify(studentUser));
-    localStorage.setItem("registered_email", studentEmail);
-    localStorage.setItem("registered_name", fullName);
-
-    setSuccess("🎉 Account registered successfully! Redirecting to login...");
-    setTimeout(() => {
-      handleSignIn();
-    }, 1200);
-    setIsSubmitting(false);
   };
 
   const fieldClass = (ok, bad) => `rg-field ${ok ? "ok" : ""} ${bad ? "bad" : ""}`;

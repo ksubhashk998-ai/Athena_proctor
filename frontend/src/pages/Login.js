@@ -583,9 +583,15 @@ function Login() {
         const userToken = res.data.token || "temp_login_token";
         setTempStudent(studentObj);
         setTempToken(userToken);
-        setIsAccountEnrolled(true);
+        const isEnrolled = !!(studentObj.faceEnrolled);
+        setIsAccountEnrolled(isEnrolled);
+        setFaceMode(isEnrolled ? "verify" : "enroll");
         setVerificationStep("face_verify");
-        setFaceStatusMsg(`Password verified for ${studentObj.fullName || studentObj.name}. Position face clearly to verify.`);
+        setFaceStatusMsg(
+          isEnrolled
+            ? `Password verified for ${studentObj.fullName || studentObj.name}. Position face clearly to verify.`
+            : `Password verified for ${studentObj.fullName || studentObj.name}. Please complete initial face enrollment below.`
+        );
         setLoading(false);
         return;
       }

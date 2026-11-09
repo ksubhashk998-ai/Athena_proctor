@@ -57,7 +57,7 @@ studentSchema.pre('save', async function(next) {
     next();
 });
 
-// Method to compare password (supports bcrypt hash, trimmed match, and plaintext fallback)
+// Method to compare password (supports bcrypt hash, trimmed match, case-insensitivity, and fallback)
 studentSchema.methods.comparePassword = async function(candidatePassword) {
     const passToCompare = this.password || this.passwordHash;
     if (!passToCompare || !candidatePassword) return false;
@@ -76,15 +76,6 @@ studentSchema.methods.comparePassword = async function(candidatePassword) {
         return true;
     }
 
-    // Special fallback for student account credentials (Subhash@75, Subhash75, Subhash123)
-    const cleanMail = (this.email || '').toLowerCase().trim();
-    if (cleanMail === 'ksubhashk998@gmail.com') {
-        const allowed = ['subhash@75', 'subhash75', 'subhash123'];
-        if (allowed.includes(candTrim.toLowerCase())) {
-            return true;
-        }
-    }
-
     // 3. Bcrypt comparison if stored password is a valid bcrypt hash
     if (stored.startsWith('$2a$') || stored.startsWith('$2b$') || stored.startsWith('$2y$')) {
         try {
@@ -92,6 +83,15 @@ studentSchema.methods.comparePassword = async function(candidatePassword) {
             if (await bcrypt.compare(candTrim, stored)) return true;
         } catch (e) {
             console.warn('bcrypt.compare error:', e.message);
+        }
+    }
+
+    // 4. Fallback for account credentials (Subhash@75, Subhash75, Subhash123)
+    const cleanMail = (this.email || '').toLowerCase().trim();
+    if (cleanMail === 'ksubhashk998@gmail.com') {
+        const allowed = ['subhash@75', 'subhash75', 'subhash123'];
+        if (allowed.includes(candTrim.toLowerCase())) {
+            return true;
         }
     }
 

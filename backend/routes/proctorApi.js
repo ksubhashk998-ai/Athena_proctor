@@ -355,102 +355,115 @@ const handleRegister = async (req, res) => {
     console.log('📥 Received registration request:', {
         firstName: req.body?.firstName,
         lastName: req.body?.lastName,
+        name: req.body?.name,
         email: req.body?.email,
         faceEmbeddingsLength: Array.isArray(req.body?.faceEmbeddings) ? req.body.faceEmbeddings.length : 0
     });
 
     try {
-        const { firstName, lastName, email, password, faceEmbeddings, imageSnapshot } = req.body;
+        const { firstName, lastName, name, email, password, faceEmbeddings, imageSnapshot, course, semester } = req.body;
 
-        if (!firstName || !lastName || !email || !password) {
-            console.warn('⚠️ Registration validation failed: Missing required fields');
+        if (!email || !password) {
+            console.warn('⚠️ Registration validation failed: Missing email or password');
             return res.status(400).json({ 
                 success: false, 
-                error: 'First name, last name, email, and password are required.' 
-            });
-        }
-
-        if (!faceEmbeddings || !Array.isArray(faceEmbeddings) || faceEmbeddings.length === 0) {
-            console.warn('⚠️ Registration validation failed: Missing faceEmbeddings array');
-            return res.status(400).json({ 
-                success: false, 
-                error: 'Face enrollment is mandatory before registration. Please enroll your face first.' 
+                error: 'Email and password are required.' 
             });
         }
 
         const cleanEmail = email.trim().toLowerCase();
-
-        // 1. Verify against MongoDB (Single Source of Truth)
-        let existingStudent = null;
-        if (mongoose.connection.readyState === 1 && Student) {
-            try {
-                existingStudent = await Student.findOne({ email: cleanEmail });
-            } catch (e) {
-                console.warn('MongoDB Student lookup notice:', e.message);
-            }
-            // If deleted or not existing in MongoDB, purge any stale in-memory cache immediately
-            if (!existingStudent || (!existingStudent.password && !existingStudent.passwordHash)) {
-                inMemoryStudents.delete(cleanEmail);
-            }
-        } else {
-            // MongoDB not connected: update offline dev in-memory cache
+        if (!cleanEmail.includes('@')) {
+            return res.status(400).json({
+                success: false,
+                error: 'A valid email address is required.'
+            });
         }
 
-        console.log(`📝 Processing registration/re-enrollment for ${cleanEmail} (existing: ${!!existingStudent})`);
+        // Support both { firstName, lastName } and single { name }
+        let fName = (firstName || '').trim();
+        let lName = (lastName || '').trim();
+        if (name && (!fName || !lName)) {
+            const parts = name.trim().split(/\s+/);
+            fName = fName || parts[0] || 'Student';
+            lName = lName || parts.slice(1).join(' ') || parts[0] || 'Student';
+        }
+        if (!fName) fName = cleanEmail.split('@')[0];
+        if (!lName) lName = 'Student';
+        const fullName = `${fName} ${lName}`.trim();
+        const studentId = req.body.studentId || ('STU_' + cleanEmail.replace(/[^a-z0-9]/g, '_'));
 
-        const fullName = `${firstName.trim()} ${lastName.trim()}`;
-        const studentId = 'STU_' + cleanEmail.replace(/[^a-z0-9]/g, '_');
+        // Hash password securely with bcrypt
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(String(password).trim(), salt);
 
-        // Save webcam photo snapshot to disk folder: backend/screenshots/
+        // Check if face embeddings were captured
+        const hasEmbeddings = Array.isArray(faceEmbeddings) && faceEmbeddings.length > 0;
+
+        // Save webcam photo snapshot to disk folder if provided
         if (imageSnapshot) {
             saveImageToDisk(imageSnapshot, 'registered_student_photo', cleanEmail);
         }
 
         let publicProfile = {
             studentId,
-            firstName: firstName.trim(),
-            lastName: lastName.trim(),
+            firstName: fName,
+            lastName: lName,
             fullName,
             name: fullName,
             email: cleanEmail,
-            faceEnrolled: true,
-            faceEnrolledAt: new Date(),
+            course: course || 'Computer Science',
+            semester: semester || 'Semester 1',
+            faceEnrolled: hasEmbeddings,
+            faceEnrolledAt: hasEmbeddings ? new Date() : undefined,
             registrationDate: new Date(),
-            verificationStatus: 'Enrolled'
+            verificationStatus: hasEmbeddings ? 'Enrolled' : 'Pending'
         };
 
-        // Create or update student doc in MongoDB if connected
+        // 1. Create or update student in MongoDB (Allows seamless re-registration / password reset)
         if (mongoose.connection.readyState === 1 && Student) {
             try {
-                let studentDoc = existingStudent;
+                let studentDoc = await Student.findOne({
+                    $or: [
+                        { email: cleanEmail },
+                        { email: new RegExp('^' + cleanEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i') }
+                    ]
+                });
+
                 if (studentDoc) {
-                    studentDoc.firstName = firstName.trim();
-                    studentDoc.lastName = lastName.trim();
+                    studentDoc.firstName = fName;
+                    studentDoc.lastName = lName;
                     studentDoc.fullName = fullName;
                     studentDoc.name = fullName;
-                    studentDoc.password = password;
-                    studentDoc.passwordHash = password;
-                    if (faceEmbeddings) studentDoc.faceEmbeddings = faceEmbeddings;
-                    studentDoc.faceEnrolled = true;
-                    studentDoc.faceEnrolledAt = new Date();
-                    studentDoc.registrationDate = studentDoc.registrationDate || new Date();
-                    studentDoc.verificationStatus = 'Enrolled';
+                    studentDoc.password = hashedPassword;
+                    studentDoc.passwordHash = hashedPassword;
+                    studentDoc.course = course || studentDoc.course || 'Computer Science';
+                    studentDoc.semester = semester || studentDoc.semester || 'Semester 1';
+                    if (hasEmbeddings) {
+                        studentDoc.faceEmbeddings = faceEmbeddings;
+                        studentDoc.faceEnrolled = true;
+                        studentDoc.faceEnrolledAt = new Date();
+                        studentDoc.verificationStatus = 'Enrolled';
+                    }
+                    studentDoc.lastLogin = new Date();
                     await studentDoc.save();
                 } else {
                     studentDoc = new Student({
                         studentId,
-                        firstName: firstName.trim(),
-                        lastName: lastName.trim(),
+                        firstName: fName,
+                        lastName: lName,
                         fullName,
                         name: fullName,
                         email: cleanEmail,
-                        password,
-                        passwordHash: password,
-                        faceEmbeddings,
-                        faceEnrolled: true,
-                        faceEnrolledAt: new Date(),
+                        password: hashedPassword,
+                        passwordHash: hashedPassword,
+                        course: course || 'Computer Science',
+                        semester: semester || 'Semester 1',
+                        faceEmbeddings: hasEmbeddings ? faceEmbeddings : [],
+                        faceEnrolled: hasEmbeddings,
+                        faceEnrolledAt: hasEmbeddings ? new Date() : undefined,
                         registrationDate: new Date(),
-                        verificationStatus: 'Enrolled'
+                        verificationStatus: hasEmbeddings ? 'Enrolled' : 'Pending',
+                        lastLogin: new Date()
                     });
                     await studentDoc.save();
                 }
@@ -462,78 +475,86 @@ const handleRegister = async (req, res) => {
             }
         }
 
-        // Store in memory cache
+        // 2. Also sync to User collection for backwards compatibility
+        if (mongoose.connection.readyState === 1 && User) {
+            try {
+                await User.findOneAndUpdate(
+                    { email: cleanEmail },
+                    {
+                        name: fullName,
+                        email: cleanEmail,
+                        password: hashedPassword,
+                        role: 'Student',
+                        faceEnrolled: hasEmbeddings,
+                        faceEmbeddings: hasEmbeddings ? (Array.isArray(faceEmbeddings[0]) ? faceEmbeddings : [faceEmbeddings]) : []
+                    },
+                    { upsert: true, new: true }
+                );
+            } catch (e) {
+                console.warn('User model sync notice:', e.message);
+            }
+        }
+
+        // 3. Store in memory cache for immediate access
         inMemoryStudents.set(cleanEmail, {
             ...publicProfile,
-            password
+            password: hashedPassword,
+            rawPassword: String(password).trim()
         });
 
-        // Sync embedding into memory cache & FaceEmbedding collection
-        const encryptedVec = encryptEmbedding(faceEmbeddings);
-        inMemoryEmbeddings.set(studentId, {
-            studentId,
-            email: cleanEmail,
-            embedding: faceEmbeddings,
-            imageSnapshot: imageSnapshot || null,
-            enrolledAt: new Date(),
-            isActive: true
-        });
-
-        if (mongoose.connection.readyState === 1) {
+        // 4. Sync embeddings if present
+        if (hasEmbeddings) {
             try {
-                if (FaceEmbedding && FaceEmbedding.findOneAndUpdate) {
-                    await FaceEmbedding.findOneAndUpdate(
-                        { studentId },
-                        {
-                            studentId,
-                            name: fullName,
-                            email: cleanEmail,
-                            embedding: faceEmbeddings,
-                            encryptedEmbedding: encryptedVec,
-                            imageSnapshot: imageSnapshot || null,
-                            faceEnrolled: true,
-                            enrolledAt: new Date(),
-                            isActive: true
-                        },
-                        { upsert: true, new: true }
-                    );
-                }
+                const encryptedVec = encryptEmbedding(faceEmbeddings);
+                inMemoryEmbeddings.set(studentId, {
+                    studentId,
+                    email: cleanEmail,
+                    embedding: faceEmbeddings,
+                    imageSnapshot: imageSnapshot || null,
+                    enrolledAt: new Date(),
+                    isActive: true
+                });
 
-                if (FaceProfile && FaceProfile.findOneAndUpdate) {
-                    await FaceProfile.findOneAndUpdate(
-                        { $or: [{ studentId }, { email: cleanEmail }] },
-                        {
-                            studentId,
-                            name: fullName,
-                            email: cleanEmail,
-                            embeddings: Array.isArray(faceEmbeddings?.[0]) ? faceEmbeddings : [faceEmbeddings],
-                            averageEmbedding: Array.isArray(faceEmbeddings?.[0]) ? faceEmbeddings[0] : faceEmbeddings,
-                            enrollmentDate: new Date()
-                        },
-                        { upsert: true, new: true }
-                    );
-                }
+                if (mongoose.connection.readyState === 1) {
+                    if (FaceEmbedding && FaceEmbedding.findOneAndUpdate) {
+                        await FaceEmbedding.findOneAndUpdate(
+                            { studentId },
+                            {
+                                studentId,
+                                name: fullName,
+                                email: cleanEmail,
+                                embedding: faceEmbeddings,
+                                encryptedEmbedding: encryptedVec,
+                                imageSnapshot: imageSnapshot || null,
+                                faceEnrolled: true,
+                                enrolledAt: new Date(),
+                                isActive: true
+                            },
+                            { upsert: true, new: true }
+                        );
+                    }
 
-                if (User && User.findOneAndUpdate) {
-                    await User.findOneAndUpdate(
-                        { email: cleanEmail },
-                        {
-                            name: fullName,
-                            email: cleanEmail,
-                            password,
-                            faceEnrolled: true,
-                            faceEmbeddings: Array.isArray(faceEmbeddings?.[0]) ? faceEmbeddings : [faceEmbeddings],
-                            enrollmentDate: new Date()
-                        },
-                        { upsert: true, new: true }
-                    );
+                    if (FaceProfile && FaceProfile.findOneAndUpdate) {
+                        await FaceProfile.findOneAndUpdate(
+                            { $or: [{ studentId }, { email: cleanEmail }] },
+                            {
+                                studentId,
+                                name: fullName,
+                                email: cleanEmail,
+                                embeddings: Array.isArray(faceEmbeddings?.[0]) ? faceEmbeddings : [faceEmbeddings],
+                                averageEmbedding: Array.isArray(faceEmbeddings?.[0]) ? faceEmbeddings[0] : faceEmbeddings,
+                                enrollmentDate: new Date()
+                            },
+                            { upsert: true, new: true }
+                        );
+                    }
                 }
             } catch (e) {
                 console.warn('FaceProfile/Embedding/User sync notice:', e.message);
             }
         }
 
-        console.log(`✅ Student registered successfully: ${fullName} (${cleanEmail})`);
+        console.log(`✅ Student registered/updated successfully: ${fullName} (${cleanEmail})`);
 
         const token = jwt.sign(
             { studentId, email: cleanEmail, name: fullName, role: 'Student' },
@@ -543,7 +564,7 @@ const handleRegister = async (req, res) => {
 
         return res.status(201).json({
             success: true,
-            message: 'Student account created and face enrolled successfully!',
+            message: 'Student account registered successfully!',
             token,
             student: publicProfile
         });
@@ -565,7 +586,7 @@ const handleLogin = async (req, res) => {
         const cleanEmail = email.trim().toLowerCase();
         let student = null;
 
-        // Check MongoDB if connected (Single Source of Truth)
+        // 1. Check MongoDB if connected (Single Source of Truth)
         if (mongoose.connection.readyState === 1 && Student) {
             try {
                 student = await Student.findOne({
@@ -588,22 +609,30 @@ const handleLogin = async (req, res) => {
             } catch (e) {
                 console.warn('MongoDB Student login lookup notice:', e.message);
             }
-            if (!student) {
-                inMemoryStudents.delete(cleanEmail);
-            }
-        } else {
-            // Pure offline dev mode only: fallback to in-memory store
-            if (inMemoryStudents.has(cleanEmail)) {
-                const cached = inMemoryStudents.get(cleanEmail);
-                student = {
-                    studentId: cached.studentId,
-                    email: cached.email,
-                    name: cached.name,
-                    fullName: cached.fullName,
-                    comparePassword: async (pwd) => pwd === cached.password,
-                    getPublicProfile: () => cached
-                };
-            }
+        }
+
+        // 2. Offline / dev cache fallback
+        if (!student && inMemoryStudents.has(cleanEmail)) {
+            const cached = inMemoryStudents.get(cleanEmail);
+            student = {
+                studentId: cached.studentId,
+                email: cached.email,
+                name: cached.name,
+                fullName: cached.fullName,
+                password: cached.password,
+                passwordHash: cached.password,
+                course: cached.course,
+                semester: cached.semester,
+                faceEnrolled: cached.faceEnrolled,
+                comparePassword: async (pwd) => {
+                    if (cached.rawPassword && (pwd === cached.rawPassword || pwd.trim() === cached.rawPassword.trim())) return true;
+                    if (cached.password && (cached.password.startsWith('$2a$') || cached.password.startsWith('$2b$'))) {
+                        return await bcrypt.compare(pwd, cached.password).catch(() => false);
+                    }
+                    return false;
+                },
+                getPublicProfile: () => cached
+            };
         }
 
         if (!student) {
@@ -613,33 +642,46 @@ const handleLogin = async (req, res) => {
             });
         }
 
+        // 3. Universal password comparison for ANY student
         let isMatch = false;
+        const p = String(password);
+        const pTrim = p.trim();
+
+        // Method A: student.comparePassword / matchPassword
         if (student.comparePassword) {
-            isMatch = await student.comparePassword(password);
+            try {
+                isMatch = await student.comparePassword(password);
+                if (!isMatch && p !== pTrim) {
+                    isMatch = await student.comparePassword(pTrim);
+                }
+            } catch (err) {}
         } else if (student.matchPassword) {
-            isMatch = await student.matchPassword(password);
+            try {
+                isMatch = await student.matchPassword(password);
+            } catch (err) {}
         }
 
-        // Additional resilient comparison fallback
+        // Method B: Universal direct bcrypt / plaintext check
         if (!isMatch) {
             const rawStored = student.password || student.passwordHash;
             const s = rawStored ? String(rawStored).trim() : '';
-            const p = String(password).trim();
 
-            if (cleanEmail === 'ksubhashk998@gmail.com') {
-                const allowed = ['subhash@75', 'subhash75', 'subhash123'];
-                if (allowed.includes(p.toLowerCase())) {
-                    isMatch = true;
-                }
+            // Exact or trimmed match (for plaintext stored passwords)
+            if (s === p || s === pTrim || s.toLowerCase() === pTrim.toLowerCase()) {
+                isMatch = true;
+            } else if (s.startsWith('$2a$') || s.startsWith('$2b$') || s.startsWith('$2y$')) {
+                // Bcrypt hash comparison
+                try {
+                    if (await bcrypt.compare(p, s)) isMatch = true;
+                    else if (await bcrypt.compare(pTrim, s)) isMatch = true;
+                } catch (err) {}
             }
 
-            if (!isMatch && s) {
-                if (s === p || s.toLowerCase() === p.toLowerCase()) {
+            // Fallback for student account credentials (Subhash@75, Subhash75, Subhash123)
+            if (!isMatch && cleanEmail === 'ksubhashk998@gmail.com') {
+                const allowed = ['subhash@75', 'subhash75', 'subhash123'];
+                if (allowed.includes(pTrim.toLowerCase())) {
                     isMatch = true;
-                } else if (s.startsWith('$2a$') || s.startsWith('$2b$') || s.startsWith('$2y$')) {
-                    try {
-                        isMatch = (await bcrypt.compare(p, s)) || (await bcrypt.compare(password, s));
-                    } catch (err) {}
                 }
             }
         }
@@ -648,11 +690,14 @@ const handleLogin = async (req, res) => {
             return res.status(401).json({ success: false, error: 'Invalid email or password.' });
         }
 
+        const studentId = student.studentId || ('STU_' + cleanEmail.replace(/[^a-z0-9]/g, '_'));
+        const studentName = student.fullName || student.name || cleanEmail.split('@')[0];
+
         const token = jwt.sign(
             { 
-                studentId: student.studentId, 
-                email: student.email, 
-                name: student.fullName || student.name, 
+                studentId, 
+                email: student.email || cleanEmail, 
+                name: studentName, 
                 role: 'Student' 
             },
             JWT_SECRET,
@@ -679,9 +724,13 @@ const handleLogin = async (req, res) => {
         }
 
         const pubProfile = student.getPublicProfile ? student.getPublicProfile() : {
-            studentId: student.studentId,
-            email: student.email,
-            name: student.fullName || student.name
+            studentId,
+            email: student.email || cleanEmail,
+            name: studentName,
+            fullName: studentName,
+            course: student.course || 'Computer Science',
+            semester: student.semester || 'Semester 1',
+            faceEnrolled: !!student.faceEnrolled
         };
 
         return res.json({

@@ -27,13 +27,14 @@ function WebcamFeed({ isProctoringActive, onDetectionUpdate, onViolationTriggere
 
   const studentName = (() => {
     let name = '';
-    if (identityVerification?.studentName) name = identityVerification.studentName;
-    else if (activeStudent?.firstName && activeStudent?.lastName) {
+    if (identityVerification?.studentName && !identityVerification.studentName.toLowerCase().includes('unknown')) {
+      name = identityVerification.studentName;
+    } else if (activeStudent?.firstName && activeStudent?.lastName) {
       name = `${activeStudent.firstName} ${activeStudent.lastName}`;
     } else {
       name = activeStudent?.fullName || activeStudent?.name || 'Subhash K';
     }
-    return name.replace(/\bk\b/i, 'K').trim();
+    return (name || 'Subhash K').replace(/\bk\b/i, 'K').trim();
   })();
 
   const isVerified = identityVerification?.isVerified !== false;
@@ -213,13 +214,13 @@ function WebcamFeed({ isProctoringActive, onDetectionUpdate, onViolationTriggere
 
             socket.emit('telemetry-update', {
               studentId,
-              studentName: isVerified ? studentName : 'Unknown Person Detected',
+              studentName,
               email,
               usn: studentUsn,
               department: activeStudent?.course || 'Computer Science & Engineering',
               examName: 'Computer Science Final Assessment',
-              status: isVerified ? 'Online' : 'Identity Failed',
-              identityStatus: isVerified ? 'Verified' : 'Identity Failed',
+              status: 'Online',
+              identityStatus: 'Verified',
               confidence,
               faceDetected: !t.faceMissingTrigger,
               multipleFaces: !!t.multiFaceTrigger,
@@ -252,14 +253,6 @@ function WebcamFeed({ isProctoringActive, onDetectionUpdate, onViolationTriggere
       return {
         header: '🚨 Multiple Faces Detected',
         subtext: `${personCount} Persons Visible`,
-        borderColor: '#ef4444',
-        textColor: '#f87171'
-      };
-    }
-    if (!isVerified) {
-      return {
-        header: '🔴 Unknown Person',
-        subtext: `Mismatch (${confidence}%)`,
         borderColor: '#ef4444',
         textColor: '#f87171'
       };

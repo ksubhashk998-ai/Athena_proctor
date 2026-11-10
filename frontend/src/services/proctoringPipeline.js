@@ -733,7 +733,17 @@ class ProctoringPipeline {
       ctx.lineWidth = 2.5;
       ctx.strokeRect(x, y, w, h);
 
-      const rawName = studentInfo?.studentName || 'Subhash K';
+      let rawName = studentInfo?.studentName || '';
+      if (!rawName || rawName.toLowerCase().includes('unknown')) {
+        try {
+          const stored = localStorage.getItem('user');
+          if (stored) {
+            const parsed = JSON.parse(stored);
+            rawName = parsed?.fullName || parsed?.name || '';
+          }
+        } catch (e) {}
+      }
+      if (!rawName) rawName = 'Subhash K';
       const cleanName = rawName.replace(/\bk\b/i, 'K').trim();
       const label = isPrimary
         ? `Student : ${cleanName}`

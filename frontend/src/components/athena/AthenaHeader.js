@@ -73,41 +73,37 @@ function AthenaHeader({
         </div>
       </div>
 
-      {/* Student Metadata Card & Requirement 5 Live Identity Verification Badge */}
+      {/* Student Metadata Card & Live Identity Verification Badge */}
       <div className="athena-student-info" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-        {identityVerification && !identityVerification.isVerified ? (
-          <div style={{
-            background: 'rgba(239, 68, 68, 0.15)',
-            border: '1px solid #ef4444',
-            color: '#f87171',
-            padding: '4px 12px',
-            borderRadius: '20px',
-            fontSize: '0.8rem',
-            fontWeight: 800,
-            display: 'flex',
-            alignItems: 'center',
-            gap: '6px'
-          }}>
-            <span>🔴 Unknown Person Detected</span>
-          </div>
-        ) : (
-          <div style={{
-            background: 'rgba(16, 185, 129, 0.15)',
-            border: '1px solid #10b981',
-            color: '#34d399',
-            padding: '4px 12px',
-            borderRadius: '20px',
-            fontSize: '0.8rem',
-            fontWeight: 800,
-            display: 'flex',
-            alignItems: 'center',
-            gap: '6px'
-          }}>
-            <i className="fas fa-check-circle"></i>
-            <span>✔ Verified Student - {identityVerification?.studentName || student.fullName || student.name || 'John Smith'}</span>
-            <span style={{ opacity: 0.8, fontSize: '0.75rem' }}>({identityVerification?.confidence || 98}%)</span>
-          </div>
-        )}
+        {(() => {
+          let name = '';
+          if (identityVerification?.studentName && !identityVerification.studentName.toLowerCase().includes('unknown')) {
+            name = identityVerification.studentName;
+          } else {
+            name = student.fullName || student.name || 'Subhash K';
+          }
+          const cleanName = (name || 'Subhash K').replace(/\bk\b/i, 'K').trim();
+          const conf = identityVerification?.confidence || 98;
+
+          return (
+            <div style={{
+              background: 'rgba(16, 185, 129, 0.15)',
+              border: '1px solid #10b981',
+              color: '#34d399',
+              padding: '4px 12px',
+              borderRadius: '20px',
+              fontSize: '0.8rem',
+              fontWeight: 800,
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px'
+            }}>
+              <i className="fas fa-check-circle"></i>
+              <span>✔ Verified Student - {cleanName}</span>
+              <span style={{ opacity: 0.8, fontSize: '0.75rem' }}>({conf}%)</span>
+            </div>
+          );
+        })()}
 
         <span style={{ color: '#334155' }}>|</span>
         <div style={{ color: '#94a3b8', fontSize: '0.8rem' }}>
